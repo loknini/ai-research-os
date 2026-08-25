@@ -1,0 +1,16 @@
+# 换行符规范：文本文件仓库内统一为 LF，检出时按平台自动处理
+* text=auto
+
+# 明确的二进制文件（不做换行符转换）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.db binary
+*.sqlite binary

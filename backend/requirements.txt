@@ -1,0 +1,16 @@
+# AI-Research-OS FastAPI backend dependencies
+#
+# Install: pip install -r backend/requirements.txt
+#
+# NOTE: Per project decision, the LLM client is implemented with the
+# standard library `urllib` (see backend/server/llm.py), so the `openai`
+# SDK is intentionally NOT required.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+pydantic-settings>=2.2
+python-dotenv>=1.0
+requests>=2.31
+python-multipart>=0.0.9
+aiosqlite>=0.20
+pypdf>=4.0

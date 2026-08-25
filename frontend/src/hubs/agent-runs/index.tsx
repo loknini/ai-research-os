@@ -1,0 +1,698 @@
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Header } from '@/components/layout/header'
+import { Card, CardContent } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import { cn } from '@/utils'
+import { toast } from '@/components/ui/toast'
+import {
+  History,
+  RefreshCw,
+  Eye,
+  XCircle,
+  Loader2,
+  CheckCircle2,
+  X,
+  AlertTriangle,
+  Bot,
+  ListTodo,
+  FileCode,
+  Sparkles,
+  Clock,
+  ShieldCheck,
+  ShieldAlert,
+  Check,
+  RotateCcw,
+  ListChecks,
+  Wrench
+} from 'lucide-react'
+
+interface RunSummary {
+  id: string
+  spaceId: string
+  projectId?: string
+  requirement: string
+  roles: string[]
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  errorMessage?: string
+  resultSummary?: Record<string, any> | null
+  createdAt: number
+  startedAt?: number
+  completedAt?: number
+}
+
+interface RunEvent {
+  id: number
+  runId: string
+  type: string
+  data: Record<string, any>
+  createdAt: number
+}
+
+// 工具审批记录（来自 GET /runs/{id} 的 pendingApprovals 与 /approvals 历史）
+interface ApprovalRecord {
+  id: string
+  runId: string
+  spaceId: string
+  tool: string
+  parameters: Record<string, any>
+  status: 'pending' | 'approved' | 'denied' | 'timed_out' | 'cancelled'
+  createdAt: number
+  decidedAt?: number | null
+}
+
+// 可重放消息（来自 GET /runs/{id}/replay）
+interface ReplayMessage {
+  id: number
+  runId: string
+  phase: string
+  round: number
+  role: string
+  message: Record<string, any>
+  createdAt: number
+}
+
+const APPROVAL_STATUS_META: Record<ApprovalRecord['status'], { label: string; className: string }> = {
+  pending: { label: '等待审批', className: 'bg-amber-500/10 text-amber-600' },
+  approved: { label: '已批准', className: 'bg-green-500/10 text-green-600' },
+  denied: { label: '已拒绝', className: 'bg-red-500/10 text-red-600' },
+  timed_out: { label: '已超时', className: 'bg-gray-500/10 text-gray-600' },
+  cancelled: { label: '已取消', className: 'bg-gray-500/10 text-gray-600' },
+}
+
+// 角色展示（与多 Agent 协作面板保持一致）
+const ROLE_META: Record<string, { name: string; icon: any; color: string; bg: string }> = {
+  architect: { name: '架构师', icon: Sparkles, color: 'text-purple-500', bg: 'bg-purple-500/10' },
+  planner: { name: '规划师', icon: ListTodo, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+  developer: { name: '开发工程师', icon: FileCode, color: 'text-green-500', bg: 'bg-green-500/10' },
+  reviewer: { name: '审查员', icon: CheckCircle2, color: 'text-orange-500', bg: 'bg-orange-500/10' },
+  user: { name: '用户', icon: Bot, color: 'text-gray-500', bg: 'bg-gray-500/10' },
+}
+
+const STATUS_META: Record<RunSummary['status'], { label: string; className: string; icon: any }> = {
+  pending: { label: '排队中', className: 'bg-gray-500/10 text-gray-600', icon: Clock },
+  running: { label: '进行中', className: 'bg-blue-500/10 text-blue-600', icon: Loader2 },
+  completed: { label: '已完成', className: 'bg-green-500/10 text-green-600', icon: CheckCircle2 },
+  failed: { label: '失败', className: 'bg-red-500/10 text-red-600', icon: AlertTriangle },
+  cancelled: { label: '已取消', className: 'bg-amber-500/10 text-amber-600', icon: XCircle },
+}
+
+function relTime(ms?: number) {
+  if (!ms) return '—'
+  const diff = Date.now() - ms
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
+  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
+  return new Date(ms).toLocaleString()
+}
+
+export default function AgentRunsHub() {
+  const [runs, setRuns] = useState<RunSummary[]>([])
+  const [loading, setLoading] = useState(false)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [detail, setDetail] = useState<{ run: RunSummary; events: RunEvent[] } | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailTab, setDetailTab] = useState<'events' | 'approvals' | 'replay'>('events')
+  const [approvals, setApprovals] = useState<ApprovalRecord[]>([])
+  const [approvalsLoading, setApprovalsLoading] = useState(false)
+  const [replay, setReplay] = useState<ReplayMessage[]>([])
+  const [replayLoading, setReplayLoading] = useState(false)
+  const [replayLoaded, setReplayLoaded] = useState(false)
+
+  const hasRunning = runs.some((r) => r.status === 'running' || r.status === 'pending')
+
+  const loadRuns = useCallback(async () => {
+    setLoading(true)
+    try {
+      const resp = await fetch('/api/agent/runs?limit=100')
+      const data = await resp.json()
+      if (data.success) setRuns(data.runs || [])
+    } catch {
+      // 静默失败，下次轮询重试
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    loadRuns()
+  }, [loadRuns])
+
+  // 有在途运行时自动刷新列表
+  useEffect(() => {
+    if (!hasRunning) return
+    const t = setInterval(loadRuns, 3000)
+    return () => clearInterval(t)
+  }, [hasRunning, loadRuns])
+
+  // 拉取运行详情（不重置 tab 状态，供自动刷新复用）
+  const fetchDetail = useCallback(async (id: string) => {
+    try {
+      const resp = await fetch(`/api/agent/runs/${id}`)
+      const data = await resp.json()
+      if (data.success) {
+        setDetail({ run: data.run, events: data.events || [] })
+        // pendingApprovals 由 GET /runs/{id} 直接返回，审批面板再拉全量历史
+        setApprovals(data.pendingApprovals || [])
+        return true
+      }
+    } catch {
+      // 交给上层处理
+    }
+    return false
+  }, [])
+
+  const openDetail = useCallback(async (id: string) => {
+    setSelectedId(id)
+    setDetailLoading(true)
+    setDetailTab('events')
+    setReplayLoaded(false)
+    setReplay([])
+    try {
+      const ok = await fetchDetail(id)
+      if (!ok) toast({ title: '加载运行详情失败', variant: 'error' })
+    } finally {
+      setDetailLoading(false)
+    }
+  }, [fetchDetail])
+
+  // 审批历史（全量，含已决策项）
+  const loadApprovals = useCallback(async (id: string) => {
+    setApprovalsLoading(true)
+    try {
+      const resp = await fetch(`/api/agent/runs/${id}/approvals`)
+      const data = await resp.json()
+      if (data.success) setApprovals(data.approvals || [])
+    } catch {
+      toast({ title: '加载审批记录失败', variant: 'error' })
+    } finally {
+      setApprovalsLoading(false)
+    }
+  }, [])
+
+  // 可重放会话日志（按 phase/round 分组，懒加载）
+  const loadReplay = useCallback(async (id: string) => {
+    if (replayLoaded) return
+    setReplayLoading(true)
+    try {
+      const resp = await fetch(`/api/agent/runs/${id}/replay`)
+      const data = await resp.json()
+      if (data.success) {
+        setReplay(data.replay || [])
+        setReplayLoaded(true)
+      } else {
+        toast({ title: data.message || '加载回放失败', variant: 'error' })
+      }
+    } catch {
+      toast({ title: '加载回放失败', variant: 'error' })
+    } finally {
+      setReplayLoading(false)
+    }
+  }, [replayLoaded])
+
+  // 工具审批决策
+  const decideApproval = useCallback(async (runId: string, approvalId: string, approved: boolean) => {
+    try {
+      const resp = await fetch(`/api/agent/runs/${runId}/approvals/${approvalId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approved })
+      })
+      const data = await resp.json()
+      if (data.success) {
+        toast({ title: approved ? '已批准工具执行' : '已拒绝工具调用', variant: 'info' })
+        loadApprovals(runId)
+      } else {
+        toast({ title: data.message || '决策提交失败', variant: 'error' })
+      }
+    } catch {
+      toast({ title: '决策提交失败', variant: 'error' })
+    }
+  }, [loadApprovals])
+
+  // 详情抽屉里若仍在运行，自动刷新事件（不重置 tab）
+  useEffect(() => {
+    if (!selectedId) return
+    const run = detail?.run
+    if (!run || (run.status !== 'running' && run.status !== 'pending')) return
+    const t = setInterval(() => fetchDetail(selectedId), 2000)
+    return () => clearInterval(t)
+  }, [selectedId, detail?.run?.status, fetchDetail])
+
+  const cancelRun = useCallback(async (id: string) => {
+    try {
+      await fetch(`/api/agent/runs/${id}/cancel`, { method: 'POST' })
+      toast({ title: '已发送取消请求', variant: 'info' })
+      loadRuns()
+    } catch {
+      toast({ title: '取消失败', variant: 'error' })
+    }
+  }, [loadRuns])
+
+  return (
+    <div className="flex flex-col h-screen">
+      <Header title="运行历史" description="后台多 Agent 协作运行记录（提交即返回，服务端持续推进）" />
+
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-5xl mx-auto space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              共 {runs.length} 条记录
+              {hasRunning && <span className="ml-2 text-blue-600">· 有运行进行中，列表自动刷新</span>}
+            </p>
+            <Button variant="outline" size="sm" onClick={loadRuns} disabled={loading}>
+              {loading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+              刷新
+            </Button>
+          </div>
+
+          {runs.length === 0 ? (
+            <Card>
+              <CardContent className="py-16 flex flex-col items-center justify-center text-muted-foreground">
+                <History className="w-12 h-12 mb-4 opacity-40" />
+                <p>还没有后台运行记录</p>
+                <p className="text-sm mt-1">在「软件开发」里点击「开始协作」即可发起一次多 Agent 规划</p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-2">
+              {runs.map((run) => {
+                const st = STATUS_META[run.status]
+                const StIcon = st.icon
+                return (
+                  <Card key={run.id} className="hover:border-primary/40 transition-colors">
+                    <CardContent className="py-4 flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shrink-0">
+                        <Bot className="w-5 h-5 text-white" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge className={cn('gap-1', st.className)}>
+                            <StIcon className={cn('w-3 h-3', run.status === 'running' && 'animate-spin')} />
+                            {st.label}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground">{relTime(run.createdAt)}</span>
+                        </div>
+                        <p className="text-sm font-medium truncate">{run.requirement}</p>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {run.roles.map((role) => {
+                            const m = ROLE_META[role] || ROLE_META.user
+                            const Icon = m.icon
+                            return (
+                              <span key={role} className={cn('inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-md', m.bg, m.color)}>
+                                <Icon className="w-3 h-3" />
+                                {m.name}
+                              </span>
+                            )
+                          })}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {(run.status === 'running' || run.status === 'pending') && (
+                          <Button variant="ghost" size="sm" onClick={() => cancelRun(run.id)}>
+                            <XCircle className="w-4 h-4 mr-1" />
+                            取消
+                          </Button>
+                        )}
+                        <Button variant="outline" size="sm" onClick={() => openDetail(run.id)}>
+                          <Eye className="w-4 h-4 mr-1" />
+                          查看
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 详情抽屉 */}
+      {selectedId && (
+        <div className="fixed inset-0 z-40 flex justify-end">
+          <div className="absolute inset-0 bg-black/30" onClick={() => setSelectedId(null)} />
+          <div className="relative w-full max-w-lg h-full bg-background border-l border-border shadow-xl flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b">
+              <div className="min-w-0">
+                <h3 className="font-medium truncate">运行详情</h3>
+                <p className="text-xs text-muted-foreground mt-0.5">{detail?.run?.id}</p>
+              </div>
+              <Button variant="ghost" size="icon" onClick={() => setSelectedId(null)}>
+                <X className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {detailLoading && !detail ? (
+              <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : detail ? (
+              <>
+                <div className="p-4 border-b space-y-2">
+                  <div className="flex items-center gap-2">
+                    {(() => {
+                      const st = STATUS_META[detail.run.status]
+                      const StIcon = st.icon
+                      return (
+                        <Badge className={cn('gap-1', st.className)}>
+                          <StIcon className={cn('w-3 h-3', detail.run.status === 'running' && 'animate-spin')} />
+                          {st.label}
+                        </Badge>
+                      )
+                    })()}
+                    <span className="text-xs text-muted-foreground">创建于 {relTime(detail.run.createdAt)}</span>
+                  </div>
+                  <p className="text-sm">{detail.run.requirement}</p>
+                  {detail.run.errorMessage && (
+                    <p className="text-xs text-red-600">错误：{detail.run.errorMessage}</p>
+                  )}
+                </div>
+
+                {/* Tab 切换 */}
+                <div className="flex items-center gap-1 px-4 pt-3 border-b">
+                  {([
+                    { key: 'events', label: '事件流', icon: ListChecks },
+                    { key: 'approvals', label: '工具审批', icon: ShieldCheck },
+                    { key: 'replay', label: '会话回放', icon: RotateCcw },
+                  ] as const).map((tab) => {
+                    const Icon = tab.icon
+                    return (
+                      <button
+                        key={tab.key}
+                        onClick={() => {
+                          setDetailTab(tab.key)
+                          if (tab.key === 'approvals') loadApprovals(selectedId)
+                          if (tab.key === 'replay') loadReplay(selectedId)
+                        }}
+                        className={cn(
+                          'flex items-center gap-1.5 px-3 py-2 text-sm rounded-t-lg border-b-2 transition-colors',
+                          detailTab === tab.key
+                            ? 'border-primary text-foreground font-medium'
+                            : 'border-transparent text-muted-foreground hover:text-foreground'
+                        )}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                        {tab.label}
+                        {tab.key === 'approvals' && approvals.some(a => a.status === 'pending') && (
+                          <span className="w-2 h-2 rounded-full bg-amber-500" />
+                        )}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {detailTab === 'events' && (
+                  <ScrollArea className="flex-1 p-4">
+                    <div className="space-y-3">
+                      {detail.events.length === 0 ? (
+                        <p className="text-sm text-muted-foreground">暂无事件</p>
+                      ) : (
+                        detail.events.map((ev) => <EventRow key={ev.id} ev={ev} />)
+                      )}
+                    </div>
+                  </ScrollArea>
+                )}
+
+                {detailTab === 'approvals' && (
+                  <ScrollArea className="flex-1 p-4">
+                    {approvalsLoading && approvals.length === 0 ? (
+                      <div className="flex items-center justify-center py-10 text-muted-foreground">
+                        <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                        加载中...
+                      </div>
+                    ) : approvals.length === 0 ? (
+                      <p className="text-sm text-muted-foreground text-center py-10">
+                        本次运行没有触发工具审批
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        {approvals.map((ap) => (
+                          <ApprovalRow
+                            key={ap.id}
+                            approval={ap}
+                            runId={selectedId}
+                            onDecide={decideApproval}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </ScrollArea>
+                )}
+
+                {detailTab === 'replay' && (
+                  <ScrollArea className="flex-1 p-4">
+                    {replayLoading ? (
+                      <div className="flex items-center justify-center py-10 text-muted-foreground">
+                        <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                        加载会话日志...
+                      </div>
+                    ) : replay.length === 0 ? (
+                      <div className="text-center py-10">
+                        <RotateCcw className="w-8 h-8 mx-auto mb-2 text-muted-foreground/40" />
+                        <p className="text-sm text-muted-foreground">暂无回放记录</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          运行中每轮「模型实际看到的消息」会落库，完成后可完整回放定位问题
+                        </p>
+                      </div>
+                    ) : (
+                      <ReplayPanel messages={replay} />
+                    )}
+                  </ScrollArea>
+                )}
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function EventRow({ ev }: { ev: RunEvent }) {
+  const d = ev.data || {}
+  const role = d.agent || d.phase || ''
+  const m = ROLE_META[role] || ROLE_META.user
+  const Icon = m.icon
+  let text = ''
+  let statusBadge: { label: string; className: string } | null = null
+
+  switch (ev.type) {
+    case 'phase_start':
+      text = `阶段开始 · ${m.name}${d.message ? `：${d.message}` : ''}`
+      break
+    case 'start':
+      text = `${m.name} 启动${d.message ? `：${d.message}` : ''}`
+      break
+    case 'progress':
+      text = `${m.name} · ${d.step || ''}${typeof d.progress === 'number' ? `（${d.progress}%）` : ''}`
+      break
+    case 'complete':
+      text = `${m.name} 阶段产出完成`
+      break
+    case 'run_complete':
+      text = '全部阶段完成 ✅'
+      break
+    case 'run_cancelled':
+      text = `运行已取消${d.message ? `：${d.message}` : ''}`
+      break
+    case 'error':
+      text = `错误：${d.message || ''}`
+      break
+    case 'tool_approval': {
+      const status = d.status as string
+      const st = APPROVAL_STATUS_META[status as keyof typeof APPROVAL_STATUS_META]
+      text = `工具审批 · ${d.tool || ''}${d.message ? `：${d.message}` : ''}`
+      statusBadge = st || { label: status, className: 'bg-gray-500/10 text-gray-600' }
+      break
+    }
+    case 'context_compressed':
+      text = `上下文管理 · ${d.message || '历史已压缩'}`
+      statusBadge = { label: '压缩', className: 'bg-blue-500/10 text-blue-600' }
+      break
+    default:
+      text = JSON.stringify(d).slice(0, 80)
+  }
+
+  return (
+    <div className="flex gap-3 p-3 rounded-lg bg-muted/40 border border-border/50">
+      <div className={cn('w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0', m.bg)}>
+        <Icon className={cn('w-3.5 h-3.5', m.color)} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="text-sm">{text}</p>
+          {statusBadge && (
+            <span className={cn('inline-flex items-center px-1.5 py-0.5 rounded text-xs shrink-0', statusBadge.className)}>
+              {statusBadge.label}
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground mt-0.5">{relTime(ev.createdAt)}</p>
+      </div>
+    </div>
+  )
+}
+
+// 审批记录行：pending 提供决策按钮，终态展示结果
+function ApprovalRow({
+  approval,
+  runId,
+  onDecide,
+}: {
+  approval: ApprovalRecord
+  runId: string
+  onDecide: (runId: string, approvalId: string, approved: boolean) => void
+}) {
+  const st = APPROVAL_STATUS_META[approval.status]
+  const isPending = approval.status === 'pending'
+  return (
+    <div className="p-3 rounded-lg bg-muted/40 border border-border/50">
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <div className="flex items-center gap-2 min-w-0">
+          {isPending ? (
+            <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0" />
+          ) : (
+            <ShieldCheck className={cn('w-4 h-4 shrink-0', approval.status === 'approved' ? 'text-green-500' : 'text-muted-foreground')} />
+          )}
+          <code className="text-xs font-mono px-1.5 py-0.5 rounded bg-background border border-border/60">
+            {approval.tool}
+          </code>
+          <span className={cn('inline-flex items-center px-1.5 py-0.5 rounded text-xs', st.className)}>
+            {st.label}
+          </span>
+        </div>
+        <span className="text-xs text-muted-foreground shrink-0">{relTime(approval.createdAt)}</span>
+      </div>
+      <pre className="mt-1 p-2 rounded-md bg-background/80 border border-border/50 text-xs font-mono text-muted-foreground overflow-x-auto max-h-32">
+        {JSON.stringify(approval.parameters, null, 2)}
+      </pre>
+      {isPending && (
+        <div className="flex items-center gap-2 mt-2">
+          <Button
+            size="sm"
+            className="gap-1 bg-green-500 hover:bg-green-600 text-white"
+            onClick={() => onDecide(runId, approval.id, true)}
+          >
+            <Check className="w-3.5 h-3.5" />
+            允许执行
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1 text-red-600 border-red-300 hover:bg-red-50"
+            onClick={() => onDecide(runId, approval.id, false)}
+          >
+            <X className="w-3.5 h-3.5" />
+            拒绝
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 会话回放面板：按 (phase, round) 分组渲染模型实际看到的消息
+function ReplayPanel({ messages }: { messages: ReplayMessage[] }) {
+  const groups = useMemo(() => {
+    const map = new Map<string, ReplayMessage[]>()
+    for (const msg of messages) {
+      const key = `${msg.phase}__${msg.round}`
+      const list = map.get(key)
+      if (list) list.push(msg)
+      else map.set(key, [msg])
+    }
+    return Array.from(map.entries()).sort((a, b) => {
+      const [pa, ra] = a[0].split('__')
+      const [pb, rb] = b[0].split('__')
+      return pa.localeCompare(pb) || Number(ra) - Number(rb)
+    })
+  }, [messages])
+
+  if (groups.length === 0) return null
+
+  return (
+    <div className="space-y-4">
+      {groups.map(([key, msgs]) => {
+        const [phase, round] = key.split('__')
+        const meta = ROLE_META[phase] || ROLE_META.user
+        const PhaseIcon = meta.icon
+        return (
+          <div key={key} className="space-y-2">
+            <div className="flex items-center gap-2 sticky top-0 bg-background/95 backdrop-blur py-1">
+              <div className={cn('w-6 h-6 rounded-full flex items-center justify-center', meta.bg)}>
+                <PhaseIcon className={cn('w-3.5 h-3.5', meta.color)} />
+              </div>
+              <span className={cn('text-xs font-medium', meta.color)}>{meta.name}</span>
+              <span className="text-xs text-muted-foreground">第 {round} 轮</span>
+              <span className="text-[10px] text-muted-foreground/60">· {msgs.length} 条消息</span>
+            </div>
+            <div className="space-y-1.5">
+              {msgs.map((m) => (
+                <ReplayMessageRow key={m.id} msg={m} />
+              ))}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ReplayMessageRow({ msg }: { msg: ReplayMessage }) {
+  const body = msg.message || {}
+  const role = body.role || msg.role || 'user'
+  const roleLabel: Record<string, string> = {
+    system: '系统',
+    user: '用户',
+    assistant: '助手',
+    tool: '工具',
+  }
+  const roleColor: Record<string, string> = {
+    system: 'text-gray-500 bg-gray-500/10',
+    user: 'text-blue-600 bg-blue-500/10',
+    assistant: 'text-purple-600 bg-purple-500/10',
+    tool: 'text-green-600 bg-green-500/10',
+  }
+
+  // tool_calls（assistant 消息）与 tool 结果分别渲染
+  const toolCalls = Array.isArray(body.tool_calls) ? body.tool_calls : []
+  const hasContent = typeof body.content === 'string' && body.content.trim().length > 0
+  const toolResult = role === 'tool' ? body.content : null
+
+  return (
+    <div className="p-2.5 rounded-lg bg-background border border-border/40">
+      <div className="flex items-center gap-2 mb-1">
+        <span className={cn('inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium', roleColor[role] || roleColor.user)}>
+          {roleLabel[role] || role}
+        </span>
+        {body.name && (
+          <code className="text-[10px] font-mono text-muted-foreground">{body.name}</code>
+        )}
+      </div>
+      {hasContent && (
+        <p className="text-xs text-foreground/90 whitespace-pre-wrap break-words">{body.content}</p>
+      )}
+      {toolResult && (
+        <p className="text-xs text-green-700 bg-green-500/5 rounded p-1.5 border border-green-500/15 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+          {typeof toolResult === 'string' ? toolResult : JSON.stringify(toolResult)}
+        </p>
+      )}
+      {toolCalls.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mt-1">
+          {toolCalls.map((tc: any, i: number) => (
+            <span
+              key={i}
+              className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 border border-amber-500/20"
+            >
+              <Wrench className="w-3 h-3" />
+              {tc.function?.name || 'tool_call'}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}

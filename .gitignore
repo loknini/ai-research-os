@@ -1,0 +1,86 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+# 注意：lock 文件（package-lock.json / yarn.lock / pnpm-lock.yaml）应提交入库，
+# 用于锁定依赖版本、保证可重复构建，并启用 GitHub Dependabot 安全告警。
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# 用户数据（SQLite 数据库、论文 PDF、笔记内容、备份、cron 配置）——运行时生成，绝不上传
+# 目录由 start.ps1 / start.sh / 后端首次启动自动创建
+data/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Secrets
+backend/config/credentials/
+backend/config/.env
+*.token
+*.key
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+temp/
+
+# 归档：2026-07-30 文档重构时移出的过时文档，确认无用后可整目录删除
+.archive/
+
+# 临时/调试产物（QA 截图、诊断日志、mock LLM 服务、冒烟测试脚本输出）
+tmp/
+
+# WorkBuddy 个人工作记忆与 AI 助手私有数据（含每日工作日志，不适合公开）
+.workbuddy/
+
+# 个人简历（含真实姓名/教育/经历，不入公开仓库，仅保留在本地）
+resume-agent-engineer.md
+
+# 构建/验证残留（各类 QA 构建测试输出目录，统一按点前缀目录模式排除）
+.vite-verify/
+.vite-verify-paper/
+.verify_final.txt
+frontend/dist-verify/
+frontend/.phase3b_build_test/
+frontend/.settings_build_test/
+frontend/*_build_test/
+frontend/vite.config.ts.timestamp-*.mjs
+
+# Python virtual environments (start.ps1 自动创建项目内 .venv)
+.venv/
+backend/.venv/
+__pycache__/
+
+# 本机本地配置（数据目录路径「设一次忘掉」文件，不进库；由 start.ps1 -DataDir / start.sh --data-dir 或用户手动写入）
+.airos-data-dir

@@ -1,0 +1,164 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 自定义工具类 */
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 隐藏滚动条（Webkit / Firefox / IE） */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 隐藏 details 默认的 marker */
+details > summary {
+  list-style: none;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
+
+@layer base {
+  /* ── 浅色（Apple Light）：系统灰底 + 单一冷蓝强调 ── */
+  :root {
+    --background: 240 9% 96%;          /* 页面基色，inputs/root 用 */
+    --foreground: 240 8% 12%;          /* 近黑文字 #1D1D1F */
+    --card: 0 0% 100%;                 /* 实色卡片回退 */
+    --card-foreground: 240 8% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 8% 12%;
+    --primary: 211 100% 52%;           /* 单一强调色：Apple 蓝 #0A84FF */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 6% 90%;
+    --secondary-foreground: 240 8% 18%;
+    --muted: 240 6% 90%;
+    --muted-foreground: 240 4% 46%;    /* #6E6E73 */
+    --accent: 240 6% 92%;
+    --accent-foreground: 240 8% 18%;
+    --destructive: 4 76% 56%;          /* 红，仅用于错误态 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 6% 85%;
+    --input: 240 6% 85%;
+    --ring: 211 100% 52%;
+    --radius: 0.75rem;                 /* 统一的圆角刻度基准 */
+  }
+
+  /* ── 深色（Pro Graphite）：近黑石墨 + 冷调强调 ── */
+  .dark {
+    --background: 240 8% 9%;
+    --foreground: 240 6% 92%;
+    --card: 240 6% 14%;
+    --card-foreground: 240 6% 92%;
+    --popover: 240 6% 13%;
+    --popover-foreground: 240 6% 92%;
+    --primary: 211 100% 58%;
+    --primary-foreground: 240 10% 6%;
+    --secondary: 240 5% 18%;
+    --secondary-foreground: 240 6% 92%;
+    --muted: 240 5% 18%;
+    --muted-foreground: 240 5% 60%;
+    --accent: 240 5% 20%;
+    --accent-foreground: 240 6% 92%;
+    --destructive: 4 70% 58%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 5% 22%;
+    --input: 240 5% 24%;
+    --ring: 211 100% 58%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    /* 舒适阅读基线：行高 1.6（介于 Apple UI 的紧凑与 Chat 阅读的宽松之间），
+       提升整体文字呼吸感，不影响布局密度。 */
+    line-height: 1.6;
+    /* 氛围纵深：极淡的冷蓝 / 淡紫 / 青色晕染，绝不用纯白平铺 */
+    background-image:
+      radial-gradient(130% 120% at 0% 0%, hsl(211 100% 97%) 0%, transparent 42%),
+      radial-gradient(120% 120% at 100% 0%, hsl(280 70% 96%) 0%, transparent 38%),
+      radial-gradient(120% 120% at 100% 100%, hsl(190 80% 96%) 0%, transparent 40%);
+    background-attachment: fixed;
+  }
+
+  .dark body {
+    background-image:
+      radial-gradient(130% 120% at 0% 0%, hsl(211 60% 14%) 0%, transparent 50%),
+      radial-gradient(120% 120% at 100% 100%, hsl(280 40% 14%) 0%, transparent 45%),
+      radial-gradient(120% 120% at 100% 0%, hsl(190 50% 13%) 0%, transparent 42%);
+  }
+}
+
+@layer components {
+  /* ── 舒适阅读：作用于卡片/设置等正文容器 ──
+     后代选择器特异性 (0,2,0) 高于单一工具类 (0,1,0)，可可靠覆盖
+     Tailwind `text-sm`/`text-xs` 自带的紧凑行高（~1.43 / ~1.33），
+     对齐 Apple/Claude 的 1.55–1.65 阅读舒适度。 */
+  .comfortable {
+    line-height: 1.65;
+  }
+  .comfortable .text-sm {
+    line-height: 1.6;
+  }
+  .comfortable .text-xs {
+    line-height: 1.55;
+  }
+
+  /* ── 毛玻璃材质（Depth 支柱）：半透明 + 模糊 + 内高光 + 柔和投影 ── */
+  .glass {
+    background-color: hsl(0 0% 100% / 0.65);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid hsl(240 6% 85% / 0.7);
+    box-shadow:
+      0 1px 0 0 hsl(0 0% 100% / 0.6) inset,
+      0 12px 32px -16px rgb(15 23 42 / 0.18);
+  }
+
+  .dark .glass {
+    background-color: hsl(240 8% 18% / 0.55);
+    border-color: hsl(0 0% 100% / 0.08);
+    box-shadow:
+      0 1px 0 0 hsl(0 0% 100% / 0.06) inset,
+      0 16px 40px -20px rgb(0 0 0 / 0.5);
+  }
+
+  /* 极淡的悬停底纹，配合圆角用于列表行 */
+  .row-hover {
+    @apply transition-colors rounded-xl;
+  }
+  .row-hover:hover {
+    background-color: hsl(240 8% 12% / 0.04);
+  }
+  .dark .row-hover:hover {
+    background-color: hsl(0 0% 100% / 0.04);
+  }
+}
+
+/* ── 尊重「减少动效」偏好（无障碍不可妥协） ── */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-up {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

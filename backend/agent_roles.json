@@ -1,0 +1,8 @@
+{
+  "roles": [
+    { "key": "architect", "label": "架构师", "enabled": true },
+    { "key": "planner",   "label": "规划师", "enabled": true },
+    { "key": "developer", "label": "开发者", "enabled": false },
+    { "key": "reviewer",  "label": "评审者", "enabled": true }
+  ]
+}
