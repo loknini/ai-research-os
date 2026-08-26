@@ -9,6 +9,7 @@
 #   ./start.sh --api-port 9000                # 自定义后端端口
 #   ./start.sh --api-workers 4                # 指定 FastAPI worker 进程数（多 worker 抗并发）
 #   ./start.sh --data-dir ~/Sync/airos-data  # 把 DATA_DIR 指到同步盘（双设备单数据源）
+#   ./start.sh --restart                     # 重启模式：结束后端+前端（如正在运行）后重新启动
 #
 # 说明:
 #   - 与 Windows 版 start.ps1 行为对齐；兼容 bash 3.2（macOS 默认 /bin/bash）。
@@ -32,6 +33,7 @@ SKIP_FRONTEND=""
 SKIP_BACKEND=""
 DATA_DIR_ARG=""
 API_WORKERS=""   # 手动指定的 worker 数；留空则自动探测 min(cpu_count, 8)
+RESTART=""       # 重启模式：结束后端+前端旧进程后以最新代码重新启动
 
 # ---- 帮助信息 ----
 print_help() {
@@ -50,11 +52,13 @@ AI-Research-OS 启动脚本（macOS / Linux）
   -p, --api-port <port>      后端端口（默认 8000）。
   -w, --api-workers <n>      FastAPI worker 进程数（默认自动探测 min(CPU, 8)）。
   -f, --frontend-port <port> 前端端口（默认 5173）。
+  -r, --restart              重启模式：结束后端+前端（如正在运行）后以最新代码重新启动。
   -h, --help                 显示本帮助并退出。
 
 示例:
   ./start.sh --data-dir ~/Sync/airos-data         # 双设备单数据源：数据放在同步盘
   ./start.sh --skip-frontend --api-port 9000       # 仅起后端，用自定义端口
+  ./start.sh --restart                             # 重启后端+前端
 
 提示: 也可把数据目录路径写进项目根 .airos-data-dir 文件（首行即路径），
       之后直接 ./start.sh 即可，无需每次传 --data-dir。
@@ -75,6 +79,7 @@ while [ $# -gt 0 ]; do
     --api-workers=*)    ARGS+=("-w" "${1#*=}"); shift;;
     --frontend-port)    ARGS+=("-f" "$2"); shift 2;;
     --frontend-port=*)  ARGS+=("-f" "${1#*=}"); shift;;
+    --restart)          ARGS+=("-r"); shift;;
     --help)             ARGS+=("-h"); shift;;
     *)                  ARGS+=("$1"); shift;;
   esac
@@ -82,7 +87,7 @@ done
 set -- "${ARGS[@]}"
 
 # ---- POSIX getopts 解析短选项 ----
-while getopts ":d:sbp:f:w:h" opt; do
+while getopts ":d:sbp:f:w:rh" opt; do
   case "$opt" in
     d) DATA_DIR_ARG="$OPTARG";;
     s) SKIP_FRONTEND=1;;
@@ -90,6 +95,7 @@ while getopts ":d:sbp:f:w:h" opt; do
     p) API_PORT="$OPTARG";;
     f) FRONTEND_PORT="$OPTARG";;
     w) API_WORKERS="$OPTARG";;
+    r) RESTART=1;;
     h) print_help; exit 0;;
     \?) echo "未知选项: -$OPTARG" >&2; print_help; exit 1;;
     :)  echo "选项 -$OPTARG 需要一个参数" >&2; exit 1;;
@@ -172,6 +178,50 @@ kill_tree() {
   kill "-$sig" "$pid" 2>/dev/null
 }
 
+# 按端口号查找并杀掉监听进程（重启模式用）
+kill_port() {
+  local port="$1"
+  local label="$2"
+  local pids=""
+
+  # 优先 lsof（macOS 自带，Linux 大多也有）
+  if command -v lsof >/dev/null 2>&1; then
+    pids=$(lsof -ti tcp:"$port" 2>/dev/null || true)
+  fi
+
+  # fallback: fuser（部分 Linux）
+  if [ -z "$pids" ] && command -v fuser >/dev/null 2>&1; then
+    pids=$(fuser "tcp/${port}" 2>/dev/null | sed 's/[^0-9 ]//g' | tr -s ' ' '\n' | grep -v '^$' | tr '\n' ' ' || true)
+  fi
+
+  if [ -n "$pids" ]; then
+    echo "  重启: 结束 $label (端口 $port, PID: $pids)..."
+    for pid in $pids; do
+      kill_tree "$pid" TERM
+    done
+    sleep 1
+    for pid in $pids; do
+      kill_tree "$pid" KILL 2>/dev/null
+    done
+    # 等待端口释放
+    local waited=0
+    while [ $waited -lt 15 ]; do
+      local still=""
+      if command -v lsof >/dev/null 2>&1; then
+        still=$(lsof -ti tcp:"$port" 2>/dev/null || true)
+      fi
+      [ -z "$still" ] && break
+      sleep 0.5
+      waited=$((waited + 1))
+    done
+    echo "  $label 已停止"
+    return 0
+  else
+    echo "  $label 未在运行（端口 $port 空闲）"
+    return 1
+  fi
+}
+
 cleanup() {
   echo ""
   echo "收到停止信号，正在关闭服务..."
@@ -186,6 +236,22 @@ cleanup() {
   exit 0
 }
 trap cleanup SIGINT SIGTERM
+
+# 重启模式：先结束后端+前端旧进程，再以最新代码启动
+if [ -n "$RESTART" ]; then
+  echo ""
+  echo "重启模式：清理旧进程..."
+
+  if [ -z "$SKIP_BACKEND" ]; then
+    kill_port "$API_PORT" "后端"
+  fi
+
+  if [ -z "$SKIP_FRONTEND" ]; then
+    kill_port "$FRONTEND_PORT" "前端"
+  fi
+
+  echo "  旧进程已清理，即将以最新代码重启"
+fi
 
 echo ""
 echo "启动服务..."

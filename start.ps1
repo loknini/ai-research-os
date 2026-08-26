@@ -6,6 +6,7 @@
 #   .\start.ps1 -SkipLLM        # 不校验 LLM 可用性（仅起后端做核心功能）
 #   .\start.ps1 -ApiPort 9000   # 自定义后端端口
 #   .\start.ps1 -ReuseBackend   # 端口已有健康后端实例时不重启，直接复用（默认会先结束旧实例再以最新代码启动）
+#   .\start.ps1 -Restart        # 重启模式：结束后端+前端（如正在运行）后以最新代码重新启动
 #
 # 说明:
 #   - FastAPI 后端（uvicorn backend.server.main:app）为核心，默认启动。
@@ -20,6 +21,7 @@ param(
     [switch]$SkipBackend,     # 跳过 FastAPI 后端（默认启动）
     [switch]$SkipLLM,         # 不校验 LLM 可用性
     [switch]$ReuseBackend,    # 端口已有健康后端实例时复用而不重启（默认：结束旧实例并以最新代码重启）
+    [switch]$Restart,         # 重启模式：结束后端+前端（如正在运行）后以最新代码重新启动
     [int]$FrontendPort = 5173,
     [int]$ApiPort = 8000,
     [int]$ApiWorkers = 0,    # FastAPI worker 进程数；0 = 自动探测 min(CPU, 8)
@@ -134,6 +136,59 @@ if ($ApiWorkers -gt 0) {
 function Get-PortListener {
     param([int]$Port)
     return Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+
+# 重启模式：先结束后端+前端旧进程，再以最新代码启动
+if ($Restart) {
+    Write-Host "`n🔄 重启模式：清理旧进程..." -ForegroundColor Yellow
+
+    # 结束后端
+    if (-not $SkipBackend) {
+        $beListener = Get-PortListener -Port $ApiPort
+        if ($beListener) {
+            $bePid = $beListener.OwningProcess
+            $beName = (Get-Process -Id $bePid -ErrorAction SilentlyContinue).ProcessName
+            Write-Host "   🔄 结束后端进程 $beName (PID $bePid)..." -ForegroundColor Yellow
+            taskkill /PID $bePid /T /F | Out-Null
+            $waited = 0
+            while ($waited -lt 15 -and (Get-PortListener -Port $ApiPort)) {
+                Start-Sleep -Milliseconds 500
+                $waited++
+            }
+            if (Get-PortListener -Port $ApiPort) {
+                Write-Host "   ⚠️ 后端进程结束超时，端口 $ApiPort 仍被占用" -ForegroundColor Red
+            } else {
+                Write-Host "   ✅ 后端已停止 (耗时约 $([Math]::Round($waited * 0.5, 1))s)" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "   ℹ️ 后端未在运行（端口 $ApiPort 空闲）" -ForegroundColor Gray
+        }
+    }
+
+    # 结束前端
+    if (-not $SkipFrontend) {
+        $feListener = Get-PortListener -Port $FrontendPort
+        if ($feListener) {
+            $fePid = $feListener.OwningProcess
+            $feName = (Get-Process -Id $fePid -ErrorAction SilentlyContinue).ProcessName
+            Write-Host "   🔄 结束前端进程 $feName (PID $fePid)..." -ForegroundColor Yellow
+            taskkill /PID $fePid /T /F | Out-Null
+            $waited = 0
+            while ($waited -lt 15 -and (Get-PortListener -Port $FrontendPort)) {
+                Start-Sleep -Milliseconds 500
+                $waited++
+            }
+            if (Get-PortListener -Port $FrontendPort) {
+                Write-Host "   ⚠️ 前端进程结束超时，端口 $FrontendPort 仍被占用" -ForegroundColor Red
+            } else {
+                Write-Host "   ✅ 前端已停止 (耗时约 $([Math]::Round($waited * 0.5, 1))s)" -ForegroundColor Green
+            }
+        } else {
+            Write-Host "   ℹ️ 前端未在运行（端口 $FrontendPort 空闲）" -ForegroundColor Gray
+        }
+    }
+
+    Write-Host "   ✅ 旧进程已清理，即将以最新代码重启`n" -ForegroundColor Green
 }
 
 # 启动 FastAPI 后端（使用 .venv 解释器，多 worker 常驻）
