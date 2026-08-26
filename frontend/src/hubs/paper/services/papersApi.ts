@@ -76,7 +76,8 @@ export async function downloadPaperPDF(
   const result = await response.json()
   return {
     success: response.ok && !!result.success,
-    path: result.path,
+    // 后端返回 localPath（docs/API.md 契约），前端消费方读取 path
+    path: result.localPath,
     message: result.message
   }
 }

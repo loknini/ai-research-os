@@ -146,7 +146,7 @@ data: [DONE]
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/papers?limit=100&offset=0` | 论文列表 |
-| POST | `/api/papers/fetch` | 从 arXiv 抓取并入库，返回 `{papers, inserted, count}` |
+| POST | `/api/papers/fetch` | 从 arXiv 抓取并入库，返回 `{papers, inserted, count, total}`。兼容 query 参数（`?max=10&keywords=...`，前端契约）与 JSON body（`{"query", "keywords": [...], "max_results"}`）；query 优先 |
 | DELETE | `/api/papers/{paper_id}` | 删除 |
 | POST | `/api/papers/{paper_id}/download` | 下载 PDF 到 `data/papers/<space_id>/pdfs/` 并回写 `localPath` |
 | POST | `/api/papers/{paper_id}/summarize` | AI 总结；LLM 不可用时降级为规则摘要，响应含 `source: "llm" \| "fallback"` |
@@ -353,10 +353,14 @@ KEY="my-space"
 curl http://localhost:8000/api/healthz
 curl http://localhost:8000/api/llm/status
 
-# 论文
+# 论文（query 参数形式，前端契约）
 curl -H "X-Space-Key: $KEY" "http://localhost:8000/api/papers?limit=10"
+curl -X POST -H "X-Space-Key: $KEY" \
+  "http://localhost:8000/api/papers/fetch?max=10&keywords=image+generation"
+
+# 论文（JSON body 形式，schema 契约）
 curl -X POST -H "X-Space-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"query":"diffusion model","maxResults":10}' \
+  -d '{"query":"diffusion model","max_results":10}' \
   http://localhost:8000/api/papers/fetch
 
 # 任务

@@ -12,8 +12,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import config, db
@@ -39,14 +39,36 @@ async def list_papers(
 
 
 @router.post("/fetch")
-async def fetch_papers(req: FetchPapersRequest, space_id: str = Depends(get_space_id)):
+async def fetch_papers(
+    space_id: str = Depends(get_space_id),
+    req: Optional[FetchPapersRequest] = None,
+    max_results_q: Optional[int] = Query(None, alias="max", ge=1, le=100),
+    keywords_q: Optional[str] = Query(None, alias="keywords"),
+):
+    """从 arXiv 抓取论文并入库。
+
+    兼容两种调用方式（query 参数优先于 body）：
+
+    * 前端现状契约：``POST /api/papers/fetch?max=10&keywords=image+generation``（无 body）
+    * body 契约：``POST /api/papers/fetch`` + JSON ``{"keywords": [...], "query": "...", "max_results": 10}``
+
+    ``keywords`` query 参数支持逗号分隔多个关键词；单个值（含空格）整体视为一个
+    短语关键词（arXiv 的 ``all:`` 字段支持短语匹配）。
+    """
     try:
         from scripts import fetch_arxiv
 
-        keywords = req.keywords or []
-        search_query = req.query or "cat:cs.CV"
+        max_results = max_results_q if max_results_q is not None else (req.max_results if req else 10)
+
+        keywords: list = []
+        if keywords_q:
+            keywords = [kw.strip() for kw in keywords_q.split(",") if kw.strip()]
+        elif req is not None and req.keywords:
+            keywords = list(req.keywords)
+
+        search_query = (req.query if req else None) or "cat:cs.CV"
         raw = fetch_arxiv.fetch_papers(
-            search_query=search_query, keywords=keywords, max_results=req.max_results
+            search_query=search_query, keywords=keywords, max_results=max_results
         )
         inserted = 0
         for paper in raw:
@@ -57,6 +79,8 @@ async def fetch_papers(req: FetchPapersRequest, space_id: str = Depends(get_spac
             "papers": raw,
             "inserted": inserted,
             "count": len(raw),
+            # 前端 papersApi.ts 读取 result.total，这里一并返回保持契约兼容。
+            "total": len(raw),
         }
     except Exception as exc:
         raise APIError(str(exc), code="FETCH_FAILED")
