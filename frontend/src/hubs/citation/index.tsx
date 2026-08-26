@@ -70,48 +70,227 @@ interface CitationHubProps {
   embedded?: boolean
   /** 嵌入模式预填查询（如论文标题），首次挂载自动搜索 */
   initialQuery?: string
+  /** 嵌入模式直接传入已知论文对象（优先级高于 initialQuery）：
+   *  从论文管理点「引用」时使用 —— 跳过搜索框直接展示该论文的引用格式。
+   *  组件会先用 DOI/arxivId 调 /api/citation/resolve 拿精确元数据，失败再兜底。*/
+  initialPaper?: InitialPaper
   /** 嵌入模式回填回调：格式 id + 引用文本（如 ('bibtex', '@article{...}')） */
   onInsert?: (format: string, text: string) => void
+}
+
+/** 轻量级论文结构 —— 由 PaperHub 传入，无需完整 Crossref schema。 */
+export interface InitialPaper {
+  title: string
+  authors: string[]
+  /** 论文对象的 arXiv 标识（如果有） */
+  arxivId?: string
+  /** 论文对象的 DOI（如果有） */
+  doi?: string
+  /** 年份，papers 表 publishedDate 是 'YYYY-MM-DD' 时取前 4 位 */
+  year?: number | null
+  /** 期刊名（可选；preprint 可为 'arXiv'） */
+  journal?: string
 }
 
 export default function CitationHub({
   embedded = false,
   initialQuery,
+  initialPaper,
   onInsert,
 }: CitationHubProps = {}) {
   const { showToast } = useToast()
-  const autoSearchRef = useRef(false)
-  const searchPapersRef = useRef<(() => void) | null>(null)
+  // 用 ref 防止 React 18 StrictMode 双调用 effect 导致搜索触发两次
+  const autoSearchDoneRef = useRef(false)
+  // initialPaper 模式下也不再触发首次 effect 搜索（custom effect 替代）
+  const resolveDoneRef = useRef(false)
 
   // 搜索状态
   const [query, setQuery] = useState(initialQuery || '')
   const [isSearching, setIsSearching] = useState(false)
   const [searchResults, setSearchResults] = useState<Paper[]>([])
   const [selectedPaper, setSelectedPaper] = useState<Paper | null>(null)
-  
+
   // 引用生成状态
   const [citations, setCitations] = useState<Record<string, string>>({})
   const [isGenerating, setIsGenerating] = useState(false)
   const [copiedFormat, setCopiedFormat] = useState<string | null>(null)
-  
+
   // 历史记录
   const [history, setHistory] = useState<CitationHistory[]>([])
   const [showHistory, setShowHistory] = useState(false)
-  
+
   // 当前选中的引用格式
   const [activeFormat, setActiveFormat] = useState(embedded && onInsert ? 'bibtex' : 'apa')
 
-  // 嵌入模式：initialQuery 预填并自动搜索一次
+  // 保存历史到 localStorage（定义在 resolveAndGenerate 之前，避开引用顺序问题）
+  const saveHistory = useCallback((newHistory: CitationHistory[]) => {
+    localStorage.setItem('citation_history', JSON.stringify(newHistory.slice(0, 50)))
+    setHistory(newHistory)
+  }, [])
+
+  // 实际执行搜索的函数：把 query 作为入参而不是从 state 读取，
+  // 这样嵌入模式下首挂自动搜索不需要等 setQuery 重渲染 + 300ms timeout，
+  // 也不依赖 useCallback 闭包。
+  const performSearch = useCallback(
+    async (q: string) => {
+      const trimmed = (q || '').trim()
+      if (!trimmed) {
+        showToast('请输入论文标题、DOI 或关键词', 'error')
+        return
+      }
+      setIsSearching(true)
+      setSearchResults([])
+      setSelectedPaper(null)
+      setCitations({})
+      try {
+        const response = await fetch(`/api/citation/search?q=${encodeURIComponent(trimmed)}`)
+        const result = await response.json()
+        if (result.success) {
+          setSearchResults(result.papers || [])
+          if (!result.papers?.length) showToast('未找到相关论文', 'info')
+        } else {
+          showToast(result.message || '搜索失败', 'error')
+        }
+      } catch (error) {
+        console.error('Search error:', error)
+        showToast('搜索请求失败', 'error')
+      } finally {
+        setIsSearching(false)
+      }
+    },
+    [showToast]
+  )
+
+  // 用户手动点搜索按钮 / 回车：从 state 读 query
+  const searchPapers = useCallback(() => {
+    performSearch(query)
+  }, [performSearch, query])
+
+  /**
+   * 把 PaperHub 的简单论文结构 → Crossref 风格的 Paper。
+   * authors: ["John Smith"] → [{given:"John", family:"Smith", full:"John Smith"}]
+   */
+  const buildPaperFromInitial = useCallback(
+    (p: InitialPaper): Paper => {
+      const authors = (p.authors || []).map((name) => {
+        const trimmed = (name || '').trim()
+        const parts = trimmed.split(/\s+/)
+        if (parts.length === 1) return { given: '', family: parts[0], full: trimmed }
+        return {
+          given: parts.slice(0, -1).join(' '),
+          family: parts[parts.length - 1],
+          full: trimmed,
+        }
+      })
+      return {
+        doi: p.doi || '',
+        title: p.title,
+        authors,
+        year: p.year || null,
+        journal: p.journal || '',
+        journal_short: p.journal || '',
+        volume: '',
+        issue: '',
+        page: '',
+        publisher: p.arxivId ? 'arXiv' : '',
+        type: p.arxivId ? 'preprint' : '',
+        url: p.arxivId ? `https://arxiv.org/abs/${p.arxivId}` : '',
+      }
+    },
+    []
+  )
+
+  /**
+   * initialPaper 流程：跳过搜索框 → 调 /api/citation/resolve 取精确元数据 →
+   * 用 /api/citation/generate 一次性出全部格式。
+   * 加载过程中 CitationCard 显示 loading spinner。
+   */
+  const resolveAndGenerate = useCallback(
+    async (p: InitialPaper) => {
+      const localPaper = buildPaperFromInitial(p)
+      // 先用本地 metadata（来自论文管理）兜底，setSelectedPaper 让 UI 立即进入
+      // "已选论文 + 正在生成引用" 状态，避免空白闪烁
+      setSelectedPaper(localPaper)
+      setCitations({})
+      setIsGenerating(true)
+
+      // 1) 尝试 resolve（Crossref DOI / arXiv / Crossref 标题关键词兜底）
+      let resolved: Paper | null = null
+      try {
+        const resp = await fetch('/api/citation/resolve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: p.title,
+            doi: p.doi,
+            arxiv_id: p.arxivId,
+          }),
+        })
+        const data = await resp.json()
+        if (data?.success && data.paper) {
+          // 给 Crossref 版本的 paper 补回 arxiv_id（generate_bibtex 据此选 @misc/@article）
+          if (p.arxivId && !data.paper.arxiv_id) data.paper.arxiv_id = p.arxivId
+          resolved = data.paper as Paper
+        }
+      } catch (e) {
+        console.warn('resolve failed, falling back to local metadata:', e)
+      }
+      const target = resolved || localPaper
+      setSelectedPaper(target)
+
+      // 2) 生成引用
+      try {
+        const resp = await fetch('/api/citation/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paper: target }),
+        })
+        const data = await resp.json()
+        if (data?.success) {
+          setCitations(data.citations || {})
+          // 加 history
+          const newEntry: CitationHistory = {
+            id: Date.now().toString(),
+            query: p.title,
+            paper: target,
+            formats: data.citations || {},
+            created_at: Date.now(),
+          }
+          saveHistory([newEntry, ...history])
+        } else {
+          showToast(data?.message || '生成引用失败', 'error')
+        }
+      } catch (e) {
+        console.error('generate failed:', e)
+        showToast('生成引用失败', 'error')
+      } finally {
+        setIsGenerating(false)
+      }
+    },
+    [buildPaperFromInitial, history, saveHistory, showToast]
+  )
+
+  // 嵌入模式：initialQuery 首挂自动搜索（只触发一次）。
+  // 直接用入参调用 performSearch，避免之前的 ref+setTimeout 时序坑。
   useEffect(() => {
-    if (!initialQuery || autoSearchRef.current) return
-    autoSearchRef.current = true
+    if (initialPaper) return // 走 resolveAndGenerate 那条路
+    if (!initialQuery) return
+    if (autoSearchDoneRef.current) return
+    autoSearchDoneRef.current = true
     setQuery(initialQuery)
-    const timer = setTimeout(() => {
-      searchPapersRef.current?.()
-    }, 300)
-    return () => clearTimeout(timer)
+    performSearch(initialQuery)
+    // 仅在挂载/initialQuery 变化时触发；performSearch 用 ref 锁住单次
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialQuery])
+
+  // 嵌入模式 + initialPaper：跳过搜索，直接走 resolve + generate
+  useEffect(() => {
+    if (!initialPaper) return
+    if (resolveDoneRef.current) return
+    resolveDoneRef.current = true
+    resolveAndGenerate(initialPaper)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPaper])
   
   // 从 localStorage 加载历史
   useEffect(() => {
@@ -125,46 +304,9 @@ export default function CitationHub({
     }
   }, [])
   
-  // 保存历史到 localStorage
-  const saveHistory = useCallback((newHistory: CitationHistory[]) => {
-    localStorage.setItem('citation_history', JSON.stringify(newHistory.slice(0, 50)))
-    setHistory(newHistory)
-  }, [])
-  
-  // 搜索论文
-  const searchPapers = useCallback(async () => {
-    if (!query.trim()) {
-      showToast('请输入论文标题、DOI 或关键词', 'error')
-      return
-    }
-    
-    setIsSearching(true)
-    setSearchResults([])
-    setSelectedPaper(null)
-    setCitations({})
-    
-    try {
-      // 调用后端 API
-      const response = await fetch(`/api/citation/search?q=${encodeURIComponent(query)}`)
-      const result = await response.json()
-      
-      if (result.success) {
-        setSearchResults(result.papers || [])
-        if (result.papers?.length === 0) {
-          showToast('未找到相关论文', 'info')
-        }
-      } else {
-        showToast(result.message || '搜索失败', 'error')
-      }
-    } catch (error) {
-      console.error('Search error:', error)
-      showToast('搜索请求失败', 'error')
-    } finally {
-      setIsSearching(false)
-    }
-  }, [query, showToast])
-  // 供嵌入模式自动搜索引用（避免依赖顺序问题）
-  searchPapersRef.current = searchPapers
+  // 保存历史到 localStorage 的实现已上移到组件前部（避免被 resolveAndGenerate
+  // 引用时还未声明）。
+
 
   // 生成引用
   const generateCitations = useCallback(async (paper: Paper) => {
@@ -243,7 +385,9 @@ export default function CitationHub({
         {/* 左侧主区域 */}
         <div className="flex-1 p-6 overflow-auto">
           <div className="max-w-5xl mx-auto space-y-6">
-            {/* 搜索区域 */}
+            {/* 搜索区域：只在 standalone 模式 OR initialQuery-only 嵌入模式显示。
+                initialPaper 模式下跳过搜索，直接展示该论文引用。 */}
+            {!initialPaper && (
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
@@ -286,9 +430,10 @@ export default function CitationHub({
                 </div>
               </CardContent>
             </Card>
-            
-            {/* 搜索结果 */}
-            {searchResults.length > 0 && (
+            )}
+
+            {/* 搜索结果：initialPaper 模式下不显示 */}
+            {!initialPaper && searchResults.length > 0 && (
               <Card>
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">

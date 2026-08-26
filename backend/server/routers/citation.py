@@ -32,6 +32,27 @@ class CitationGenerate(BaseModel):
     paper: Dict[str, Any]
 
 
+class CitationResolve(BaseModel):
+    title: str | None = None
+    doi: str | None = None
+    arxiv_id: str | None = None
+
+
+@router.post("/resolve")
+async def resolve(req: CitationResolve):
+    """三段式论文元数据解析：DOI (Crossref) → arXiv → 标题关键词 (Crossref)。
+    用 JSON payload 传参以避免 sys.argv 拆空格。"""
+    payload = json.dumps(
+        {
+            "doi": req.doi,
+            "arxiv_id": req.arxiv_id,
+            "title": req.title,
+        },
+        ensure_ascii=False,
+    )
+    return run_script("citation_service.py", "resolve", payload)
+
+
 @router.post("/generate")
 async def generate(req: CitationGenerate):
     return run_script("citation_service.py", "generate", json.dumps(req.paper))
