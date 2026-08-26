@@ -122,6 +122,66 @@ async def download_pdf(paper_id: str, space_id: str = Depends(get_space_id)):
         raise APIError(str(exc), code="DOWNLOAD_FAILED")
 
 
+@router.get("/{arxiv_id}/pdf")
+async def stream_pdf(arxiv_id: str, space_id: str = Depends(get_space_id)):
+    """PDF 预览：流式返回二进制字节，供前端 react-pdf 渲染。
+
+    修复（2026-08-25）：之前没有此路由，前端调 ``GET /api/papers/{arxivId}/pdf``
+    返回 404 → react-pdf 永远停在 loading（``numPages=0``，工具栏一直显示 ``1 / 0``）。
+    现在按空间软隔离 + 按需下载：localPath 不存在就调 ``fetch_arxiv.download_pdf``
+    落盘，再用 ``FileResponse`` 返回 ``application/pdf`` 字节流。
+
+    ``Content-Disposition: inline`` 告诉浏览器不要触发下载对话框，让
+    ``<Document>`` 组件直接拿到 PDF 二进制做客户端渲染。
+    """
+    try:
+        from pathlib import Path
+
+        from scripts import fetch_arxiv
+
+        paper = await db.database.get_paper_by_arxiv(arxiv_id, space_id=space_id)
+        if not paper:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "error": "NOT_FOUND",
+                    "message": f"Paper with arxiv id {arxiv_id} not found",
+                },
+            )
+
+        local_path = paper.get("localPath")
+        pdf_url = paper.get("pdfUrl")
+
+        # 按需懒下载：首次预览或跨进程/跨 worker 时 localPath 为空
+        if not local_path or not Path(local_path).exists():
+            if not pdf_url:
+                raise APIError("Paper missing localPath and pdfUrl", code="INVALID_PAPER")
+            local_path = fetch_arxiv.download_pdf(
+                arxiv_id, pdf_url, config.DATA_DIR, space_id=space_id
+            )
+            if not local_path:
+                raise APIError("PDF download failed", code="DOWNLOAD_FAILED")
+            # 回写 localPath，避免下次再下
+            await db.database.update_paper(
+                paper["id"], {"localPath": local_path}, space_id=space_id
+            )
+
+        if not Path(local_path).exists():
+            raise APIError("PDF file missing on disk", code="FILE_MISSING")
+
+        # ``inline`` 让浏览器不弹下载框，react-pdf 直接解析字节流
+        return FileResponse(
+            path=local_path,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{arxiv_id}.pdf"'},
+        )
+    except APIError:
+        raise
+    except Exception as exc:
+        raise APIError(str(exc), code="PDF_STREAM_FAILED")
+
+
 @router.post("/{paper_id}/summarize")
 async def summarize_paper(paper_id: str, space_id: str = Depends(get_space_id)):
     try:
