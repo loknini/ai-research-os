@@ -3,10 +3,18 @@
  * 直接调用 frontend/node_modules 里的 react-markdown + remark-gfm，
  * 把截图里那段 raw table 转成 HTML，断言包含 <table>。
  */
-import React from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
+
+// QA 脚本位于仓库根 scripts/，依赖实际安装在 frontend/node_modules。
+// 以 frontend/package.json 为解析基准，保证从仓库根直接运行也能找到依赖。
+const frontendRequire = createRequire(new URL('../frontend/package.json', import.meta.url))
+const importFrontend = async (name) => import(pathToFileURL(frontendRequire.resolve(name)).href)
+
+const React = (await importFrontend('react')).default
+const { renderToStaticMarkup } = await importFrontend('react-dom/server')
+const ReactMarkdown = (await importFrontend('react-markdown')).default
+const remarkGfm = (await importFrontend('remark-gfm')).default
 
 const raw = `|论文|主题|相关性|
 |---|---|---|

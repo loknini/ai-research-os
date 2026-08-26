@@ -581,6 +581,7 @@ python -m py_compile backend/server/**/*.py                         # 语法检�
 python scripts/qa_verify_space.py                # 空间隔离 26 项
 python scripts/qa_verify_agent_harness.py        # Agent 工程能力 61 项（审批/重放/上下文/插件化）
 python scripts/qa_verify_agent_runner.py         # 后台 runner 19 项
+python scripts/qa_verify_llm_status.py           # LLM 可达性与状态端点（不触网）
 python scripts/qa_verify_rag.py                  # RAG 检索 7 项
 python scripts/qa_verify_chat_rag.py             # Chat 接地式 RAG 2 项
 python scripts/qa_verify_chat_regenerate_edit.py # 聊天重生成/编辑
@@ -628,7 +629,7 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
 # 其余 qa_verify_*.py 按改动面补跑（见「开发命令」）
 ```
 
-> 项目无 git 仓库 / 无单测框架（当前由维护者本地维护），QA 脚本即事实上的回归测试；新增功能请同步补充对应 `qa_verify_*.py`。
+> 项目已使用 Git 管理，但尚未引入 pytest/vitest 等统一测试框架；当前 `qa_verify_*.py` / `.mjs` 脚本即事实上的回归测试，新增功能请同步补充对应 QA。
 
 ### 代码规范
 
@@ -681,8 +682,8 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
 
 - **SYSTEM-DESIGN.md** — 一页式综合设计（分层架构图、核心模块、四条核心数据流、关键决策）
 - **ARCHITECTURE.md** — 系统定位、进程模型、分层、请求生命周期、关键架构决策
-- **DATA-MODEL.md** — SQLite 数据模型、space-key 隔离、20 张表结构、更新语义
-- **API.md** — 全部 `/api/*` 路由、SSE/NDJSON 帧格式、curl 速查
+- **DATA-MODEL.md** — SQLite 数据模型、space-key 隔离、26 张业务表、更新语义
+- **API.md** — 全部 `/api/*` 路由、SSE 帧格式、curl 速查
 - **AGENT-LLM.md** — LLM 客户端、Chat ReAct 循环、角色化 Agent 管线、Skills 约定
 - **FRONTEND.md** — 前端技术栈、路由、状态管理、设计系统
 - **OPERATIONS.md** — 启动、配置、多人内网、备份、故障排查、验收脚本
@@ -696,4 +697,4 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
 
 ---
 
-**最后更新**：2026-08-24 · 基于代码实况（v0.3 Agent 工程能力 / Cron 调度 / RAG 检索 / 导航 manifest）同步 README
+**最后更新**：2026-08-26 · 基于代码实况（26 表 / 113 API 路由 / 正确性回归）同步 README

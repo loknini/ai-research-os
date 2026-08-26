@@ -4,6 +4,16 @@
 
 ---
 
+## [未发布] - 2026-08-26 · 正确性修复与文档同步
+
+- 修复 `LLMClient._reachable()` 因定义丢失导致 `/api/llm/status` 与 `is_available()` 抛 `AttributeError`；新增无网络回归 `qa_verify_llm_status.py`。
+- 修复旧 `cron_jobs.json` 迁移 SQL 的列数/占位符不一致（11 列误写 12 个值）。
+- 修复聊天重新生成/编辑时删除尾部消息后未更新 `current_leaf_id`，导致当前分支读取为空。
+- QA 去除对本机真实 LLM 和仓库根 Node 模块解析的偶然依赖；空间迁移、Agent runner、Chat-RAG、Markdown 用例改为确定性执行。
+- 文档按代码实况同步为 21 个 Router、113 条 `/api` 路由、26 张业务表；Chat 流协议更正为 SSE。
+
+---
+
 ## [v0.3] - 2026-08-21 · Agent 工程能力（对齐 DeepSeek Harness 四项差距）
 
 对照 DeepSeek Harness（dsh）差距分析，落地四项工程能力：**工具审批 / 可重放日志 / 上下文管理 / 插件化**。

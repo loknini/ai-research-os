@@ -23,6 +23,7 @@ os.environ["DEFAULT_SPACE"] = "__default__"
 import scripts.database as database  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from backend.server.main import app  # noqa: E402
+from backend.server.llm import llm_client  # noqa: E402
 
 SPACE = "__default__"
 
@@ -78,6 +79,9 @@ def collect_sse(client: TestClient, payload: dict) -> list:
 
 def main() -> None:
     asyncio.run(seed())
+    # 这里只验证 RAG 接地事件，不测试外部 LLM。固定流式结果，避免读取项目
+    # .env 后误连真实端点并等待网络超时。
+    llm_client.stream_llm = lambda messages, **kwargs: iter(["测试回答 [1]"])
     client = TestClient(app)
 
     # 1) 开启 RAG，query 命中关键词「梯度下降」

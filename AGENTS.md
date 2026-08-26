@@ -72,8 +72,8 @@ D:\project\ai-research-os/
 | **后端** | FastAPI + uvicorn（多 worker） | 独立后端服务 |
 | | LLM 客户端 (llm.py) | OpenAI 兼容接口，urllib 实现，零新增依赖 |
 | | aiosqlite + SQLite (WAL) | 本地数据持久化，每请求独立连接 |
-| | SSE / NDJSON 流式 | Chat（NDJSON）/ Agent（SSE）流式输出 |
-| **存储** | SQLite + 文件系统 | 本地数据；按 space-key 软隔离（20 张表各加 `space_id`） |
+| | SSE 流式 | Chat 与 Agent 均使用 SSE；前端分别按各自事件语义解析 |
+| **存储** | SQLite + 文件系统 | 本地数据；按 space-key 软隔离（26 张业务表均含 `space_id`） |
 
 ---
 
@@ -210,6 +210,6 @@ npm run dev
 
 ## 备注
 
-- 当前日期：2026-08-21
+- 当前日期：2026-08-26
 - 项目状态：功能基本完备，文档基于代码实况重构中
 - 版本：v0.3（Agent 工程能力：工具审批 / 可重放日志 / 上下文管理 / 插件化）

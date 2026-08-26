@@ -1,6 +1,6 @@
 # API 参考
 
-> 全部 **93 条 `/api/*` 路由 + 1 条根路由**，按 router 分组。核对日期：2026-07-30
+> 全部 **113 条 `/api/*` 路由 + 1 条根路由**，按 21 个 router 分组。核对日期：2026-08-26
 > 交互式文档：服务启动后访问 `http://localhost:8000/docs`（FastAPI 自动生成）
 
 ---
@@ -125,7 +125,7 @@ data: [DONE]
 
 **空间语义特例**：缺 `X-Space-Key` 时不报 400，静默回落 `__default__`。
 
-**协议：NDJSON（逐行 JSON，非标准 SSE，无 `data:` 前缀）**
+**协议：SSE**（`Content-Type: text/event-stream`，每帧为 `data: <JSON>\n\n`）
 
 | 帧 type | 载荷 |
 |---|---|
@@ -135,7 +135,7 @@ data: [DONE]
 | `context` | `{estimated_tokens, limit, compressed}`，前端据此显示上下文占用 |
 | `error` | 错误信息 |
 
-流末尾输出裸标记 `[DONE]`，异常时为 `[ERROR]<msg>`。
+流末尾输出 `data: [DONE]`。前端解析器同时兼容早期无 `data:` 前缀的历史格式。
 
 **特性**：多轮工具循环（ReAct）、超限时自动 LLM 压缩历史（阈值 `CONTEXT_TOKEN_LIMIT`，默认 16000）、注入该空间的持久记忆、`/skill` 命令短路直接调用技能。
 
@@ -149,7 +149,9 @@ data: [DONE]
 | POST | `/api/papers/fetch` | 从 arXiv 抓取并入库，返回 `{papers, inserted, count, total}`。兼容 query 参数（`?max=10&keywords=...`，前端契约）与 JSON body（`{"query", "keywords": [...], "max_results"}`）；query 优先 |
 | DELETE | `/api/papers/{paper_id}` | 删除 |
 | POST | `/api/papers/{paper_id}/download` | 下载 PDF 到 `data/papers/<space_id>/pdfs/` 并回写 `localPath` |
+| GET | `/api/papers/{arxiv_id}/pdf` | 懒下载并以内联 `application/pdf` 流返回，供 PDF.js 预览 |
 | POST | `/api/papers/{paper_id}/summarize` | AI 总结；LLM 不可用时降级为规则摘要，响应含 `source: "llm" \| "fallback"` |
+| POST | `/api/papers/{paper_id}/bibtex` | 为论文生成并保存 BibTeX |
 
 ---
 
@@ -212,7 +214,10 @@ data: [DONE]
 | PUT | `/api/conversations/{id}` | 更新 title / updatedAt |
 | DELETE | `/api/conversations/{id}` | 删除（级联删消息） |
 | GET | `/api/conversations/{id}/messages` | 消息列表 |
+| POST | `/api/conversations/{id}/messages/delete-after` | 删除锚点后的消息，并把当前分支叶子指回锚点 |
+| PUT | `/api/conversations/{id}/messages/{message_id}` | 编辑消息内容 |
 | POST | `/api/conversations/{id}/messages` | 追加消息 |
+| POST | `/api/conversations/{id}/switch-branch/{message_id}` | 切换到包含指定消息的分支 |
 
 ---
 
@@ -237,6 +242,8 @@ data: [DONE]
 | POST | `/api/cron/jobs` | 创建 |
 | POST | `/api/cron/jobs/{job_id}/toggle` | 启停切换 |
 | POST | `/api/cron/jobs/{job_id}/run` | 立即执行（`shlex.split` + subprocess，30s 超时，注入 `SPACE_ID`/`DATA_DIR`，输出截断 2000 字符） |
+| GET | `/api/cron/jobs/{job_id}/history` | 单个任务最近执行历史 |
+| GET | `/api/cron/history` | 当前空间全部 Cron 执行历史 |
 | DELETE | `/api/cron/jobs/{job_id}` | 删除 |
 
 ---
@@ -313,6 +320,7 @@ data: [DONE]
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/citation/search?q=` | Crossref 检索（q 为空 → 400） |
+| POST | `/api/citation/resolve` | 按 DOI → arXiv → 标题关键词三级解析论文元数据 |
 | POST | `/api/citation/generate` | 根据 paper 对象生成引用（APA / MLA / Chicago / GB7714 / BibTeX / RIS） |
 
 ---
@@ -341,6 +349,22 @@ data: [DONE]
 | PUT | `/api/memory` | 整体覆盖，body `{content}` |
 | POST | `/api/memory/observe` | 追加一条，body `{entry}` |
 | POST | `/api/memory/extract` | 从 `messages` 中由 LLM 提炼事实并追加 |
+
+---
+
+## 21. RAG `rag.py` — prefix `/api/rag`
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/rag/capabilities` | 返回 PDF 解析、嵌入配置等能力状态 |
+| GET | `/api/rag/sources` | 索引源列表与统计 |
+| GET | `/api/rag/sources/{source_id}` | 索引源详情 |
+| GET | `/api/rag/documents?sourceId=` | 索引文档列表 |
+| POST | `/api/rag/index` | 后台建立文件/目录索引 |
+| POST | `/api/rag/sources/{source_id}/reindex` | 重建指定索引源 |
+| POST | `/api/rag/sources/{source_id}/cancel` | 取消进行中的索引 |
+| DELETE | `/api/rag/sources/{source_id}` | 级联删除索引源、文档与切片 |
+| POST | `/api/rag/query` | 检索并返回命中切片；可选生成带引用回答 |
 
 ---
 

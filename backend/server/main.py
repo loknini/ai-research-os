@@ -31,7 +31,7 @@ FRONTEND_DIST = config.PROJECT_ROOT / "frontend" / "dist"
 async def lifespan(app: FastAPI):
     # Initialise the database schema once, idempotently, before serving.
     # `init_db` applies the aiosqlite WAL pragmas and the idempotent
-    # `space_id` column migration for all 18 tables.
+    # `space_id` column migration for legacy/user tables.
     await db.init_db()
     # 启动 cron 调度器守护线程（多 Worker 各跑一个，靠 DB 乐观锁防重）。
     start_scheduler()

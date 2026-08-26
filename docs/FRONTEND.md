@@ -184,7 +184,7 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 `installApiMonitor()` 在 `App.tsx` **模块顶层**（组件外）调用一次，monkey-patch `window.fetch`：
 
 1. **X-Space-Key 注入** — URL 含 `/api/` 时，从 `useAppStore.getState().spaceKey` 取值，`trim().toLowerCase()` 后写入请求头。**这是全站唯一注入点**，所有 Hub 的 `fetch('/api/...')` 都不需要自己带头。
-2. **连接状态驱动** — `res.ok` → `setConnected(true)`；fetch 抛错（网络层失败）→ `setConnected(false)`。HTTP 4xx/5xx **不算断开**。取代了早期每 5 秒的 healthz 轮询。
+2. **连接状态驱动** — `res.ok` → `setConnected(true)`；fetch 抛错或 HTTP 5xx → `setConnected(false)`；HTTP 4xx 不算断开。取代了早期每 5 秒的 healthz 轮询。
 
 ### 5.2 调用形态
 
@@ -197,7 +197,7 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 
 | 场景 | 端点 | 协议 | 解析位置 |
 |---|---|---|---|
-| 聊天 | `POST /api/chat/completions/stream` | **NDJSON**（逐行 JSON，无 `data:` 前缀） | `hubs/chat/services/chatApi.ts` |
+| 聊天 | `POST /api/chat/completions/stream` | **SSE**（`data:` JSON 帧；解析器兼容历史裸 JSON 行） | `hubs/chat/services/chatApi.ts` |
 | Agent | `GET /api/agent/runs/:id/stream` | **标准 SSE**（`data: ` 前缀） | `components/agent/agent-workflow.tsx` |
 
 两者都用 `response.body.getReader()` + `TextDecoder` 手写行缓冲（`buffer.split('\n')`，`lines.pop()` 保留半行）。**全站不使用原生 `EventSource`**——因为需要 POST 和自定义请求头。

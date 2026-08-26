@@ -1,6 +1,6 @@
 # 系统架构
 
-> 本文描述 AI-Research-OS **当前代码的真实形态**（核对日期：2026-07-30），不含未实现的规划。
+> 本文描述 AI-Research-OS **当前代码的真实形态**（核对日期：2026-08-26），不含未实现的规划。
 > 配套文档：[API 参考](./API.md) · [数据模型](./DATA-MODEL.md) · [前端架构](./FRONTEND.md) · [LLM 与 Agent](./AGENT-LLM.md) · [部署运维](./OPERATIONS.md) · [技术债](./TECH-DEBT.md)
 
 ---
@@ -14,7 +14,7 @@
 | 约束 | 体现 |
 |---|---|
 | **本地优先** | 单文件 SQLite（WAL）+ `data/` 目录，可整体拷贝/同步盘/备份包迁移 |
-| **零重依赖** | 后端 8 个 pip 包，LLM 客户端用标准库 urllib 手写，前端无 UI 组件库依赖（shadcn 源码内置） |
+| **零重依赖** | 后端 9 个直接 pip 依赖，LLM 客户端用标准库 urllib 手写，前端 shadcn 组件源码内置 |
 | **不登录的多人可用** | space-key 软隔离：一个 HTTP 头分空间，无账号体系、无密码、无 session |
 
 ---
@@ -46,7 +46,7 @@
 └──────────┬────────────────────────┬───────────────┬──────────────┘
            ▼                        ▼               ▼
    data/ai_research_os.db     外部 API          LLM 端点
-   （WAL，20 张表）        arXiv/Crossref/     （OpenAI 兼容）
+   （WAL，26 张表）        arXiv/Crossref/     （OpenAI 兼容）
                           SwanLab/SimpleTex
 ```
 
@@ -78,7 +78,7 @@ backend/
 │   ├── errors.py             统一错误体 + APIError + SSE 辅助
 │   ├── health.py             /api/healthz 与 /api/llm/status
 │   ├── schemas.py            跨 router 共享的 Pydantic 模型
-│   └── routers/              20 个 router，共 93 条 /api 路由
+│   └── routers/              21 个 router，共 113 条 /api 路由
 └── skills/                   目录式技能：<name>/SKILL.md (+ scripts/)
 ```
 
@@ -131,12 +131,12 @@ fetch('/api/papers')
 POST /api/chat/completions/stream
   → 载入历史 + 注入该空间的持久记忆 + 上下文超限时 LLM 压缩历史
   → stream_llm(messages, tools=TOOLS)     ← 原生 function calling
-  → 边收边逐行输出 NDJSON：{"type":"text"|"tool_start"|"tool_result"|"context"|"error"}
+  → 边收边输出 SSE：data: {"type":"text"|"tool_start"|"tool_result"|"context"|"rag_sources"|"error"}
   → 若模型返回 tool_calls：execute_tool() 执行 → 结果回填 messages → 再次进入循环
   → 结束输出 [DONE]
 ```
 
-注意这条链路是 **NDJSON（逐行 JSON），不是标准 SSE**，前端用 `getReader()` 手工按行解析。
+这条链路当前是标准 **SSE**（`text/event-stream` + `data:` 帧）；前端仍用 `getReader()` 手工解析，以兼容历史无前缀格式并接入 AbortSignal。
 
 ### 4.3 Agent 后台运行（非阻塞）
 

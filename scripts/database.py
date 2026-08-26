@@ -47,7 +47,9 @@ def _clean_text_for_db(text: Optional[str]) -> Optional[str]:
     return text.encode("utf-8", errors="ignore").decode("utf-8")
 
 
-# 全部需要隔离的用户表（20 张）。init_db 会为这些表统一补 space_id 列 + 索引。
+# 需要由通用迁移统一补 space_id 列与索引的用户表（25 张）。
+# cron_run_history 在建表 DDL 中已原生包含 space_id，因此不进入此迁移列表；
+# 当前数据库合计 26 张业务表，全部按 space_id 隔离。
 SPACE_TABLES = [
     "papers", "cron_jobs", "software_projects", "tasks", "code_generations",
     "notes", "note_links", "experiments", "experiment_runs", "version_history",
@@ -711,7 +713,7 @@ async def _maybe_migrate_cron_json(conn: aiosqlite.Connection) -> None:
         await conn.execute(
             """INSERT OR IGNORE INTO cron_jobs
                (id, name, description, schedule, command, enabled, last_run, next_run, run_count, created_at, space_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 job.get("id") or str(uuid.uuid4()),
                 job.get("name", ""),
@@ -2097,7 +2099,8 @@ async def delete_chat_messages_after(message_id: str, space_id: str = DEFAULT_SP
     """删除某条消息之后的所有消息（按 timestamp 顺序尾部截断，幂等）。
 
     用于「重新生成」与「编辑最新提问」：锚定最后一条 user 消息，删掉其后的
-    assistant 回复（扁平线性表下尾部截断即可，无需 parent_id 分叉）。
+    assistant 回复。截断后必须把会话的 current_leaf_id 指回锚点，否则当前分支
+    会继续指向已删除的叶子，随后读取消息路径时将得到空列表。
     """
     try:
         async with get_db() as conn:
@@ -2113,8 +2116,8 @@ async def delete_chat_messages_after(message_id: str, space_id: str = DEFAULT_SP
                     (row["conversation_id"], space_id, row["timestamp"]),
                 )
                 await conn.execute(
-                    "UPDATE conversations SET updated_at = ? WHERE id = ? AND space_id = ?",
-                    (now, row["conversation_id"], space_id),
+                    "UPDATE conversations SET current_leaf_id = ?, updated_at = ? WHERE id = ? AND space_id = ?",
+                    (message_id, now, row["conversation_id"], space_id),
                 )
             return True
     except Exception as e:

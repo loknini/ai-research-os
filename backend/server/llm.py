@@ -252,6 +252,8 @@ class LLMClient:
         if not self.configured:
             return False
         return self._reachable()
+
+    def _reachable(self) -> bool:
         """Lightweight TCP reachability check for the configured base URL."""
         from urllib.parse import urlparse
 

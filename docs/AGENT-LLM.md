@@ -80,7 +80,7 @@ endpoint = LLM_BASE_URL.rstrip("/") + LLM_HTTP_PATH
  → 注入该空间持久记忆（data/memory/<space_id>.md）
  → 估算 token，超过 CONTEXT_TOKEN_LIMIT(默认 16000) 时调 LLM 压缩早期历史
  → stream_llm(messages, tools=TOOLS)
-    ├─ 文本 delta      → NDJSON {"type":"text"}
+    ├─ 文本 delta      → SSE data: {"type":"text"}
     └─ tool_calls      → {"type":"tool_start"} → execute_tool() → {"type":"tool_result"}
                           → 结果回填 messages，再次进入 stream_llm（多轮循环）
  → {"type":"context", estimated_tokens, limit, compressed}

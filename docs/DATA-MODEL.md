@@ -1,7 +1,7 @@
 # 数据模型与空间隔离
 
-> 实现文件：`scripts/database.py`（2137 行，aiosqlite）；引导壳：`backend/server/db.py`
-> 核对日期：2026-07-30
+> 实现文件：`scripts/database.py`（约 3100 行，aiosqlite）；引导壳：`backend/server/db.py`
+> 核对日期：2026-08-26
 
 ---
 
@@ -12,8 +12,8 @@
 | 数据库 | SQLite 单文件，默认 `<项目根>/data/ai_research_os.db` |
 | 覆盖方式 | `DB_PATH`（优先） > `DATA_DIR`/ai_research_os.db > 默认 |
 | 驱动 | `aiosqlite`（异步）；`scripts/obsidian_service.py` 是唯一例外，仍用同步 `sqlite3` |
-| 表数量 | **20 张**（全部纳入空间隔离） |
-| 索引 | 约 35 个业务索引 + 20 个 `idx_<table>_space` |
+| 表数量 | **26 张业务表**（全部含 `space_id`） |
+| 空间迁移 | 25 张在 `SPACE_TABLES` 中统一补列/建索引；`cron_run_history` 的 DDL 原生包含 `space_id` |
 | 时间戳 | 毫秒级 Unix 时间戳 `int(time.time() * 1000)`；例外：`obsidian_vaults` 的 DDL 默认值是秒级 |
 | 文件产物 | `data/papers/<space_id>/pdfs/`、`data/memory/<space_id>.md`、`data/.swanlab/config.json`（全局） |
 
@@ -60,7 +60,7 @@ space_id = "lab-zhang"  →  每条 SQL 带 WHERE space_id = ?
 
 ### 2.2 隔离范围
 
-**参与隔离的 20 张表**（`SPACE_TABLES`）：
+**由通用迁移维护的 25 张表**（`SPACE_TABLES`）：
 
 ```
 papers            cron_jobs         software_projects   tasks
@@ -68,8 +68,12 @@ code_generations  notes             note_links          experiments
 experiment_runs   version_history   conversations       chat_messages
 agent_sessions    agent_messages    agent_generated_files
 formula_history   obsidian_vaults   obsidian_files
-agent_runs        agent_run_events
+agent_runs        agent_run_events  agent_tool_approvals
+agent_replay_messages               rag_sources
+rag_documents     rag_chunks
 ```
+
+**DDL 原生隔离表**：`cron_run_history`。因此当前数据库总计 26 张业务表，全部包含 `space_id`。
 
 **不隔离（全局）**：LLM 配置、SwanLab 配置、CORS/服务参数、备份导出（整库）、Skills 目录。
 
@@ -83,7 +87,7 @@ ALTER TABLE <table> ADD COLUMN space_id TEXT NOT NULL DEFAULT '__default__';
 CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 ```
 
-存量数据因此自动归入 `__default__` 空间。`agent_runs` / `agent_run_events` 是后加的表，`space_id` 直接写在建表 DDL 里且为显式参数（非默认值）。
+存量数据因此自动归入 `__default__` 空间。新表仍应在 DDL 中原生声明 `space_id`；只有需要兼容既有无空间列老表时，才依赖 `SPACE_TABLES` 的补列迁移。
 
 子表（`note_links` / `chat_messages` / `experiment_runs` / `agent_messages` / `code_generations`）**反范式冗余写入父实体的空间**，保证任何查询都能单列过滤、无需 JOIN。
 
@@ -136,8 +140,10 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 
 ### 3.5 对话
 
-**`conversations`** — `id TEXT` / `title`（默认「新对话」） / 时间戳
-**`chat_messages`** — `id TEXT` / `conversation_id`→FK CASCADE / `role`(user·assistant·system) / `content` / `timestamp` / `metadata`(JSON)
+**`conversations`** — `id TEXT` / `title`（默认「新对话」） / `current_leaf_id`（当前分支叶子）/ 时间戳
+**`chat_messages`** — `id TEXT` / `conversation_id`→FK CASCADE / `parent_id`（分支父节点）/ `role`(user·assistant·system) / `content` / `timestamp` / `metadata`(JSON)
+
+消息读取从 `current_leaf_id` 沿 `parent_id` 回溯得到当前分支。尾部截断后必须同步把 `current_leaf_id` 指回保留的锚点，不能让它引用已删除消息。
 
 ### 3.6 Agent
 
@@ -149,6 +155,10 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 
 **`agent_run_events`**（事件流）— `id INTEGER AUTOINCREMENT`（**SSE 游标**） / `run_id` / `space_id NOT NULL` / `type` / `data`(JSON，与 SSE 帧同构) / `created_at`
 
+**`agent_tool_approvals`** — 工具审批审计表：`id` / `run_id` / `tool_name` / `parameters`(JSON) / `status` / 决策时间。
+
+**`agent_replay_messages`** — 模型可见消息重放表：按 `run_id` / `phase` / `round` 保存 role、content、tool_calls 与 tool_call_id。
+
 > `agent_run_events.id` 自增是 SSE 增量推送的核心：`get_agent_run_events(after_id=last_id)` 靠它做游标。
 
 ### 3.7 其他
@@ -156,10 +166,19 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 **`version_history`** — `id TEXT` / `entity_type` / `entity_id` / `version_number` / `data`(JSON 全量快照) / `change_summary` / `created_by` / `created_at`
 > 支持 note / task / project 三类实体；`delete_old_versions(keep_count=20)` 控制膨胀。
 
-**`cron_jobs`** — `id TEXT` / `name` / `description` / `schedule` / `command` / `enabled` / `last_run` / `next_run` / `run_count`
+**`cron_jobs`** — `id TEXT` / `name` / `description` / `schedule` / `command` / `job_type` / `payload`(JSON) / `enabled` / `last_run` / `next_run` / `run_count`
+**`cron_run_history`** — 定时任务执行历史：`id` / `cron_job_id` / `status` / `output` / 起止时间 / `duration_ms`
 **`formula_history`** — `id TEXT` / `image_data`(Base64) / `latex_code` / `confidence REAL` / `source_type`(upload·paste·screenshot) / `is_favorite` / `tags`(JSON) / `note`
 **`obsidian_vaults`** — `id INTEGER` / `name` / `vault_path` / `sync_mode` / `last_sync_at` / `is_active`
 **`obsidian_files`** — `id INTEGER` / `vault_id`→FK / `relative_path` / `file_hash` / `modified_time` / `content_preview` / `frontmatter` / `tags` / `links` / `backlinks` / `sync_status`
+
+### 3.8 RAG
+
+**`rag_sources`** — 索引源及索引状态、目标路径、文档/切片统计、嵌入模式与模型。
+
+**`rag_documents`** — 源内文件元数据、哈希、页数、字符数与切片数。
+
+**`rag_chunks`** — 检索切片正文、页码/字符区间、token 估算与可选向量 JSON。
 
 ---
 
@@ -175,11 +194,12 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 | 笔记 | `get_all_notes` · `get_note_links` · `get_linked_notes` · `insert_note` · `update_note`(触发版本) · `add_note_link` |
 | 实验 | `get_all_experiments` · `get_experiment_runs` · `insert_experiment_run` · `update_experiment_run` |
 | 版本 | `create_version` · `get_versions` · `compare_versions` · `restore_version` · `delete_old_versions` |
-| 对话 | `get_all_conversations` · `insert_chat_message` · `get_conversation_messages` |
+| 对话 | `get_all_conversations` · `insert_chat_message` · `get_conversation_messages` · `delete_chat_messages_after` · `switch_to_message` |
 | 搜索 | `global_search(query, space_id, limit)` |
 | Agent 会话 | `create_agent_session` · `update_agent_session` · `add_agent_message` |
-| Agent 后台运行 | `create_agent_run` · `update_agent_run` · `get_agent_run_status` · `add_agent_run_event` · `get_agent_run_events` · `list_agent_runs` · `cancel_agent_run` |
-| Cron | `get_cron_jobs` · `create_cron_job` · `toggle_cron_job` · `run_cron_job` |
+| Agent 后台运行 | `create_agent_run` · `update_agent_run` · `get_agent_run_status` · `add_agent_run_event` · `create_agent_tool_approval` · `append_agent_replay` · `cancel_agent_run` |
+| Cron | `get_cron_jobs` · `create_cron_job` · `get_due_cron_jobs` · `try_acquire_cron_job` · `add_cron_run_history` |
+| RAG | `create_rag_source` · `create_rag_document` · `insert_rag_chunks` · `get_rag_chunks_for_retrieval` · `get_rag_stats` |
 
 ---
 
@@ -199,6 +219,9 @@ python scripts/qa_verify_space.py
 
 # 后台 Agent runner 验收（19 项）
 python scripts/qa_verify_agent_runner.py
+
+# LLM 可达性与状态端点（不触网）
+python scripts/qa_verify_llm_status.py
 ```
 
 两个脚本都使用隔离的临时 `DATA_DIR` + 真实 aiosqlite + `TestClient`，不会污染现有数据库。运行需要 `aiosqlite / fastapi / httpx / uvicorn`。

@@ -14,7 +14,7 @@
   E. WAL：连接后 journal_mode = wal
   F. aiosqlite 连接不跨协程共享（get_db 每次新建连接）
   G. 前端 X-Space-Key 注入唯一性（仅 apiMonitor.ts 真正注入请求头）
-  H. 结构：18 张 SPACE_TABLES 均含 space_id 列 + 索引
+  H. 结构：SPACE_TABLES 中 25 张迁移表均含 space_id 列 + 索引
 
 最小侵入：脚本置于 scripts/，不影响主流程；使用隔离临时 DATA_DIR，不触碰真实 data/。
 """
@@ -218,7 +218,7 @@ async def test_structural_space_columns() -> None:
             if not (has_col and has_idx):
                 all_ok = False
                 missing.append(f"{tbl}(col={has_col},idx={has_idx})")
-    record(f"H0 18 表均含 space_id 列+索引（实际 {len(database.SPACE_TABLES)} 张）",
+    record(f"H0 SPACE_TABLES 全部含 space_id 列+索引（实际 {len(database.SPACE_TABLES)} 张）",
            all_ok, ("缺失: " + ", ".join(missing)) if missing else "全部到位")
 
 

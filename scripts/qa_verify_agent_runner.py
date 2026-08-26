@@ -58,6 +58,13 @@ def _fake_call(messages, temperature=0.7):
 
 def _install_stub(speed=0.05):
     agent_service.call_llm = lambda m, temperature=0.7: _fake_call_sleep(m, temperature, speed)
+    # run_role 在启用工具时走 llm_client.stream_llm；必须同时打桩流式入口，
+    # 否则测试会误连项目 .env 中的真实 LLM，变成不稳定的网络集成测试。
+    agent_service.llm_client.stream_llm = (
+        lambda messages, **_kwargs: iter([
+            _fake_call_sleep(messages, 0.7, speed)
+        ])
+    )
     agent_service.PARSERS = {"design": lambda t: None, "plan": lambda t: None}
 
 

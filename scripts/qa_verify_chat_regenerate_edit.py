@@ -58,6 +58,11 @@ def get_contents(client):
     return {m["id"]: m["content"] for m in client.get(f"/api/conversations/{CONV_ID}/messages", headers=HEADERS).json()["messages"]}
 
 
+def get_leaf(client):
+    body = client.get(f"/api/conversations/{CONV_ID}", headers=HEADERS).json()
+    return body["conversation"]["currentLeafId"]
+
+
 def main():
     with TestClient(app) as client:
         seed(client)
@@ -66,6 +71,7 @@ def main():
         d = client.post(f"/api/conversations/{CONV_ID}/messages/delete-after", headers=HEADERS, json={"messageId": "u2"})
         assert d.json()["success"] is True, d.text
         assert get_ids(client) == ["u1", "a1", "u2"], get_ids(client)
+        assert get_leaf(client) == "u2", get_leaf(client)
         print("[1] delete-after tail -> OK, remaining:", get_ids(client))
 
         # 2) update u2 content
@@ -83,6 +89,7 @@ def main():
         d2 = client.post(f"/api/conversations/{CONV_ID}/messages/delete-after", headers=HEADERS, json={"messageId": "u1"})
         assert d2.json()["success"] is True, d2.text
         assert get_ids(client) == ["u1"], get_ids(client)
+        assert get_leaf(client) == "u1", get_leaf(client)
         print("[4] delete-after head -> OK, remaining:", get_ids(client))
 
     print("RESULT: ALL_PASS")

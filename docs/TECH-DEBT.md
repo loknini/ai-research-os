@@ -42,19 +42,19 @@
 - **原状**：`index.css` / `tailwind.config.js` 已定义完整暗色 token，但无切换入口，默认一直浅色。
 - **改动文件**：`themeStore.ts`、`theme-toggle.tsx`、`not-found.tsx`（同批）、`main.tsx`、`App.tsx`、`sidebar.tsx`。
 
-### ~~T5. 死代码残留~~ ✅ 已解决（2026-07-30）
-**状态：已归档（非删除）。** `scripts/db_api.py`、`scripts/workflow_engine.py`、`frontend/src/components/ui/tag-system.tsx`、`frontend/src/utils/performance.ts` 移入 `.archive/dead-code-20260730/`（保留原目录结构）。归档前 grep 确认零外部引用。
+### T5. 死代码残留（部分已解决）
+**状态：主体已归档，仍有一项待处理。** `scripts/db_api.py`、`scripts/workflow_engine.py`、`frontend/src/components/ui/tag-system.tsx`、`frontend/src/utils/performance.ts` 已于 2026-07-30 移入 `.archive/dead-code-20260730/`（保留原目录结构）。归档前 grep 确认零外部引用。
 已确认仍存在、且无可达调用路径的文件：
 - `scripts/db_api.py` —— 旧 CLI 数据库 API（`README` 旧示例曾引用，已移除引用；无路由调用）。
 - `scripts/workflow_engine.py` —— 早期工作流引擎，被角色化 `agent_service.py` 取代。
 - `frontend/src/components/ui/tag-system.tsx` —— 旧标签系统组件，已被各 Hub 内聚的标签实现取代。
 - `frontend/src/utils/performance.ts` —— 性能工具，无引用。
-> （探索报告另提过 `frontend/src/api-server.js`，当前仓库已不存在，疑已删，记录以备查。）
-- **建议**：删除前先全局 grep 确认零引用；删除后在 `CHANGELOG` 记一笔。非 git 仓库，**删除前建议先归档到 `.archive/`**（参见仓库根 `.archive/` 惯例）。
+> 当前仍有 `frontend/api-server.js`（注意不在 `src/` 下），全仓无运行时引用，是迁移到 FastAPI 前的旧中间件实现，尚待删除或归档。
+- **建议**：删除前先全局 grep 确认零引用；删除后在 `CHANGELOG` 记一笔。项目已有 Git，仍可沿用 `.archive/` 保存需要人工复核的历史材料。
 
 ### ~~T6. 重复聊天 / Agent 实现并存~~ ✅ 已核查，伪债关闭（2026-07-31）
 **状态：经细查确认非真实债务，关闭。**
-- **核查方法**：全仓 grep `ReadableStream|getReader|NDJSON|text/event-stream`，流式解析点仅 2 处且分属不同功能——`hubs/chat/services/chatApi.ts`（Chat 的 NDJSON 流式）与 `components/agent/agent-workflow.tsx`（Agent 的 SSE 轮询）。Chat 与 Agent 本就是不同功能，协议不同是设计使然，非重复。
+- **核查方法**：全仓流式解析点主要有 2 处且分属不同功能——`hubs/chat/services/chatApi.ts` 与 `components/agent/agent-workflow.tsx`。两者当前都接收 SSE，但事件模型不同（Chat 文本/工具/RAG；Agent 阶段/审批/重放），不宜为了表面协议一致而强行合并状态机。
 - **"两套聊天实现"误判来源**：旧式 `services/aiAgent.ts` 曾是浮动面板的命令/工具分发器，会回退调用 `/api/agent/run`（即 T3 旧端点）。它**从不实现第二套聊天流**，只是旧式委托。T3 删除旧端点后，`aiAgent.ts` 已改为本地工具分发 + 优雅降级，不再依赖后端 Agent 端点，与 `chatApi.ts` 无协议重叠。
 - **结论**：无重复流式协议实现，无需统一抽象；T6 关闭。
 
@@ -78,9 +78,9 @@
   4. QA 脚本同步：`qa_verify_space.py` 仅把项目根加入 `sys.path`（**不再加 `backend/`**，否则 `import scripts` 会被 `backend/scripts` 遮蔽——该目录现已不存在，隐患根除）；`qa_verify_agent_runner.py` 改 `from backend.server import agent_service`。
 - **验证（关键）**：两套隔离 QA 全绿——`qa_verify_space.py` **26/26 ALL_PASS**、`qa_verify_agent_runner.py` **19/0 PASS**；`py_compile` 全绿；`backend.server.main` app 加载正常；前端 `npm run build` 通过。DB 路径隔离（`DB_PATH` 覆盖）在改用包导入后**仍然有效**（后端与 QA 共享同一 `scripts.database` 模块对象），真实库未被污染。
 
-### T10. 无单测框架 + 非 git 仓库（流程债）
-- **现状**：项目无 git 初始化，无单测框架；当前验证靠 `tsc --noEmit` + `vite build` + 针对后端的独立 QA 脚本（`scripts/qa_verify_space.py`、`scripts/qa_verify_agent_runner.py`，隔离 `DATA_DIR` 运行）。
-- **建议**：初始化 git 并接入 CI；将 QA 脚本固化为回归用例；删除/归档操作先归档到 `.archive/`（当前无版本控制，删除不可逆）。
+### T10. 无统一测试框架与 CI（流程债）
+- **现状**：项目已初始化 Git，但尚未接入 pytest/vitest 与 CI；当前验证靠 `tsc --noEmit`、构建和隔离 `DATA_DIR` 的 `qa_verify_*.py` / `.mjs` 脚本。
+- **建议**：逐步把 QA 脚本收敛为统一测试入口并接入 CI，保留外部 API 打桩与临时数据目录纪律。
 
 ---
 
@@ -89,9 +89,9 @@
 2. [x] PDF worker 改本地打包（T2）— 2026-07-30 已解决。
 3. [x] 删除旧 Agent 端点 `/run`、`/collaborate` + 修活调用方 `aiAgent.ts`（T3）— 2026-07-31 已彻底移除。
 4. [x] 暗色切换开关（T4）— 2026-07-30 已解决。
-5. [x] 删除死代码前先 grep + 归档（T5）— 2026-07-30 已归档。
+5. [ ] 归档或删除剩余的 `frontend/api-server.js`（T5；其余旧实现已于 2026-07-30 归档）。
 6. [x] 细查前端流式协议，确认为伪债关闭（T6）— 2026-07-31 已核查关闭。
 7. [x] 补 404 + 懒加载（T7）— 2026-07-30 已解决。
 8. [x] 核查 version 路由命名（T8）— 2026-07-30 核查无问题，关闭。
 9. [x] 彻底消除 `sys.path` 导入 hack，改正规包导入（T9）— 2026-07-31 已解决。
-10. [ ] 初始化 git + 固化 QA 脚本为回归（T10）。
+10. [ ] 固化 QA 脚本为统一测试入口并接入 CI（T10；Git 已完成）。

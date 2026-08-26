@@ -24,8 +24,8 @@
 | | Zustand + React Router v6 | 按 Hub 拆分 store |
 | 后端 | FastAPI + uvicorn（多 Worker） | `backend.server.main:app`，端口 8000 |
 | | aiosqlite + SQLite WAL | 每请求独立连接，多进程安全 |
-| | SSE / NDJSON | Agent（SSE）与 Chat（NDJSON）两套流式协议 |
-| 存储 | SQLite + 文件系统 | 25 张表全带 `space_id`；`data/<module>/<space_id>/` |
+| | SSE | Agent 与 Chat 均为 SSE，但使用不同事件类型与前端状态机 |
+| 存储 | SQLite + 文件系统 | 26 张业务表全带 `space_id`；`data/<module>/<space_id>/` |
 
 ## 3. 系统架构总览
 
@@ -111,7 +111,7 @@ urllib 手写的 OpenAI 兼容客户端，全局单例 `llm_client`：
 
 ### 4.7 数据层（`scripts/database.py`）
 
-- **25 张用户表**全带 `space_id`（幂等迁移，存量归 `__default__`），子表反范式写父空间；
+- **26 张业务表**全带 `space_id`；其中 25 张纳入通用幂等迁移，`cron_run_history` 在 DDL 中原生包含该列。存量数据归 `__default__`，子表反范式写父空间；
 - 连接纪律：aiosqlite 每请求独立连接（绝不跨协程共享），建连即设 `busy_timeout=5000` → `journal_mode=WAL` → `synchronous=NORMAL`，锁竞争有限重试；
 - 更新语义：写操作返回 `rowcount > 0`，不跨空间误报成功。
 
@@ -127,7 +127,7 @@ urllib 手写的 OpenAI 兼容客户端，全局单例 `llm_client`：
   → {success:true, data:...} 响应
 ```
 
-### 5.2 Chat ReAct + RAG 接地（NDJSON 流）
+### 5.2 Chat ReAct + RAG 接地（SSE 流）
 
 ```mermaid
 sequenceDiagram
@@ -145,7 +145,7 @@ sequenceDiagram
       C->>C: tool_registry.execute（按策略审批/拦截）
       C->>C: 结果以 tool 角色回灌 messages
     else 无 tool_calls
-      C-->>U: NDJSON 逐帧推送（含 rag_sources 引用事件）
+      C-->>U: SSE 逐帧推送（含 rag_sources 引用事件）
     end
   end
 ```
@@ -194,6 +194,6 @@ sequenceDiagram
 | 加一个 API 端点 | `backend/server/routers/`（记得 `space_id` 过滤 + 注册进 `__init__.py`） |
 | 加一个 Agent 工具 | `backend/server/tools/<name>.py` + `@register_tool(policy=...)` |
 | 加/调/关一个角色 | `backend/agent_roles.json`（无需改代码） |
-| 加一张表 | `scripts/database.py`（表名加进 `SPACE_TABLES`） |
+| 加一张表 | `scripts/database.py`（DDL 原生写 `space_id`；需兼容旧表时加入 `SPACE_TABLES`） |
 | 加一个 Hub | `frontend/src/hubs/<name>/` + `navigation.ts` 注册 + `App.tsx` 懒加载路由 |
 | 加一个定时任务类型 | `cron_scheduler.py` 的分派逻辑 |
