@@ -46,24 +46,19 @@ import {
 } from './services/papersApi'
 import { usePaperData } from './hooks/usePaperData'
 import PaperFilters from './components/PaperFilters'
-import FetchPapersDialog from './components/FetchPapersDialog'
+import FetchPapersTab, { type FetchBatchResult } from './components/FetchPapersTab'
 
 export default function PaperHub() {
   const { papers, setPapers, updatePaper, deletePaper, isLoadingPapers, setLoadingPapers, isConnected } = useAppStore()
   const { showToast, ToastContainer } = useToast()
-  // 工具 Tab：论文管理 / 引用生成（引用工具收纳为论文中心子能力）
-  const [activeTool, setActiveTool] = useState<'papers' | 'citation'>('papers')
+  // 工具 Tab：论文管理 / 抓取论文 / 引用生成（后者收纳为论文中心子能力）
+  const [activeTool, setActiveTool] = useState<'papers' | 'fetch' | 'citation'>('papers')
   const [searchQuery, setSearchQuery] = useState('')
   const [isFetching, setIsFetching] = useState(false)
+  // 最近一次抓取结果（供「抓取论文」Tab 实时预览）
+  const [lastFetchResult, setLastFetchResult] = useState<FetchBatchResult | null>(null)
   // 存储已展开的论文ID和完整摘要
   const [expandedAbstracts, setExpandedAbstracts] = useState<Map<string, string>>(new Map())
-
-  // 抓取设置对话框状态
-  const [fetchDialog, setFetchDialog] = useState<{
-    isOpen: boolean
-    keywords: string
-    maxResults: number
-  }>({ isOpen: false, keywords: '', maxResults: 10 })
 
   // 筛选和排序状态
   const [filterOption, setFilterOption] = useState<FilterOption>('all')
@@ -144,11 +139,11 @@ export default function PaperHub() {
     }
   }
 
-  const handleFetchPapers = async () => {
-    const { keywords, maxResults } = fetchDialog
+  const handleFetchPapers = async (params?: { keywords: string; maxResults: number }) => {
+    const keywords = params?.keywords ?? ''
+    const maxResults = params?.maxResults ?? 10
     setIsFetching(true)
     showToast('正在抓取论文...', 'info')
-    setFetchDialog((prev) => ({ ...prev, isOpen: false }))
 
     try {
       // 调用后端 API 执行 Python 脚本
@@ -156,12 +151,25 @@ export default function PaperHub() {
 
       const newCount = result.papers.length || 0
       const totalCount = result.total || 0
+      const insertedCount = (result as { inserted?: number }).inserted ?? newCount
       if (newCount > 0) {
-        showToast(`成功添加 ${newCount} 篇新论文，当前共 ${totalCount} 篇`, 'success')
+        showToast(
+          `本次抓取 ${newCount} 篇，新增 ${insertedCount} 篇，当前共 ${totalCount} 篇`,
+          'success'
+        )
       } else {
         showToast(`没有发现新论文，当前共 ${totalCount} 篇（已跳过重复）`, 'info')
       }
-      // 重新加载数据
+      // 更新本次抓取结果预览（抓取论文 Tab 渲染用）
+      setLastFetchResult({
+        papers: result.papers,
+        total: totalCount,
+        inserted: insertedCount,
+        fetchedAt: Date.now(),
+        keywords,
+        maxResults,
+      })
+      // 重新加载论文管理列表
       await loadLocalPapersData()
     } catch (error) {
       console.error('Fetch error:', error)
@@ -169,10 +177,6 @@ export default function PaperHub() {
     } finally {
       setIsFetching(false)
     }
-  }
-
-  const handleOpenFetchDialog = () => {
-    setFetchDialog((prev) => ({ ...prev, isOpen: true }))
   }
 
   const [summarizingIds, setSummarizingIds] = useState<Set<string>>(new Set())
@@ -323,12 +327,12 @@ export default function PaperHub() {
           <HeaderAction
             icon={isFetching ? RefreshCw : Plus}
             label={isFetching ? '抓取中...' : '抓取论文'}
-            onClick={handleOpenFetchDialog}
+            onClick={() => setActiveTool('fetch')}
           />
         }
       />
 
-      {/* 工具 Tab：引用生成已收纳为论文中心的子能力，/citation 路由仍保留可直达 */}
+      {/* 工具 Tab：抓取论文/引用工具已收纳为论文中心的子能力，/citation 路由仍保留可直达 */}
       <div className="px-6 pt-3 flex items-center gap-1 border-b border-border/60">
         <button
           className={cn(
@@ -340,6 +344,17 @@ export default function PaperHub() {
           onClick={() => setActiveTool('papers')}
         >
           论文管理
+        </button>
+        <button
+          className={cn(
+            'px-4 py-2 text-sm font-medium transition-colors',
+            activeTool === 'fetch'
+              ? 'text-primary border-b-2 border-primary'
+              : 'text-muted-foreground hover:text-foreground'
+          )}
+          onClick={() => setActiveTool('fetch')}
+        >
+          抓取论文
         </button>
         <button
           className={cn(
@@ -411,7 +426,7 @@ export default function PaperHub() {
                 还没有收藏的论文。点击"抓取论文"按钮，从 arXiv 获取最新的计算机视觉论文。
               </p>
               <div className="flex gap-2">
-                <Button onClick={handleOpenFetchDialog} disabled={!isConnected || isFetching}>
+                <Button onClick={() => setActiveTool('fetch')} disabled={!isConnected || isFetching}>
                   <Plus className="w-4 h-4 mr-2" />
                   抓取论文
                 </Button>
@@ -533,13 +548,14 @@ export default function PaperHub() {
                   onSummarize={() => handleSummarize(paper)}
                   onDownloadPDF={() => handleDownloadPDF(paper.arxivId, paper.title)}
                   onPreviewPDF={() => {
-                    if (paper.localPath) {
-                      setPdfPreview({
-                        isOpen: true,
-                        url: `/api/papers/${paper.arxivId}/pdf`,
-                        title: paper.title
-                      })
-                    }
+                    // 后端 GET /api/papers/{arxivId}/pdf 支持懒下载：localPath 不存在
+                    // 时直接打预览，后端会先 download_pdf 落盘并流式返回。原来这里
+                    // 的 paper.localPath 守卫是死代码——localPath 为空根本进不来。
+                    setPdfPreview({
+                      isOpen: true,
+                      url: `/api/papers/${paper.arxivId}/pdf`,
+                      title: paper.title,
+                    })
                   }}
                   onDelete={() => showDeleteConfirm(paper.id, paper.title)}
                   onSelect={() => togglePaperSelection(paper.id)}
@@ -619,6 +635,12 @@ export default function PaperHub() {
           </>
         )}
       </div>
+      ) : activeTool === 'fetch' ? (
+        <FetchPapersTab
+          lastResult={lastFetchResult}
+          isFetching={isFetching}
+          onFetch={(params) => handleFetchPapers(params)}
+        />
       ) : (
         <div className="flex-1 overflow-hidden">
           <CitationHub embedded />
@@ -635,14 +657,6 @@ export default function PaperHub() {
         variant="danger"
         onConfirm={handleDeletePaper}
         onCancel={() => setConfirmDialog((prev) => ({ ...prev, isOpen: false }))}
-      />
-
-      {/* 抓取设置对话框 */}
-      <FetchPapersDialog
-        fetchDialog={fetchDialog}
-        setFetchDialog={setFetchDialog}
-        handleFetchPapers={handleFetchPapers}
-        isFetching={isFetching}
       />
 
       {/* Toast 通知 */}
@@ -690,7 +704,15 @@ export default function PaperHub() {
             <div className="flex-1 overflow-hidden">
               <CitationHub
                 embedded
-                initialQuery={bibtexPaper.title}
+                initialPaper={{
+                  title: bibtexPaper.title,
+                  authors: bibtexPaper.authors,
+                  year: bibtexPaper.publishedDate
+                    ? parseInt(bibtexPaper.publishedDate.slice(0, 4), 10)
+                    : null,
+                  arxivId: bibtexPaper.arxivId,
+                  // doi 待数据库扩展后传入
+                }}
                 onInsert={(_, bibtex) => handleSaveBibtex(bibtexPaper.id, bibtex)}
               />
             </div>
