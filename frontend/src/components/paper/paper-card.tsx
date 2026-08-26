@@ -1,4 +1,6 @@
 import { memo, useState, useCallback } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -19,7 +21,7 @@ import {
   Eye,
   Quote
 } from 'lucide-react'
-import { formatDate } from '@/utils'
+import { cn, formatDate } from '@/utils'
 import type { Paper } from '@/types'
 
 interface PaperCardProps {
@@ -78,6 +80,19 @@ export const PaperCard = memo(function PaperCard({
   const shouldTruncate = paper.abstract.length > 200
   const displayAbstract = isExpanded ? paper.abstract : truncatedAbstract + (shouldTruncate ? '...' : '')
 
+  // AI 总结是 LLM 生成的 Markdown（含 ## / - / emoji 等），
+  // 用 react-markdown 渲染；之前按 plain text 渲染时，markdown 标记原样
+  // 暴露，用户看到的是 "## 研究背景..." 这种 raw 文本。
+  // Markdown 不能截断字符串再渲染（会破坏语法），改用 max-height + 滚动条：
+  // 默认露出预览高度，溢出滚动；点击展开按钮解除高度限制（不是显示/隐藏，
+  // 因为完整总结是有用信息，不应该藏起来）。
+  const summary = paper.summary || ''
+  const hasSummary = summary.length > 0
+  const SUMMARY_COLLAPSED_HEIGHT = 280
+  const [isSummaryExpanded, setIsSummaryExpanded] = useState(false)
+  // 文本过长才显示「展开」按钮；纯 markdown 字符比 plain text 复杂，这里阈值放宽
+  const showSummaryCollapse = hasSummary && summary.length > 600
+
   return (
     <Card className={`hover:shadow-md transition-shadow ${isSelected ? 'ring-2 ring-primary' : ''}`}>
       <CardHeader className="pb-3">
@@ -116,28 +131,61 @@ export const PaperCard = memo(function PaperCard({
         </div>
       </CardHeader>
       <CardContent>
-        {/* AI 总结区域 */}
-        {paper.summary && (
+        {/* AI 总结区域：用 react-markdown 渲染，避免 raw 文本暴露 markdown 符号 */}
+        {hasSummary && (
           <div className="mb-4 p-3 bg-blue-50/50 border border-blue-100 rounded-lg">
             <div className="flex items-center gap-2 mb-2">
               <FileText className="w-4 h-4 text-blue-500" />
               <span className="text-sm font-medium text-blue-700">AI 总结</span>
             </div>
-            <div className="text-sm text-blue-900 whitespace-pre-wrap">
-              {displayAbstract}
-              {shouldTruncate && (
-                <button onClick={onToggleExpand} className="ml-2 text-xs text-blue-600 hover:underline">
-                  {isExpanded ? '收起' : '展开'}
-                </button>
+            <div
+              className={cn(
+                'text-sm text-blue-900 paper-md',
+                // 收起态：限高度 + 溢出滚动；展开态：完全展开
+                showSummaryCollapse && !isSummaryExpanded
+                  ? 'overflow-auto'
+                  : ''
               )}
+              style={
+                showSummaryCollapse && !isSummaryExpanded
+                  ? { maxHeight: SUMMARY_COLLAPSED_HEIGHT }
+                  : undefined
+              }
+            >
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  h1: (props) => <h1 className="text-base font-semibold mt-3 mb-1.5" {...props} />,
+                  h2: (props) => <h2 className="text-sm font-semibold mt-3 mb-1.5 flex items-center gap-1.5" {...props} />,
+                  h3: (props) => <h3 className="text-sm font-semibold mt-2 mb-1" {...props} />,
+                  p: (props) => <p className="leading-relaxed my-1.5" {...props} />,
+                  ul: (props) => <ul className="list-disc pl-5 space-y-0.5 my-1.5 marker:text-blue-400" {...props} />,
+                  ol: (props) => <ol className="list-decimal pl-5 space-y-0.5 my-1.5" {...props} />,
+                  li: (props) => <li className="leading-relaxed" {...props} />,
+                  strong: (props) => <strong className="font-semibold" {...props} />,
+                  em: (props) => <em className="italic" {...props} />,
+                  code: (props) => <code className="px-1 py-0.5 bg-blue-100/60 rounded text-xs font-mono" {...props} />,
+                  a: (props) => <a className="text-blue-600 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
+                }}
+              >
+                {summary}
+              </ReactMarkdown>
             </div>
+            {showSummaryCollapse && (
+              <button
+                onClick={() => setIsSummaryExpanded((v) => !v)}
+                className="mt-2 text-xs text-blue-600 hover:underline"
+              >
+                {isSummaryExpanded ? '收起' : '展开完整总结'}
+              </button>
+            )}
           </div>
         )}
 
         {/* 原始摘要区域 */}
         <div className="text-sm text-muted-foreground mb-4">
           <p className="whitespace-pre-wrap">{displayAbstract}</p>
-          {shouldTruncate && !paper.summary && (
+          {shouldTruncate && (
             <button
               onClick={onToggleExpand}
               className="mt-2 text-xs text-primary hover:underline flex items-center gap-1"
@@ -219,27 +267,23 @@ export const PaperCard = memo(function PaperCard({
                 {paper.bibtex ? 'BibTeX ✓' : '引用'}
               </Button>
             )}
-            {paper.localPath ? (
-              <Button variant="outline" size="sm" asChild>
-                <a href={`file://${paper.localPath}`} target="_blank" rel="noopener noreferrer">
-                  <FileText className="w-4 h-4 mr-1" />
-                  查看
-                </a>
+            {/* 预览按钮：后端 GET /api/papers/{arxivId}/pdf 支持懒下载，
+                localPath 为空也能直接预览（之前要求 localPath 存在才能预览是死代码） */}
+            {onPreviewPDF && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onPreviewPDF}
+                title="在浏览器内打开 PDF（懒下载：若未下载后端会先下载）"
+              >
+                <Eye className="w-4 h-4 mr-1" />
+                查看
               </Button>
-            ) : (
-              <>
-                {onPreviewPDF && paper.localPath && (
-                  <Button variant="outline" size="sm" onClick={onPreviewPDF}>
-                    <Eye className="w-4 h-4 mr-1" />
-                    预览
-                  </Button>
-                )}
-                <Button variant="outline" size="sm" onClick={onDownloadPDF}>
-                  <Download className="w-4 h-4 mr-1" />
-                  下载
-                </Button>
-              </>
             )}
+            <Button variant="outline" size="sm" onClick={onDownloadPDF}>
+              <Download className="w-4 h-4 mr-1" />
+              下载
+            </Button>
             <Button
               variant="ghost"
               size="sm"
