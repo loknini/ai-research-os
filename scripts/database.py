@@ -8,7 +8,7 @@ SQLite 数据库管理模块（aiosqlite 异步版 + space-key 软隔离）
     "database is locked" 并支持多 worker 并发读写。
 
 第 1 层（数据隔离）：
-  * 全部 18 张用户表统一增加 `space_id` 列（幂等迁移），存量记录自动归属
+  * 全部 26 张业务表包含 `space_id` 列（25 张走通用幂等迁移），存量记录自动归属
     默认空间 `__default__`。
   * 所有读写路径都按 `space_id` 过滤 / 打标；子表（note_links / chat_messages /
     experiment_runs / agent_messages / code_generations）反范式写入父空间。
@@ -31,7 +31,8 @@ from typing import List, Dict, Optional, Any
 from contextlib import asynccontextmanager
 
 # 数据库路径（DATA_DIR 由 backend/server/config.py 在导入本模块前写入环境变量）
-DATA_DIR = Path(os.environ.get('DATA_DIR', '../data'))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = Path(os.environ.get('DATA_DIR', PROJECT_ROOT / 'data'))
 DB_PATH = DATA_DIR / 'ai_research_os.db'
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -136,7 +137,7 @@ async def init_db() -> None:
                 title TEXT NOT NULL,
                 authors TEXT NOT NULL,  -- JSON 数组
                 abstract TEXT NOT NULL,
-                arxiv_id TEXT UNIQUE NOT NULL,
+                arxiv_id TEXT NOT NULL,
                 pdf_url TEXT NOT NULL,
                 categories TEXT,  -- JSON 数组
                 published_date TEXT NOT NULL,
@@ -147,7 +148,8 @@ async def init_db() -> None:
                 is_read INTEGER DEFAULT 0,
                 is_favorite INTEGER DEFAULT 0,
                 added_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                space_id TEXT NOT NULL DEFAULT '__default__'
             )
         ''')
 
@@ -661,6 +663,10 @@ async def init_db() -> None:
                 else:
                     raise
 
+        # 旧版 papers.arxiv_id 是全局 UNIQUE，会阻止不同空间收藏同一篇论文。
+        # 重建表以移除旧约束，再用 (space_id, arxiv_id) 做空间内唯一。
+        await _maybe_migrate_paper_space_uniqueness(conn)
+
         # 幂等迁移：cron_jobs 补 job_type / payload 列（调度器扩展，兼容旧库）
         cron_cols = await (await conn.execute("PRAGMA table_info(cron_jobs)")).fetchall()
         cron_col_names = {r["name"] for r in cron_cols}
@@ -690,6 +696,111 @@ async def init_db() -> None:
         await _maybe_migrate_chat_branching(conn)
 
     print(f"Database initialized at {DB_PATH}")
+
+
+async def _paper_has_global_arxiv_unique(conn: aiosqlite.Connection) -> bool:
+    indexes = await (await conn.execute("PRAGMA index_list(papers)")).fetchall()
+    for index in indexes:
+        if not index["unique"]:
+            continue
+        name = str(index["name"]).replace('"', '""')
+        columns = await (await conn.execute(f'PRAGMA index_info("{name}")')).fetchall()
+        if [column["name"] for column in columns] == ["arxiv_id"]:
+            return True
+    return False
+
+
+async def _create_paper_indexes(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_papers_space_arxiv "
+        "ON papers(space_id, arxiv_id)"
+    )
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_arxiv ON papers(arxiv_id)')
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_added ON papers(added_at DESC)')
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_read ON papers(is_read)')
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_favorite ON papers(is_favorite)')
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_title ON papers(title)')
+    await conn.execute('CREATE INDEX IF NOT EXISTS idx_papers_space ON papers(space_id)')
+
+
+async def _maybe_migrate_paper_space_uniqueness(conn: aiosqlite.Connection) -> None:
+    """Replace the legacy global arXiv uniqueness constraint without losing rows."""
+    if not await _paper_has_global_arxiv_unique(conn):
+        await _create_paper_indexes(conn)
+        return
+
+    # PRAGMA foreign_keys cannot be changed inside a transaction.  Commit any
+    # preceding idempotent DDL, then serialize the table rebuild across workers.
+    await conn.commit()
+    await conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        await conn.execute("BEGIN IMMEDIATE")
+        # Another worker may have completed the migration while this one waited.
+        if not await _paper_has_global_arxiv_unique(conn):
+            await _create_paper_indexes(conn)
+            await conn.commit()
+            return
+
+        # Rebuilding a SQLite table drops all of its indexes. Preserve every
+        # defined index except the obsolete global arXiv uniqueness index.
+        index_rows = await (await conn.execute(
+            "SELECT name, sql FROM sqlite_master "
+            "WHERE type = 'index' AND tbl_name = 'papers' AND sql IS NOT NULL"
+        )).fetchall()
+        index_sql_to_restore: list[str] = []
+        for index in index_rows:
+            name = str(index["name"]).replace('"', '""')
+            columns = await (await conn.execute(f'PRAGMA index_info("{name}")')).fetchall()
+            if [column["name"] for column in columns] != ["arxiv_id"]:
+                index_sql_to_restore.append(index["sql"])
+
+        await conn.execute("DROP TABLE IF EXISTS papers__space_unique_new")
+        await conn.execute('''
+            CREATE TABLE papers__space_unique_new (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                authors TEXT NOT NULL,
+                abstract TEXT NOT NULL,
+                arxiv_id TEXT NOT NULL,
+                pdf_url TEXT NOT NULL,
+                categories TEXT,
+                published_date TEXT NOT NULL,
+                local_path TEXT,
+                summary TEXT,
+                bibtex TEXT,
+                tags TEXT,
+                is_read INTEGER DEFAULT 0,
+                is_favorite INTEGER DEFAULT 0,
+                added_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                space_id TEXT NOT NULL DEFAULT '__default__'
+            )
+        ''')
+        await conn.execute('''
+            INSERT INTO papers__space_unique_new
+            (id, title, authors, abstract, arxiv_id, pdf_url, categories,
+             published_date, local_path, summary, bibtex, tags, is_read,
+             is_favorite, added_at, updated_at, space_id)
+            SELECT id, title, authors, abstract, arxiv_id, pdf_url, categories,
+                   published_date, local_path, summary, bibtex, tags, is_read,
+                   is_favorite, added_at, updated_at, space_id
+            FROM papers
+        ''')
+        await conn.execute("DROP TABLE papers")
+        await conn.execute("ALTER TABLE papers__space_unique_new RENAME TO papers")
+        for index_sql in index_sql_to_restore:
+            await conn.execute(index_sql)
+        await _create_paper_indexes(conn)
+
+        violations = await (await conn.execute("PRAGMA foreign_key_check")).fetchall()
+        if violations:
+            raise RuntimeError(f"paper uniqueness migration broke foreign keys: {violations}")
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+    finally:
+        await conn.execute("PRAGMA foreign_keys=ON")
 
 
 async def _maybe_migrate_cron_json(conn: aiosqlite.Connection) -> None:
@@ -851,6 +962,15 @@ async def insert_paper(paper: Dict[str, Any], space_id: str = DEFAULT_SPACE) -> 
     try:
         async with get_db() as conn:
             now = int(datetime.now().timestamp())
+            arxiv_id = str(paper['arxivId'])
+            paper_id = str(paper['id'])
+            # arXiv 抓取器历史上把业务标识直接当主键。主键仍需全局唯一，
+            # 因此仅对官方抓取形态生成稳定的、带空间维度的存储 ID。
+            if paper_id == arxiv_id:
+                paper_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"ai-research-os://papers/{space_id}/{arxiv_id}",
+                ))
             await conn.execute('''
                 INSERT INTO papers
                 (id, title, authors, abstract, arxiv_id, pdf_url, categories,
@@ -858,11 +978,11 @@ async def insert_paper(paper: Dict[str, Any], space_id: str = DEFAULT_SPACE) -> 
                  added_at, updated_at, space_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                paper['id'],
+                paper_id,
                 paper['title'],
                 json.dumps(paper.get('authors', []), ensure_ascii=False),
                 paper['abstract'],
-                paper['arxivId'],
+                arxiv_id,
                 paper['pdfUrl'],
                 json.dumps(paper.get('categories', []), ensure_ascii=False),
                 paper['publishedDate'],
@@ -877,7 +997,7 @@ async def insert_paper(paper: Dict[str, Any], space_id: str = DEFAULT_SPACE) -> 
             ))
             return True
     except sqlite3.IntegrityError:
-        # arxiv_id 全局唯一；同一空间重复插入直接返回 False（不串写）
+        # (space_id, arxiv_id) 空间内唯一；重复插入返回 False。
         return False
     except Exception as e:
         print(f"Error inserting paper: {e}")
@@ -2769,18 +2889,30 @@ async def get_due_cron_jobs(now_ms: int) -> List[Dict[str, Any]]:
         return [dict(row) for row in rows]
 
 
-async def try_acquire_cron_job(job_id: str, now_ms: int) -> bool:
-    """原子抢锁：把 last_run 更新为 now 仅当该任务仍处于「到期未抢」状态。
+async def try_acquire_cron_job(
+    job_id: str,
+    space_id: str,
+    expected_next_run_ms: int,
+    now_ms: int,
+    following_next_run_ms: int,
+) -> bool:
+    """Atomically claim one due schedule occurrence and advance its cursor.
 
-    利用 SQLite 的 ``rowcount`` 天然实现乐观锁——多 Worker 并发抢同一任务时，
-    只有第一个 UPDATE 成功（rowcount=1），后续的 rowcount=0 自动跳过。
-    条件 ``last_run < next_run`` 保证已抢的任务不会被二次抢占。
+    ``expected_next_run_ms`` acts as the optimistic-lock token.  Updating the
+    cursor in the same statement means a worker holding a stale due-job snapshot
+    cannot claim the same occurrence after another worker has rescheduled it.
     """
     async with get_db() as conn:
         cur = await conn.execute(
-            'UPDATE cron_jobs SET last_run = ? WHERE id = ? AND enabled = 1 '
-            'AND last_run IS NOT NULL AND last_run < next_run',
-            (now_ms, job_id))
+            'UPDATE cron_jobs '
+            'SET last_run = ?, next_run = ?, run_count = run_count + 1 '
+            'WHERE id = ? AND space_id = ? AND enabled = 1 '
+            'AND next_run = ? AND next_run <= ?',
+            (
+                now_ms, following_next_run_ms, job_id, space_id,
+                expected_next_run_ms, now_ms,
+            ),
+        )
         return cur.rowcount > 0
 
 
@@ -2821,26 +2953,21 @@ async def add_cron_run_history(
 
 
 async def get_cron_run_history(
-    space_id: str = DEFAULT_SPACE, limit: int = 50,
+    space_id: str = DEFAULT_SPACE,
+    limit: int = 50,
+    cron_job_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """获取某空间的定时任务执行历史（最近 N 条）。"""
     async with get_db() as conn:
-        rows = await _fetchall(
-            conn,
-            'SELECT * FROM cron_run_history WHERE space_id = ? ORDER BY started_at DESC LIMIT ?',
-            (space_id, limit))
+        query = 'SELECT * FROM cron_run_history WHERE space_id = ?'
+        params: List[Any] = [space_id]
+        if cron_job_id:
+            query += ' AND cron_job_id = ?'
+            params.append(cron_job_id)
+        query += ' ORDER BY started_at DESC LIMIT ?'
+        params.append(limit)
+        rows = await _fetchall(conn, query, tuple(params))
         return [dict(row) for row in rows]
-
-
-if __name__ == '__main__':
-    import asyncio
-
-    async def _main() -> None:
-        await init_db()
-        old_json = DATA_DIR / 'papers' / 'metadata.json'
-        if old_json.exists():
-            print("Found existing JSON data, migrating...")
-            await migrate_from_json(old_json)
 
 
 # ===========================================================================
@@ -3011,10 +3138,10 @@ async def update_rag_document(doc_id: str, space_id: str, chunk_count: Optional[
     """更新文档的切片计数（按空间校验）。"""
     try:
         async with get_db() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 'UPDATE rag_documents SET chunk_count = ? WHERE id = ? AND space_id = ?',
                 (chunk_count, doc_id, space_id))
-        return True
+        return cur.rowcount > 0
     except Exception as e:
         print(f"Update rag document error: {e}")
         return False
@@ -3110,4 +3237,14 @@ async def get_rag_stats(space_id: str = DEFAULT_SPACE) -> Dict[str, int]:
             "vectorCount": vecs["n"] if vecs else 0,
         }
 
+
+async def _main() -> None:
+    await init_db()
+    old_json = DATA_DIR / 'papers' / 'metadata.json'
+    if old_json.exists():
+        print("Found existing JSON data, migrating...")
+        await migrate_from_json(old_json)
+
+
+if __name__ == '__main__':
     asyncio.run(_main())

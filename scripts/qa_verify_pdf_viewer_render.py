@@ -19,6 +19,9 @@ import re
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).parent.parent
 PDF_VIEWER = ROOT / "frontend" / "src" / "components" / "ui" / "pdf-viewer.tsx"
 PAPER_HUB = ROOT / "frontend" / "src" / "hubs" / "paper" / "PaperHub.tsx"

@@ -96,7 +96,7 @@ export function GenerationWatcher() {
     }, POLL_INTERVAL)
 
     return () => clearInterval(timer)
-  }, [])
+  }, [navigate])
 
   return null
 }

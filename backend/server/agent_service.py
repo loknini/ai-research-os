@@ -23,6 +23,13 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Generator
 
+if __name__ == "__main__" and not __package__:
+    print(
+        "Run this package CLI with: python -m backend.server.agent_service <command> [args]",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
 # 后端 LLM 客户端（可选导入）
 try:
     from backend.server.llm import llm_client, LLMUnavailableError
@@ -550,7 +557,7 @@ def run_planner_agent(design_output: str) -> Generator[Dict[str, Any], None, Non
 if __name__ == '__main__':
     import sys
     if len(sys.argv) < 2:
-        print("Usage: agent_service.py <command> [args]", file=sys.stderr)
+        print("Usage: python -m backend.server.agent_service <command> [args]", file=sys.stderr)
         print("Commands: architect, planner, workflow, roles", file=sys.stderr)
         sys.exit(1)
     command = sys.argv[1]

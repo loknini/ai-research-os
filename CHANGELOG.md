@@ -4,13 +4,18 @@
 
 ---
 
-## [未发布] - 2026-08-26 · 正确性修复与文档同步
+## [0.3.0] - 2026-08-26 · 正确性修复与文档同步
 
 - 修复 `LLMClient._reachable()` 因定义丢失导致 `/api/llm/status` 与 `is_available()` 抛 `AttributeError`；新增无网络回归 `qa_verify_llm_status.py`。
 - 修复旧 `cron_jobs.json` 迁移 SQL 的列数/占位符不一致（11 列误写 12 个值）。
 - 修复聊天重新生成/编辑时删除尾部消息后未更新 `current_leaf_id`，导致当前分支读取为空。
 - QA 去除对本机真实 LLM 和仓库根 Node 模块解析的偶然依赖；空间迁移、Agent runner、Chat-RAG、Markdown 用例改为确定性执行。
 - 文档按代码实况同步为 21 个 Router、113 条 `/api` 路由、26 张业务表；Chat 流协议更正为 SSE。
+- Cron 到期领取改为单条原子 SQL（旧 `next_run` 作为乐观锁令牌），首次执行与多 Worker 并发均只领取一次；手动/自动运行共用三类任务分派与历史落库，手动运行不推进计划时间。
+- `papers` 从全局 `arxiv_id UNIQUE` 幂等迁移为 `UNIQUE(space_id, arxiv_id)`；事务重建保留原 ID、论文行、笔记外键和索引，新抓取论文使用按空间确定的 UUID。
+- 修复 `/api/versions/detail/{id}` 被通配路由遮蔽、公式更新契约不一致与不存在记录虚报成功、RAG 更新虚报成功、数据库/Agent CLI 入口错误。
+- 新增 ESLint 8 + React + TypeScript 配置并清零 lint；Windows Unicode QA 显式使用 UTF-8；新增 `qa_verify_correctness.py` 覆盖 32 项关键回归。
+- FastAPI、health、前端 package/package-lock 的正式版本统一为 `0.3.0`。
 
 ---
 

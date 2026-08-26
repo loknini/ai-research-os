@@ -299,7 +299,7 @@ Write-Host @"
 💡 提示:
    - 配置 LLM：打开前端「设置 → LLM API 配置」填写（也可复制 backend/.env.example 为项目根 .env）
    - 数据备份与迁移：打开前端「设置 → 数据备份与迁移」卡片
-   - 查看设计文档: .\DESIGN.md
+   - 查看设计文档: .\docs\SYSTEM-DESIGN.md
    - 按 Ctrl+C 停止各个服务窗口
 
 "@ -ForegroundColor Green

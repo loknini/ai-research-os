@@ -25,7 +25,7 @@
 | [AGENT-LLM.md](./AGENT-LLM.md) | LLM 与 Agent | urllib LLM 客户端（URL 拼接/function calling/降级）、Chat ReAct 循环、角色化 Agent 管线、`agent_runner` 双层取消、Skills 目录约定与安全边界、模块导入约定（正规包导入，无 sys.path hack） |
 | [FRONTEND.md](./FRONTEND.md) | 前端 | 技术栈（含刻意不引入的库）、vite proxy、11 路由表、App 组件层次、barrel 拆分现状与新增 Hub 标准、状态管理、API 层（两套流式协议）、设计系统、验证护栏 |
 | [OPERATIONS.md](./OPERATIONS.md) | 运维 | 环境要求、启动方式（start.ps1/-sh 参数 / 手动 / 生产单进程托管）、配置加载顺序与变量清单、多人内网使用、数据备份三种方式、故障排查、验收脚本 |
-| [TECH-DEBT.md](./TECH-DEBT.md) | 技术债 | 死代码、重复实现（两套聊天/Agent 共存）、暗色未启用、PDF worker 依赖 CDN、命名冲突、无懒加载/404、版本路由遮蔽、mask_key 双实现不一致等 |
+| [TECH-DEBT.md](./TECH-DEBT.md) | 技术债 | 已确认死代码与兼容层、已关闭误报项，以及版本详情遮蔽等已修复问题的审计记录 |
 
 ## 与根目录文档的关系
 

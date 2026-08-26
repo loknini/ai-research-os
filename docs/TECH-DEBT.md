@@ -65,8 +65,8 @@
 ### ~~T7. 路由未懒加载、无 404 兜底~~ ✅ 已解决（2026-07-30）
 **状态：已解决。** `App.tsx` 11 个 Hub 全部改为 `React.lazy` + `<Suspense fallback={<RouteFallback/>}>`，并新增美观的 `not-found.tsx`（渐变玻璃卡片 + 返回首页 CTA）作为 `path="*"` 通配兜底；`main.tsx` 内 `applyTheme` 已在首屏应用。`npm run build` 输出大量独立 `index-*.js` 小块，代码分割生效。改动文件：`App.tsx`、`not-found.tsx`、`main.tsx`。
 
-### ~~T8. 版本历史路由与「版本」语义潜在遮蔽~~ ✅ 已核查，无问题（2026-07-30）
-**状态：核查结论——无需改动。** 全仓唯一 version 相关路由是 `backend/server/routers/versions.py` 的 `APIRouter(prefix="/api/versions")`（**复数**前缀），业务路由为 `/api/versions` 及 `/api/versions/{id}`。**不存在单数 `/version` 字面路由**，也没有更宽前缀会吞掉它，早期探索报告的"version 路由遮蔽"在当前代码里不成立。沿用复数 `/versions` 命名即可，结论归档备查。
+### ~~T8. 版本详情路由被通配列表路由遮蔽~~ ✅ 已解决（2026-08-26）
+**状态：已解决。** `GET /api/versions/detail/{version_id}` 原先注册在 `/{entity_type}/{entity_id}` 之后，FastAPI 会把 `detail/<id>` 当成实体类型与实体 ID，返回错误的列表响应。详情路由现已提前注册，并由 `qa_verify_correctness.py` 通过真实 ASGI 请求验证返回单版本详情。
 
 ### ~~T9. 相对导入陷阱~~ ✅ 已彻底解决（2026-07-31）
 **状态：已根除 `sys.path` 注入 hack，改为正规包导入。**

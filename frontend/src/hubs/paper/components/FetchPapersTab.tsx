@@ -44,7 +44,7 @@ export default function FetchPapersTab({ lastResult, isFetching, onFetch }: Fetc
     if (lastResult && resultsRef.current) {
       resultsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-  }, [lastResult?.fetchedAt])
+  }, [lastResult])
 
   const handleSubmit = () => {
     if (isFetching) return

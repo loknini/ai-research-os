@@ -315,7 +315,7 @@ echo ""
 echo "提示:"
 echo "  - 配置 LLM：打开前端「设置 -> LLM API 配置」填写"
 echo "  - 数据备份与迁移：打开前端「设置 -> 数据备份与迁移」卡片"
-echo "  - 查看设计文档: $PROJECT_DIR/DESIGN.md"
+echo "  - 查看设计文档: $PROJECT_DIR/docs/SYSTEM-DESIGN.md"
 echo "  - 按 Ctrl+C 停止所有服务（会清理后端 / 前端进程）"
 echo ""
 

@@ -155,7 +155,7 @@ export function usePaperData({
   // 重置分页当筛选条件变化（365–367）
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchQuery, filterOption, selectedTags, sortOption])
+  }, [searchQuery, filterOption, selectedTags, sortOption, setCurrentPage])
 
   // 标签筛选切换（298–304）
   const toggleTagFilter = (tag: string) => {

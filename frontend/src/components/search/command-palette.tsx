@@ -293,7 +293,7 @@ export function CommandPalette({ isGlobal = true }: CommandPaletteProps) {
           e.preventDefault()
           setSelectedIndex((prev) => (prev - 1 + navItems.length) % navItems.length)
           break
-        case 'Enter':
+        case 'Enter': {
           e.preventDefault()
           const selected = navItems[selectedIndex]
           if (selected) {
@@ -302,6 +302,7 @@ export function CommandPalette({ isGlobal = true }: CommandPaletteProps) {
             setQuery('')
           }
           break
+        }
       }
     },
     [navItems, selectedIndex, navigate]

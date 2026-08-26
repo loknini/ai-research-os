@@ -239,7 +239,7 @@ export default function AgentRunsHub() {
     if (!run || (run.status !== 'running' && run.status !== 'pending')) return
     const t = setInterval(() => fetchDetail(selectedId), 2000)
     return () => clearInterval(t)
-  }, [selectedId, detail?.run?.status, fetchDetail])
+  }, [selectedId, detail?.run, fetchDetail])
 
   const cancelRun = useCallback(async (id: string) => {
     try {

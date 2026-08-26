@@ -184,48 +184,58 @@ async def get_formula_history(limit: int = 100, offset: int = 0, favorites_only:
         return []
 
 
-async def update_formula_record(record_id: str, updates: Dict[str, Any]) -> bool:
+async def update_formula_record(record_id: str, updates: Dict[str, Any]) -> Optional[bool]:
     """更新公式记录（同时校验空间归属，避免误改他人数据）。"""
-    try:
-        async with database.get_db() as conn:
-            if "latex_code" in updates:
-                await conn.execute(
-                    "UPDATE formula_history SET latex_code = ? WHERE id = ? AND space_id = ?",
-                    (updates["latex_code"], record_id, SPACE_ID)
-                )
-            if "is_favorite" in updates:
-                await conn.execute(
-                    "UPDATE formula_history SET is_favorite = ? WHERE id = ? AND space_id = ?",
-                    (updates["is_favorite"], record_id, SPACE_ID)
-                )
-            if "tags" in updates:
-                await conn.execute(
-                    "UPDATE formula_history SET tags = ? WHERE id = ? AND space_id = ?",
-                    (json.dumps(updates["tags"]), record_id, SPACE_ID)
-                )
-            if "note" in updates:
-                await conn.execute(
-                    "UPDATE formula_history SET note = ? WHERE id = ? AND space_id = ?",
-                    (updates["note"], record_id, SPACE_ID)
-                )
-            return True
-    except Exception as e:
-        print(f"Update formula record error: {e}", file=sys.stderr)
+    field_mapping = {
+        "latex_code": "latex_code",
+        "latexCode": "latex_code",
+        "is_favorite": "is_favorite",
+        "isFavorite": "is_favorite",
+        "tags": "tags",
+        "note": "note",
+    }
+    normalized: Dict[str, Any] = {}
+    for key, value in updates.items():
+        column = field_mapping.get(key)
+        if column:
+            normalized[column] = value
+    if not normalized:
         return False
 
+    try:
+        async with database.get_db() as conn:
+            clauses = []
+            values = []
+            for column, value in normalized.items():
+                if column == "tags":
+                    value = json.dumps(value, ensure_ascii=False)
+                elif column == "is_favorite":
+                    value = 1 if value else 0
+                clauses.append(f"{column} = ?")
+                values.append(value)
+            values.extend([record_id, SPACE_ID])
+            cur = await conn.execute(
+                f"UPDATE formula_history SET {', '.join(clauses)} WHERE id = ? AND space_id = ?",
+                values,
+            )
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"Update formula record error: {e}", file=sys.stderr)
+        return None
 
-async def delete_formula_record(record_id: str) -> bool:
+
+async def delete_formula_record(record_id: str) -> Optional[bool]:
     """删除公式记录（同时校验空间归属）。"""
     try:
         async with database.get_db() as conn:
-            await conn.execute(
+            cur = await conn.execute(
                 "DELETE FROM formula_history WHERE id = ? AND space_id = ?",
                 (record_id, SPACE_ID)
             )
-            return True
+            return cur.rowcount > 0
     except Exception as e:
         print(f"Delete formula record error: {e}", file=sys.stderr)
-        return False
+        return None
 
 
 async def get_formula_stats() -> Dict[str, Any]:
@@ -316,10 +326,20 @@ async def _run_cli() -> None:
             print(json.dumps({"success": False, "error": "Invalid JSON updates"}))
             sys.exit(1)
         ok = await update_formula_record(record_id, updates)
-        print(json.dumps({"success": ok, "updated": ok}))
+        if ok is None:
+            print(json.dumps({"success": False, "updated": False, "error": "UPDATE_FAILED"}))
+        elif ok:
+            print(json.dumps({"success": True, "updated": True}))
+        else:
+            print(json.dumps({"success": False, "updated": False, "notFound": True}))
     elif action == "history_delete" and len(sys.argv) > 2:
         ok = await delete_formula_record(sys.argv[2])
-        print(json.dumps({"success": ok, "deleted": ok}))
+        if ok is None:
+            print(json.dumps({"success": False, "deleted": False, "error": "DELETE_FAILED"}))
+        elif ok:
+            print(json.dumps({"success": True, "deleted": True}))
+        else:
+            print(json.dumps({"success": False, "deleted": False, "notFound": True}))
     else:
         print(f"Unknown action: {action}")
 

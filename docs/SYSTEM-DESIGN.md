@@ -106,8 +106,8 @@ urllib 手写的 OpenAI 兼容客户端，全局单例 `llm_client`：
 ### 4.6 Cron 调度器（2026-08-23 落地）
 
 - 自研零依赖 cron 解析器（5 字段 + daily/weekly/hourly 快捷词），不引入 croniter；
-- 每 Worker 一个 daemon 线程，60s 扫描 `cron_jobs`，**乐观锁防重**：`UPDATE ... WHERE last_run < next_run` 靠 rowcount 抢锁，多 Worker 只有一个执行；
-- 三种 job_type：`command`（subprocess）/ `agent_run`（触发 Agent 管线）/ `arxiv_fetch`（抓论文落库）；历史写 `cron_run_history`。
+- 每 Worker 一个 daemon 线程，60s 扫描 `cron_jobs`；领取使用旧 `next_run` 快照作为乐观锁令牌，在单条 UPDATE 内同时校验到期、更新 `last_run/next_run/run_count`，多 Worker 只有一个成功；
+- 三种 job_type：`command`（subprocess）/ `agent_run`（触发 Agent 管线）/ `arxiv_fetch`（抓论文落库）；自动与手动执行共用唯一分派/历史入口，手动执行不推进计划游标。
 
 ### 4.7 数据层（`scripts/database.py`）
 
@@ -160,12 +160,12 @@ sequenceDiagram
 
 ```
 各 Worker daemon 线程每 60s 扫描 cron_jobs
-  → 乐观锁抢任务（rowcount=1 者执行）
+  → 原子领取并推进游标（旧 next_run 匹配且 rowcount=1 者执行）
   → 按 job_type 分派：
      command → subprocess（继承 SPACE_ID/DATA_DIR 环境变量）
      agent_run → agent_runner.submit_run（进入 5.3 管线）
      arxiv_fetch → fetch_arxiv.fetch_papers 落库
-  → 结果写 cron_run_history，重算 next_run
+  → 统一入口执行并写 cron_run_history
 ```
 
 ## 6. 关键设计决策

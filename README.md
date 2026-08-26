@@ -2,6 +2,8 @@
 
 > 面向研究生与科研工作者的**一站式 AI 研究与开发工作台** —— 模块化、可视化、AI 驱动。
 
+当前版本：**0.3.0**
+
 AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 AI 辅助软件开发整合到一个工作台中。你可以用它抓取并总结 arXiv 论文、管理研究任务、记录 Markdown 笔记、追踪 SwanLab 实验、对本地文档做 RAG 问答，并用 Multi-Agent 把「想法」拆解成可执行的开发计划，还能用 Cron 定时调度这一切。
 
 **三条设计硬约束**
@@ -41,7 +43,7 @@ AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 A
 - 🗂️ **版本历史**：论文 / 笔记 / 项目修改自动留痕，可对比、可回滚
 - 🤖 **Agent 工程能力（v0.3）**：**工具审批**（safe / sensitive / dangerous 三级策略 + 前端审批卡片）、**可重放日志**（每轮模型实际看到的消息序列落库，可回放）、**上下文管理**（超预算自动 LLM 摘要压缩，不切断 tool 配对）、**插件化工具**（`backend/server/tools/` 新增工具零改动主循环）
 - 📚 **RAG 文档检索**：把 PDF / 文本索引进本地向量库（复用 LLM 的 `/v1/embeddings`），Chat 里开「RAG 问答」即可基于你自己的资料回答并标注引用
-- ⏰ **Cron 定时调度**：`command` / `agent_run` / `arxiv_fetch` 三种任务，自研零依赖解析器，多 worker 靠乐观锁防重复执行
+- ⏰ **Cron 定时调度**：`command` / `agent_run` / `arxiv_fetch` 三种任务，自研零依赖解析器；到期领取与推进 `next_run` 由单条原子 SQL 完成，多 worker 不重复执行
 - 🔐 **space-key 软隔离**：内网多人共享同一服务时，按空间密钥隔离数据，无需登录（见下方「多人 / 内网使用」）
 
 ---
@@ -485,7 +487,7 @@ ai-research-os/
 │   │   ├── tool_registry.py  # 工具注册表 + 审批策略内核（safe / sensitive / dangerous）
 │   │   ├── tools/            # 插件化内置工具（@register_tool，自动发现；含 code_exec 沙箱）
 │   │   ├── agent_runner.py   # 后台非阻塞 Agent 运行器（审批等待 + 可重放日志落库）
-│   │   ├── cron_scheduler.py # 自研零依赖 Cron 调度器（daemon 线程 + DB 乐观锁防重）
+│   │   ├── cron_scheduler.py # 自研零依赖 Cron 调度器（原子领取 + 统一执行/历史入口）
 │   │   ├── rag_service.py    # RAG 文档检索（discover/extract/chunk/embed/retrieve/answer）
 │   │   ├── rag_runner.py     # RAG 后台索引
 │   │   └── routers/          # 各 Hub 路由（tasks/papers/.../agent/chat/rag/cron）
@@ -575,7 +577,7 @@ npm run lint      # ESLint 检查（--max-warnings 0，零警告通过）
 
 # 后端
 python -m uvicorn backend.server.main:app --port 8000 --workers 4   # 启动后端（多 worker）
-python -m py_compile backend/server/**/*.py                         # 语法检查
+python -m compileall -q backend scripts                             # Python 全量语法检查
 
 # 回归验证（QA 脚本，改动后跑对应项；均在 managed/venv 环境运行）
 python scripts/qa_verify_space.py                # 空间隔离 26 项
@@ -588,6 +590,7 @@ python scripts/qa_verify_chat_regenerate_edit.py # 聊天重生成/编辑
 python scripts/qa_verify_chat_branching.py       # 会话分支
 python scripts/qa_verify_conversation_id.py      # 会话 ID 一致性
 python scripts/qa_verify_init_race.py            # 初始化竞态
+python scripts/qa_verify_correctness.py           # 已确认正确性问题 32 项（迁移/Cron/API/CLI）
 ```
 
 Python 脚本无需构建，直接 `python scripts/xxx.py` 运行。
@@ -623,7 +626,7 @@ cd frontend
 npm run lint && npm run build
 
 # 后端：语法检查 + 相关 QA 回归（按改动面选择）
-python -m py_compile backend/server/**/*.py
+python -m compileall -q backend scripts
 python scripts/qa_verify_space.py            # 动了数据层 / 路由必跑
 python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必跑
 # 其余 qa_verify_*.py 按改动面补跑（见「开发命令」）

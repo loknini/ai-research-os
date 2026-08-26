@@ -1,6 +1,6 @@
 # API 参考
 
-> 全部 **113 条 `/api/*` 路由 + 1 条根路由**，按 21 个 router 分组。核对日期：2026-08-26
+> 应用版本 **0.3.0**；全部 **113 条 `/api/*` 路由 + 1 条根路由**，按 21 个 router 分组。核对日期：2026-08-26
 > 交互式文档：服务启动后访问 `http://localhost:8000/docs`（FastAPI 自动生成）
 
 ---
@@ -230,7 +230,7 @@ data: [DONE]
 | POST | `/api/versions/compare` | 比较，body `{versionId1, versionId2}` |
 | POST | `/api/versions/restore` | 回滚，body `{versionId}` |
 
-> ⚠️ 路由顺序陷阱：`/detail/{id}` 定义在 `/{entity_type}/{entity_id}` 之后，因此 `entity_type == "detail"` 会被前者抢先匹配。目前无实体类型叫 detail，暂不影响。
+> `/detail/{version_id}` 在通配 `/{entity_type}/{entity_id}` 之前注册，确保详情请求不会被列表路由抢先匹配。
 
 ---
 
@@ -241,7 +241,7 @@ data: [DONE]
 | GET | `/api/cron/jobs` | 任务列表 |
 | POST | `/api/cron/jobs` | 创建 |
 | POST | `/api/cron/jobs/{job_id}/toggle` | 启停切换 |
-| POST | `/api/cron/jobs/{job_id}/run` | 立即执行（`shlex.split` + subprocess，30s 超时，注入 `SPACE_ID`/`DATA_DIR`，输出截断 2000 字符） |
+| POST | `/api/cron/jobs/{job_id}/run` | 立即执行；与自动调度共用 command / agent_run / arxiv_fetch 分派和超时/参数校验，写执行历史但不推进原 `next_run`；响应输出截断 2000 字符 |
 | GET | `/api/cron/jobs/{job_id}/history` | 单个任务最近执行历史 |
 | GET | `/api/cron/history` | 当前空间全部 Cron 执行历史 |
 | DELETE | `/api/cron/jobs/{job_id}` | 删除 |
@@ -309,8 +309,8 @@ data: [DONE]
 |---|---|---|
 | POST | `/api/formula/recognize` | 识别，body 支持 `imagePath` 或 `imageBase64`（后者落临时文件，finally 清理） |
 | GET | `/api/formula/history?favorites=&limit=100` | 识别历史 |
-| PUT | `/api/formula/history` | 更新记录（isFavorite / tags / note） |
-| DELETE | `/api/formula/history/{record_id}` | 删除记录 |
+| PUT | `/api/formula/history` | 规范请求为平铺 `{id, isFavorite, tags, note}`；兼容旧 `{recordId, updates}` 及 camelCase/snake_case，记录不存在返回 404 |
+| DELETE | `/api/formula/history/{record_id}` | 删除记录；不存在返回 404 |
 | GET | `/api/formula/stats` | 统计 |
 
 ---

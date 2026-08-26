@@ -33,8 +33,11 @@ class RecognizeRequest(BaseModel):
 
 
 class HistoryUpdate(BaseModel):
-    id: str
+    id: Optional[str] = None
+    recordId: Optional[str] = None
+    updates: Optional[dict] = None
     isFavorite: Optional[bool] = None
+    is_favorite: Optional[bool] = None
     tags: Optional[List[str]] = None
     note: Optional[str] = None
 
@@ -92,18 +95,49 @@ async def history(favorites: bool = False, limit: int = 100, space_id: str = Dep
 
 @router.put("/history")
 async def update_history(req: HistoryUpdate, space_id: str = Depends(get_space_id)):
-    updates = {k: v for k, v in req.model_dump(exclude_none=True).items() if k != "id"}
-    return run_script(
-        "formula_service.py", "history_update", req.id, json.dumps(updates),
+    record_id = req.id or req.recordId
+    if not record_id:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "INVALID_REQUEST", "message": "id is required"},
+        )
+    updates = dict(req.updates or {})
+    flat = req.model_dump(
+        exclude_none=True,
+        exclude={"id", "recordId", "updates"},
+    )
+    updates.update(flat)
+    supported = {"latexCode", "latex_code", "isFavorite", "is_favorite", "tags", "note"}
+    if not any(key in supported for key in updates):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "success": False,
+                "error": "INVALID_REQUEST",
+                "message": "at least one supported update field is required",
+            },
+        )
+    result = run_script(
+        "formula_service.py", "history_update", record_id, json.dumps(updates),
         env_extra={"SPACE_ID": space_id},
     )
+    if result.get("notFound") is True:
+        return JSONResponse(status_code=404, content={**result, "error": "NOT_FOUND"})
+    if result.get("success") is False:
+        return JSONResponse(status_code=500, content=result)
+    return result
 
 
 @router.delete("/history/{record_id}")
 async def delete_history(record_id: str, space_id: str = Depends(get_space_id)):
-    return run_script(
+    result = run_script(
         "formula_service.py", "history_delete", record_id, env_extra={"SPACE_ID": space_id}
     )
+    if result.get("notFound") is True:
+        return JSONResponse(status_code=404, content={**result, "error": "NOT_FOUND"})
+    if result.get("success") is False:
+        return JSONResponse(status_code=500, content=result)
+    return result
 
 
 @router.get("/stats")

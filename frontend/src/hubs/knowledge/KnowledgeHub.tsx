@@ -4,7 +4,7 @@
 // JSX assembly of the presentational components. External behavior, props and render
 // output are identical to the source.
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Header, HeaderAction } from '@/components/layout/header'
 import { cn } from '@/utils'
 import { Card, CardContent } from '@/components/ui/card'
@@ -52,6 +52,8 @@ export default function KnowledgeHub() {
   const [obsidianVaults, setObsidianVaults] = useState<ObsidianVault[]>([])
   const [obsidianFiles, setObsidianFiles] = useState<ObsidianFile[]>([])
   const [selectedVault, setSelectedVault] = useState<number | null>(null)
+  const selectedVaultRef = useRef<number | null>(null)
+  selectedVaultRef.current = selectedVault
   const [isScanning, setIsScanning] = useState(false)
   const [showVaultSelector, setShowVaultSelector] = useState(false)
   const [vaultPathInput, setVaultPathInput] = useState('')
@@ -94,27 +96,8 @@ export default function KnowledgeHub() {
     }
   }, [])
 
-  useEffect(() => {
-    loadData()
-    loadObsidianVaults()
-  }, [loadData])
-
-  // 加载 Obsidian Vaults
-  const loadObsidianVaults = async () => {
-    try {
-      const vaults = await fetchVaults()
-      setObsidianVaults(vaults)
-      if (vaults.length > 0 && !selectedVault) {
-        setSelectedVault(vaults[0].id)
-        loadObsidianFiles(vaults[0].id)
-      }
-    } catch (error) {
-      console.error('Failed to load Obsidian vaults:', error)
-    }
-  }
-
   // 加载 Obsidian 文件
-  const loadObsidianFiles = async (vaultId: number) => {
+  const loadObsidianFiles = useCallback(async (vaultId: number) => {
     setIsLoading(true)
     try {
       const files = await fetchVaultFiles(vaultId)
@@ -124,7 +107,27 @@ export default function KnowledgeHub() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [])
+
+  // 加载 Obsidian Vaults
+  const loadObsidianVaults = useCallback(async () => {
+    try {
+      const vaults = await fetchVaults()
+      setObsidianVaults(vaults)
+      if (vaults.length > 0 && !selectedVaultRef.current) {
+        selectedVaultRef.current = vaults[0].id
+        setSelectedVault(vaults[0].id)
+        void loadObsidianFiles(vaults[0].id)
+      }
+    } catch (error) {
+      console.error('Failed to load Obsidian vaults:', error)
+    }
+  }, [loadObsidianFiles])
+
+  useEffect(() => {
+    void loadData()
+    void loadObsidianVaults()
+  }, [loadData, loadObsidianVaults])
 
   // 扫描 Vault
   const handleScanVault = async (vaultId: number) => {
@@ -150,13 +153,13 @@ export default function KnowledgeHub() {
   // 选择文件夹
   const handleSelectDirectory = async () => {
     try {
-      // @ts-ignore - File System Access API
+      // @ts-expect-error - File System Access API is not in every TS DOM lib.
       if (!window.showDirectoryPicker) {
         toast({ title: '浏览器不支持', description: '请使用 Chrome/Edge 浏览器', variant: 'error' })
         return
       }
 
-      // @ts-ignore
+      // @ts-expect-error - File System Access API is not in every TS DOM lib.
       const dirHandle = await window.showDirectoryPicker()
       if (dirHandle) {
         // 尝试获取路径（注意：浏览器出于安全考虑不会返回完整路径）

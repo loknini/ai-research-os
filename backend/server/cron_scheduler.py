@@ -3,9 +3,8 @@
 设计要点
 --------
 * **多 Worker 安全**：调度器在每个 Worker 进程各跑一个 daemon 线程，每 60s 扫描
-  ``cron_jobs`` 表找到期任务。对每个到期任务做**原子抢锁**（
-  ``UPDATE ... WHERE last_run < next_run``），利用 SQLite ``rowcount`` 实现乐观锁——
-  多 Worker 并发抢同一任务时只有第一个 ``rowcount=1``，其余跳过，天然防重。
+  ``cron_jobs`` 表找到期任务。领取和推进游标由一条带旧 ``next_run`` 快照条件的
+  ``UPDATE`` 完成；多 Worker 并发时只有一个 ``rowcount=1``，旧快照不能重复领取。
 * **零依赖 cron 解析**：自研 5 字段 cron 表达式解析器（分 时 日 月 周），
   支持 ``*``、``*/N``、``N-M``、``N,M``，以及 ``daily`` / ``weekly`` / ``hourly``
   语义快捷词。不引入 ``croniter`` 等第三方库。
@@ -106,41 +105,37 @@ async def _scan_and_dispatch() -> None:
         return
 
     for job in due_jobs:
-        acquired = await db.database.try_acquire_cron_job(job["id"], now_ms)
-        if not acquired:
-            continue  # 另一个 Worker 已抢走
-
-        # 抢锁成功 → 计算下次执行时间并更新
+        expected_next_run = int(job["next_run"])
         next_ms = compute_next_run(job["schedule"], now_ms)
-        await db.database.update_cron_next_run(job["id"], next_ms or (now_ms + 3600000))
+        acquired = await db.database.try_acquire_cron_job(
+            job["id"],
+            job.get("space_id") or "__default__",
+            expected_next_run,
+            now_ms,
+            next_ms or (now_ms + 3600000),
+        )
+        if not acquired:
+            continue  # 另一个 Worker 已原子推进该次调度
 
         # 分派执行（异常不外泄）
-        await _dispatch_job(job)
+        await dispatch_job(job)
 
 
 # ---------------------------------------------------------------------------
 # 任务分派
 # ---------------------------------------------------------------------------
-async def _dispatch_job(job: Dict[str, Any]) -> None:
-    """按 job_type 分派执行单个任务，结果写入 cron_run_history。"""
+async def dispatch_job(
+    job: Dict[str, Any],
+    space_id: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Execute one job through the canonical dispatcher and persist history."""
     job_id = job["id"]
-    space_id = job.get("space_id") or "__default__"
-    job_type = job.get("job_type") or "command"
+    resolved_space_id = space_id or job.get("space_id") or "__default__"
     run_id = str(uuid.uuid4())
     started_at = int(time.time() * 1000)
 
-    status = "success"
-    output = ""
-
     try:
-        if job_type == "command":
-            status, output = await _exec_command(job, space_id)
-        elif job_type == "agent_run":
-            status, output = await _exec_agent_run(job, space_id)
-        elif job_type == "arxiv_fetch":
-            status, output = await _exec_arxiv_fetch(job, space_id)
-        else:
-            status, output = "error", f"unknown job_type: {job_type}"
+        status, output = await execute_job(job, resolved_space_id)
     except Exception as exc:  # noqa: BLE001
         status = "error"
         output = f"dispatch error: {exc}"
@@ -149,9 +144,46 @@ async def _dispatch_job(job: Dict[str, Any]) -> None:
     duration_ms = finished_at - started_at
 
     await db.database.add_cron_run_history(
-        run_id, job_id, space_id, status, output[:4000],
+        run_id, job_id, resolved_space_id, status, output[:4000],
         started_at, finished_at, duration_ms,
     )
+    return status, output
+
+
+async def execute_job(job: Dict[str, Any], space_id: str) -> Tuple[str, str]:
+    """Run a job without changing scheduling metadata or writing history."""
+    job_type = job.get("job_type") or job.get("jobType") or "command"
+    if job_type == "command":
+        return await _exec_command(job, space_id)
+    if job_type == "agent_run":
+        return await _exec_agent_run(job, space_id)
+    if job_type == "arxiv_fetch":
+        return await _exec_arxiv_fetch(job, space_id)
+    return "error", f"unknown job_type: {job_type}"
+
+
+def _parse_payload(job: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    raw = job.get("payload")
+    if raw in (None, ""):
+        return {}, None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return None, f"invalid JSON payload: {exc.msg}"
+    if not isinstance(raw, dict):
+        return None, "payload must be a JSON object"
+    return raw, None
+
+
+def _bounded_int(value: Any, name: str, minimum: int, maximum: int) -> Tuple[Optional[int], Optional[str]]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None, f"{name} must be an integer"
+    if not minimum <= parsed <= maximum:
+        return None, f"{name} must be between {minimum} and {maximum}"
+    return parsed, None
 
 
 async def _exec_command(job: Dict[str, Any], space_id: str) -> Tuple[str, str]:
@@ -165,9 +197,13 @@ async def _exec_command(job: Dict[str, Any], space_id: str) -> Tuple[str, str]:
     env["DATA_DIR"] = str(config.DATA_DIR)
 
     try:
-        proc = subprocess.run(
-            shlex.split(command), capture_output=True, text=True,
-            timeout=SUBPROCESS_TIMEOUT, env=env,
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            shlex.split(command),
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT,
+            env=env,
         )
         output = (proc.stdout or "") + (proc.stderr or "")
         status = "success" if proc.returncode == 0 else "failed"
@@ -185,18 +221,19 @@ async def _exec_agent_run(job: Dict[str, Any], space_id: str) -> Tuple[str, str]
     """
     from . import agent_runner
 
-    payload = {}
-    if job.get("payload"):
-        try:
-            payload = json.loads(job["payload"]) if isinstance(job["payload"], str) else job["payload"]
-        except json.JSONDecodeError:
-            payload = {}
+    payload, payload_error = _parse_payload(job)
+    if payload_error or payload is None:
+        return "error", payload_error or "invalid payload"
 
     requirement = payload.get("requirement") or job.get("description") or ""
     if not requirement:
         return "error", "agent_run payload missing 'requirement'"
 
     roles = payload.get("roles")
+    if roles is not None and (
+        not isinstance(roles, list) or not all(isinstance(role, str) and role for role in roles)
+    ):
+        return "error", "agent_run payload 'roles' must be a list of role names"
     run_id = await agent_runner.submit_run(space_id, requirement, roles=roles)
     return "success", f"agent run submitted: {run_id}"
 
@@ -208,21 +245,26 @@ async def _exec_arxiv_fetch(job: Dict[str, Any], space_id: str) -> Tuple[str, st
     """
     from scripts.fetch_arxiv import fetch_papers
 
-    payload = {}
-    if job.get("payload"):
-        try:
-            payload = json.loads(job["payload"]) if isinstance(job["payload"], str) else job["payload"]
-        except json.JSONDecodeError:
-            payload = {}
+    payload, payload_error = _parse_payload(job)
+    if payload_error or payload is None:
+        return "error", payload_error or "invalid payload"
 
     search_query = payload.get("query") or "cat:cs.CV"
     keywords = payload.get("keywords") or []
-    max_results = int(payload.get("max") or 10)
+    if isinstance(keywords, str):
+        keywords = [part.strip() for part in keywords.split(",") if part.strip()]
+    if not isinstance(keywords, list) or not all(isinstance(keyword, str) for keyword in keywords):
+        return "error", "arxiv_fetch payload 'keywords' must be a string list"
+    max_results, max_error = _bounded_int(payload.get("max", 10), "max", 1, 100)
+    days, days_error = _bounded_int(payload.get("days", 1), "days", 1, 365)
+    if max_error or days_error or max_results is None or days is None:
+        return "error", max_error or days_error or "invalid arXiv parameters"
 
     end_date = datetime.now()
-    start_date = end_date - timedelta(days=int(payload.get("days") or 1))
+    start_date = end_date - timedelta(days=days)
 
-    papers = fetch_papers(
+    papers = await asyncio.to_thread(
+        fetch_papers,
         search_query=search_query,
         keywords=keywords if keywords else None,
         start_date=start_date.strftime("%Y%m%d"),
@@ -356,4 +398,6 @@ __all__ = [
     "start_scheduler",
     "stop_scheduler",
     "compute_next_run",
+    "dispatch_job",
+    "execute_job",
 ]

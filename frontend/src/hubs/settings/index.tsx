@@ -48,6 +48,9 @@ interface LLMConfig {
   httpPath: string
 }
 
+type SettingsTab = 'general' | 'integrations' | 'extensions' | 'rag'
+const VALID_TABS: SettingsTab[] = ['general', 'integrations', 'extensions', 'rag']
+
 const LLM_PRESETS = [
   { name: 'Agnes AI (免费)', baseUrl: 'https://apihub.agnes-ai.com/v1', model: '', keyHint: '在 Agnes 控制台获取 sk- 开头的 Key，然后点「获取模型」选择具体模型' },
   { name: '硅基流动', baseUrl: 'https://api.siliconflow.cn/v1', model: '', keyHint: '在 siliconflow.cn 获取 sk- 开头的 Key，然后点「获取模型」选择具体模型' },
@@ -100,8 +103,6 @@ export default function SettingsHub() {
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null)
 
   // 设置分类标签（支持 hash 驱动：#/rag → rag tab）
-  type SettingsTab = 'general' | 'integrations' | 'extensions' | 'rag'
-  const VALID_TABS: SettingsTab[] = ['general', 'integrations', 'extensions', 'rag']
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const hash = window.location.hash.replace('#', '')
     return VALID_TABS.includes(hash as SettingsTab) ? (hash as SettingsTab) : 'general'

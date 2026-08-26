@@ -43,20 +43,6 @@ interface ApprovalInfo {
   status: 'pending' | 'approved' | 'denied' | 'timed_out' | 'cancelled'
 }
 
-// Session 类型（后台运行）
-interface AgentRun {
-  id: string
-  projectId?: string
-  requirement: string
-  roles: string[]
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
-  errorMessage?: string
-  resultSummary?: Record<string, any>
-  createdAt: number
-  startedAt?: number
-  completedAt?: number
-}
-
 interface AgentWorkflowProps {
   projectId?: string
   requirement: string
@@ -110,7 +96,6 @@ const agentConfig = {
 export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkflowProps) {
   const [isRunning, setIsRunning] = useState(false)
   const [messages, setMessages] = useState<AgentMessage[]>([])
-  const [run, setRun] = useState<AgentRun | null>(null)
   const [runId, setRunId] = useState<string | null>(null)
   const [currentPhase, setCurrentPhase] = useState<'idle' | 'architect' | 'planner' | 'developer' | 'reviewer' | 'completed' | 'cancelled'>('idle')
   const [results, setResults] = useState<Record<string, any>>({})
@@ -118,6 +103,7 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
   const scrollRef = useRef<HTMLDivElement>(null)
   const resultsRef = useRef<Record<string, any>>({})
   const cancelledRef = useRef(false)
+  const runIdRef = useRef<string | null>(null)
   const location = useLocation()
   const { registerGeneration, markNotified } = useGenerationStore()
 
@@ -128,14 +114,128 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
     }
   }, [messages])
 
+  const addMessage = useCallback((message: Omit<AgentMessage, 'id' | 'timestamp'>) => {
+    const newMessage: AgentMessage = {
+      ...message,
+      id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+      timestamp: Date.now()
+    }
+    setMessages(prev => [...prev, newMessage])
+  }, [])
+
+  const handleAgentUpdate = useCallback((update: any) => {
+    switch (update.type) {
+      case 'phase_start':
+        setCurrentPhase(update.phase)
+        addMessage({
+          agentRole: update.phase,
+          messageType: 'action',
+          content: update.message || `开始${agentConfig[update.phase as keyof typeof agentConfig]?.name || update.phase}`,
+          stepName: '开始'
+        })
+        break
+
+      case 'tool_approval': {
+        const info: ApprovalInfo = {
+          approvalId: update.approvalId,
+          tool: update.tool,
+          parameters: update.parameters || {},
+          policy: update.policy,
+          status: update.status
+        }
+        if (info.status === 'pending') {
+          setPendingApprovals(prev =>
+            prev.some(p => p.approvalId === info.approvalId) ? prev : [...prev, info]
+          )
+        } else {
+          setPendingApprovals(prev => prev.filter(p => p.approvalId !== info.approvalId))
+          const statusLabel: Record<string, string> = {
+            approved: '已批准',
+            denied: '已拒绝',
+            timed_out: '审批超时（已拒绝）',
+            cancelled: '已取消'
+          }
+          addMessage({
+            agentRole: 'user',
+            messageType: info.status === 'approved' ? 'action' : 'error',
+            content: update.message || `工具 ${info.tool} ${statusLabel[info.status] || info.status}`,
+            stepName: '审批'
+          })
+        }
+        break
+      }
+
+      case 'start':
+        addMessage({
+          agentRole: update.agent,
+          messageType: 'thinking',
+          content: update.message,
+          stepName: '初始化'
+        })
+        break
+
+      case 'progress':
+        addMessage({
+          agentRole: update.agent,
+          messageType: 'progress',
+          content: update.step,
+          stepName: update.step,
+          metadata: { progress: update.progress }
+        })
+        break
+
+      case 'complete': {
+        const agent = update.agent
+        if (agent) {
+          resultsRef.current[agent] = update.result
+          setResults(prev => ({ ...prev, [agent]: update.result }))
+        }
+        addMessage({
+          agentRole: agent,
+          messageType: 'output',
+          content: '阶段产出完成',
+          stepName: '完成',
+          metadata: update.result
+        })
+        break
+      }
+
+      case 'run_complete':
+        setCurrentPhase('completed')
+        if (runIdRef.current) markNotified(runIdRef.current)
+        break
+
+      case 'run_cancelled':
+        cancelledRef.current = true
+        if (runIdRef.current) markNotified(runIdRef.current)
+        addMessage({
+          agentRole: 'user',
+          messageType: 'error',
+          content: update.message || '运行已取消',
+          stepName: '取消'
+        })
+        break
+
+      case 'error':
+        if (runIdRef.current) markNotified(runIdRef.current)
+        addMessage({
+          agentRole: 'user',
+          messageType: 'error',
+          content: update.message,
+          stepName: '错误'
+        })
+        break
+    }
+  }, [addMessage, markNotified])
+
   // 运行 Agent 工作流（后台非阻塞：提交即返回 runId，再订阅 SSE 实时事件）
   const runWorkflow = useCallback(async () => {
     if (!requirement.trim() || isRunning) return
 
     setIsRunning(true)
     setMessages([])
-    setRun(null)
     setRunId(null)
+    runIdRef.current = null
     setResults({})
     setPendingApprovals([])
     resultsRef.current = {}
@@ -162,6 +262,7 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
 
     const rid = submitData.runId as string
     setRunId(rid)
+    runIdRef.current = rid
     // 登记到全局 watcher：切走页面后，watcher 会在完成时弹提醒
     registerGeneration({ id: rid, type: 'agent', sourcePath: location.pathname, label: requirement })
 
@@ -211,7 +312,7 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
     }
 
     setIsRunning(false)
-  }, [requirement, isRunning, projectId, onComplete])
+  }, [requirement, isRunning, projectId, onComplete, registerGeneration, location.pathname, addMessage, handleAgentUpdate])
 
   // 取消后台运行
   const cancelRun = useCallback(async () => {
@@ -236,126 +337,6 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
       // 网络异常时保持 pending，SSE 事件流兜底展示最终状态
     }
   }, [runId])
-
-  // 处理 Agent 更新
-  const handleAgentUpdate = (update: any) => {
-    switch (update.type) {
-      case 'phase_start':
-        setCurrentPhase(update.phase)
-        addMessage({
-          agentRole: update.phase,
-          messageType: 'action',
-          content: update.message || `开始${agentConfig[update.phase as keyof typeof agentConfig]?.name || update.phase}`,
-          stepName: '开始'
-        })
-        break
-
-      case 'tool_approval': {
-        // 工具审批事件：pending 入队列等待决策；终态移出并留痕
-        const info: ApprovalInfo = {
-          approvalId: update.approvalId,
-          tool: update.tool,
-          parameters: update.parameters || {},
-          policy: update.policy,
-          status: update.status
-        }
-        if (info.status === 'pending') {
-          setPendingApprovals(prev =>
-            prev.some(p => p.approvalId === info.approvalId) ? prev : [...prev, info]
-          )
-        } else {
-          setPendingApprovals(prev => prev.filter(p => p.approvalId !== info.approvalId))
-          const statusLabel: Record<string, string> = {
-            approved: '已批准',
-            denied: '已拒绝',
-            timed_out: '审批超时（已拒绝）',
-            cancelled: '已取消'
-          }
-          addMessage({
-            agentRole: 'user',
-            messageType: info.status === 'approved' ? 'action' : 'error',
-            content: update.message || `工具 ${info.tool} ${statusLabel[info.status] || info.status}`,
-            stepName: '审批'
-          })
-        }
-        break
-      }
-
-      case 'start':
-        addMessage({
-          agentRole: update.agent,
-          messageType: 'thinking',
-          content: update.message,
-          stepName: '初始化'
-        })
-        break
-
-      case 'progress':
-        addMessage({
-          agentRole: update.agent,
-          messageType: 'progress',
-          content: update.step,
-          stepName: update.step,
-          metadata: { progress: update.progress }
-        })
-        if (run) {
-          setRun({ ...run, status: 'running' })
-        }
-        break
-
-      case 'complete': {
-        const agent = update.agent
-        if (agent) {
-          resultsRef.current[agent] = update.result
-          setResults(prev => ({ ...prev, [agent]: update.result }))
-        }
-        addMessage({
-          agentRole: agent,
-          messageType: 'output',
-          content: '阶段产出完成',
-          stepName: '完成',
-          metadata: update.result
-        })
-        break
-      }
-
-      case 'run_complete':
-        setCurrentPhase('completed')
-        if (runId) markNotified(runId)
-        break
-
-      case 'run_cancelled':
-        cancelledRef.current = true
-        if (runId) markNotified(runId)
-        addMessage({
-          agentRole: 'user',
-          messageType: 'error',
-          content: update.message || '运行已取消',
-          stepName: '取消'
-        })
-        break
-
-      case 'error':
-        if (runId) markNotified(runId)
-        addMessage({
-          agentRole: 'user',
-          messageType: 'error',
-          content: update.message,
-          stepName: '错误'
-        })
-        break
-    }
-  }
-
-  // 添加消息
-  const addMessage = (message: Omit<AgentMessage, 'id' | 'timestamp'>) => {
-    const newMessage: AgentMessage = {
-      ...message,
-      id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
-      timestamp: Date.now()
-    }
-    setMessages(prev => [...prev, newMessage])
-  }
 
   // 渲染消息
   const renderMessage = (message: AgentMessage, index: number) => {

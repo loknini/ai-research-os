@@ -1,6 +1,6 @@
 # 部署与运维
 
-> 环境配置、启动方式、多人协作、数据备份、故障排查。核对日期：2026-07-30
+> 环境配置、启动方式、多人协作、数据备份、故障排查。核对日期：2026-08-26；当前版本 0.3.0。
 
 ---
 
@@ -194,6 +194,8 @@ curl -X POST http://localhost:8000/api/backup/import -F "file=@airos-backup.zip"
 | LLM 返回 404 | **Base URL 与 path 拼接重复**。确认 Base URL 自带 `/v1`，`LLM_HTTP_PATH` 只是 `/chat/completions` |
 | 改了 LLM 配置不生效 | 多 worker 下只有一个 worker 热更新。重启服务 |
 | `database is locked` | 检查是否两个进程/两台机器同时写同一个库；确认 WAL 生效（`PRAGMA journal_mode` 应为 wal） |
+| Cron 任务没触发 | 检查 5 字段表达式或 daily/weekly/hourly；查看任务的 `enabled` / `nextRun` 与 `/api/cron/jobs/{id}/history`。多 Worker 使用旧 `next_run` 原子领取，某个 Worker 未领取通常表示另一个 Worker 已推进该次计划 |
+| 手动 Cron 看似未改变计划时间 | 这是预期语义：立即执行会更新 `lastRun/runCount` 并写历史，但不推进原 `nextRun` |
 | Agent run 卡在 running | 查 `agent_run_events` 最后一条事件；LLM 超时（默认 120s）会让阶段长时间无输出；可调 `POST /runs/{id}/cancel` |
 | 中文乱码（PowerShell） | `.ps1` 必须是 **UTF-8 with BOM**，脚本头部需有 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` |
 | PDF 预览空白 | pdf worker 走 cdnjs CDN，内网/离线不可用。需自托管 worker 文件 |
@@ -213,15 +215,27 @@ uvicorn 日志直接输出到启动终端，无独立日志文件。
 
 ## 7. 验收脚本
 
-```bash
+```powershell
 # 空间隔离（26 项）
 python scripts/qa_verify_space.py
 
 # 后台 Agent runner（19 项）
 python scripts/qa_verify_agent_runner.py
 
+# 正确性修复（论文旧库迁移、Cron 并发/API、公式、版本、RAG、CLI）
+python scripts/qa_verify_correctness.py
+
+# Python 语法与全部独立 QA（PowerShell）
+python -m compileall -q backend scripts
+Get-ChildItem scripts/qa_verify_*.py | ForEach-Object { python $_.FullName; if ($LASTEXITCODE) { throw $_.Name } }
+Get-ChildItem scripts/qa_verify_*.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE) { throw $_.Name } }
+
 # 前端护栏
-cd frontend && npx tsc --noEmit && npm run build && npm run lint
+Push-Location frontend
+npx tsc --noEmit
+npm run lint
+npm run build
+Pop-Location
 ```
 
-两个 QA 脚本使用隔离的临时 `DATA_DIR`，不会污染现有数据。需要 `aiosqlite / fastapi / httpx / uvicorn`。
+QA 脚本使用隔离的临时 `DATA_DIR` 或 mock，不会污染现有数据。包含 Unicode 符号的脚本会主动配置 UTF-8，可直接在 Windows 默认 PowerShell 中运行。需要 `aiosqlite / fastapi / httpx / uvicorn`。

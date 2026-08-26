@@ -24,6 +24,17 @@ class RestoreRequest(BaseModel):
     versionId: str
 
 
+@router.get("/detail/{version_id}")
+async def version_detail(version_id: str, space_id: str = Depends(get_space_id)):
+    try:
+        version = await db.database.get_version_by_id(version_id, space_id=space_id)
+        if not version:
+            return {"success": False, "error": "NOT_FOUND", "message": "Version not found"}
+        return {"success": True, "version": version}
+    except Exception as exc:
+        raise APIError(str(exc), code="GET_VERSION_FAILED")
+
+
 @router.get("/{entity_type}/{entity_id}")
 async def list_versions(
     entity_type: str,
@@ -36,17 +47,6 @@ async def list_versions(
         return {"success": True, "versions": versions}
     except Exception as exc:
         raise APIError(str(exc), code="LIST_VERSIONS_FAILED")
-
-
-@router.get("/detail/{version_id}")
-async def version_detail(version_id: str, space_id: str = Depends(get_space_id)):
-    try:
-        version = await db.database.get_version_by_id(version_id, space_id=space_id)
-        if not version:
-            return {"success": False, "error": "NOT_FOUND", "message": "Version not found"}
-        return {"success": True, "version": version}
-    except Exception as exc:
-        raise APIError(str(exc), code="GET_VERSION_FAILED")
 
 
 @router.post("/compare")

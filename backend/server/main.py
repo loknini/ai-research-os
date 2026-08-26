@@ -33,14 +33,14 @@ async def lifespan(app: FastAPI):
     # `init_db` applies the aiosqlite WAL pragmas and the idempotent
     # `space_id` column migration for legacy/user tables.
     await db.init_db()
-    # 启动 cron 调度器守护线程（多 Worker 各跑一个，靠 DB 乐观锁防重）。
+    # 启动 cron 调度器守护线程（多 Worker 各跑一个，靠 DB 原子领取防重）。
     start_scheduler()
     yield
 
 
 app = FastAPI(
     title="AI-Research-OS Backend",
-    version="0.1.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
@@ -73,7 +73,7 @@ async def root() -> dict:
     return {
         "success": True,
         "name": "AI-Research-OS Backend",
-        "version": "0.1.0",
+        "version": "0.3.0",
         "docs": "/docs",
         "health": "/api/healthz",
     }

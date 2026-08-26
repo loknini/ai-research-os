@@ -1,7 +1,7 @@
 # 数据模型与空间隔离
 
 > 实现文件：`scripts/database.py`（约 3100 行，aiosqlite）；引导壳：`backend/server/db.py`
-> 核对日期：2026-08-26
+> 对应应用版本 **0.3.0**；核对日期：2026-08-26
 
 ---
 
@@ -105,11 +105,13 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 |---|---|
 | `title` / `abstract` | 标题与摘要 |
 | `authors` / `categories` / `tags` | JSON 数组 |
-| `arxiv_id` | **UNIQUE NOT NULL**，去重依据 |
+| `arxiv_id` | `NOT NULL`，与 `space_id` 组成 `UNIQUE(space_id, arxiv_id)`，仅在空间内去重 |
 | `pdf_url` / `local_path` | 远程链接与本地归档路径 |
 | `summary` | AI 总结结果（可为空） |
 | `is_read` / `is_favorite` | 阅读态与收藏 |
 | `published_date` / `added_at` / `updated_at` | 时间戳 |
+
+`id` 是全局不透明存储主键。旧记录的 ID 原样保留；官方 arXiv 抓取的新记录按 `space_id + arxiv_id` 生成确定性 UUID，业务调用继续用独立的 `arxivId` 字段识别论文。旧版全局唯一约束通过事务化重建表迁移，迁移后执行 `PRAGMA foreign_key_check`，不会改写笔记的 `paper_id`。
 
 ### 3.2 任务与项目
 
@@ -166,7 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 **`version_history`** — `id TEXT` / `entity_type` / `entity_id` / `version_number` / `data`(JSON 全量快照) / `change_summary` / `created_by` / `created_at`
 > 支持 note / task / project 三类实体；`delete_old_versions(keep_count=20)` 控制膨胀。
 
-**`cron_jobs`** — `id TEXT` / `name` / `description` / `schedule` / `command` / `job_type` / `payload`(JSON) / `enabled` / `last_run` / `next_run` / `run_count`
+**`cron_jobs`** — `id TEXT` / `name` / `description` / `schedule` / `command` / `job_type` / `payload`(JSON) / `enabled` / `last_run` / `next_run` / `run_count`。自动调度用旧 `next_run` 作乐观锁令牌，在同一条 UPDATE 中校验到期、写 `last_run`、推进 `next_run` 并递增计数。
 **`cron_run_history`** — 定时任务执行历史：`id` / `cron_job_id` / `status` / `output` / 起止时间 / `duration_ms`
 **`formula_history`** — `id TEXT` / `image_data`(Base64) / `latex_code` / `confidence REAL` / `source_type`(upload·paste·screenshot) / `is_favorite` / `tags`(JSON) / `note`
 **`obsidian_vaults`** — `id INTEGER` / `name` / `vault_path` / `sync_mode` / `last_sync_at` / `is_active`

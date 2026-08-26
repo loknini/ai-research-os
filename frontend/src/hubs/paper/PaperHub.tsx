@@ -121,12 +121,7 @@ export default function PaperHub() {
     [papers, updatePaper, showToast]
   )
 
-  // 加载本地论文
-  useEffect(() => {
-    loadLocalPapersData()
-  }, [])
-
-  const loadLocalPapersData = async () => {
+  const loadLocalPapersData = useCallback(async () => {
     setLoadingPapers(true)
     try {
       const localPapers = await loadLocalPapers()
@@ -137,7 +132,12 @@ export default function PaperHub() {
     } finally {
       setLoadingPapers(false)
     }
-  }
+  }, [setLoadingPapers, setPapers])
+
+  // 加载本地论文
+  useEffect(() => {
+    void loadLocalPapersData()
+  }, [loadLocalPapersData])
 
   const handleFetchPapers = async (params?: { keywords: string; maxResults: number }) => {
     const keywords = params?.keywords ?? ''

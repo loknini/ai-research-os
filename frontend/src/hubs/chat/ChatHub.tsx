@@ -337,7 +337,7 @@ export default function ChatHub() {
       setCurrentConversationId(convId)
       setSearchParams({}, { replace: true }) // 清除参数，避免反复触发
     }
-  }, [searchParams, conversations, currentConversationId, setSearchParams])
+  }, [searchParams, conversations, currentConversationId, setSearchParams, setCurrentConversationId])
 
   // 输入内容
   const [input, setInput] = useState('')
@@ -493,10 +493,44 @@ export default function ChatHub() {
     return () => document.removeEventListener('mousedown', handle)
   }, [ragPickerOpen])
 
+  // 加载会话列表
+  const loadConversations = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      const list = await fetchConversations()
+      setConversations(list)
+      const savedId = useAppStore.getState().chatConversationId
+      if (savedId && list.some((c) => c.id === savedId)) {
+        setCurrentConversationIdState(savedId)
+      } else if (savedId) {
+        setAppStoreChatId(null)
+      }
+    } catch (error) {
+      console.error('Failed to load conversations:', error)
+      showToast('加载对话列表失败', 'error')
+    } finally {
+      setIsLoading(false)
+    }
+  }, [setAppStoreChatId, showToast])
+
+  // 加载会话详情
+  const loadConversationDetail = useCallback(async (id: string) => {
+    try {
+      const detail = await fetchConversationDetail(id)
+      if (detail) {
+        setCurrentConversation(detail)
+      }
+    } catch (error) {
+      console.error('Failed to load conversation detail:', error)
+      showToast('加载对话详情失败', 'error')
+    }
+  }, [showToast])
+  loadDetailRef.current = loadConversationDetail
+
   // 初始加载会话列表
   useEffect(() => {
-    loadConversations()
-  }, [])
+    void loadConversations()
+  }, [loadConversations])
 
   // 右键菜单：点击外部或 Esc 关闭
   useEffect(() => {
@@ -519,27 +553,6 @@ export default function ChatHub() {
     }
   }, [contextMenu])
   
-  // 加载会话列表
-  const loadConversations = async () => {
-    setIsLoading(true)
-    try {
-      const list = await fetchConversations()
-      setConversations(list)
-      // 从持久化 store 恢复当前会话；若该会话已删除则清空持久化
-      const savedId = useAppStore.getState().chatConversationId
-      if (savedId && list.some((c) => c.id === savedId)) {
-        setCurrentConversationIdState(savedId)
-      } else if (savedId) {
-        setAppStoreChatId(null)
-      }
-    } catch (error) {
-      console.error('Failed to load conversations:', error)
-      showToast('加载对话列表失败', 'error')
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
   // 当切换会话时，加载会话详情；并接管该会话可能正在后台跑的生成
   useEffect(() => {
     setEditingMessageId(null)
@@ -592,22 +605,7 @@ export default function ChatHub() {
     })
     void sync() // 立即接管（若挂载时生成已在跑）
     return unsub
-  }, [currentConversationId])
-
-  // 加载会话详情
-  const loadConversationDetail = async (id: string) => {
-    try {
-      const detail = await fetchConversationDetail(id)
-      if (detail) {
-        setCurrentConversation(detail)
-      }
-    } catch (error) {
-      console.error('Failed to load conversation detail:', error)
-      showToast('加载对话详情失败', 'error')
-    }
-  }
-  // 供订阅回调随时拿到最新实现
-  loadDetailRef.current = loadConversationDetail
+  }, [currentConversationId, loadConversationDetail])
 
   // 切换会话时，从会话 metadata 恢复 RAG 设置
   useEffect(() => {
@@ -619,7 +617,7 @@ export default function ChatHub() {
     lastRagSyncId.current = currentConversation.id
     setRagEnabled(ragMeta?.enabled ?? false)
     setRagSourceIds(ragMeta?.sourceIds ?? [])
-  }, [currentConversation?.id])
+  }, [currentConversation])
 
   // RAG 设置变更时持久化到会话 metadata（跳过同步触发的变更以避免循环）
   useEffect(() => {
@@ -692,7 +690,7 @@ export default function ChatHub() {
     } else {
       showToast('创建对话失败', 'error')
     }
-  }, [showToast])
+  }, [showToast, setCurrentConversationId])
 
   // 删除会话（二次确认；按钮外层已阻止冒泡，此处无需 event）
   const deleteConversation = useCallback(
@@ -717,7 +715,7 @@ export default function ChatHub() {
         },
       })
     },
-    [conversations, currentConversationId, showConfirm, showToast]
+    [conversations, currentConversationId, showConfirm, showToast, setCurrentConversationId]
   )
 
   // 开始编辑标题（按钮外层已阻止冒泡，此处无需 event）
@@ -806,7 +804,7 @@ export default function ChatHub() {
 
     // 复用核心流式生成逻辑
     await runGeneration(updatedMessages)
-  }, [input, isGenerating, currentConversationId, currentConversation?.messages, createNewConversation, runGeneration, showToast])
+  }, [input, pendingImages, isGenerating, currentConversationId, currentConversation?.messages, createNewConversation, runGeneration])
 
   // 进入/退出某条消息的内联编辑态（仅用于「编辑最新提问」）
   const startEditMessage = useCallback((message: Message) => {
@@ -956,7 +954,7 @@ export default function ChatHub() {
     setCurrentConversationId(newConversation.id)
     setCurrentConversation(newConversation)
     showToast('会话已清空', 'success')
-  }, [currentConversationId, currentConversation?.title, showToast])
+  }, [currentConversationId, currentConversation?.title, showToast, setCurrentConversationId])
 
   // 派生：当前对话最新分支点的版本提示（用于顶部栏显示"第 X / N 个版本"）
   const branchTip = useMemo(() => {

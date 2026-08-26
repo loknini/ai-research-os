@@ -227,8 +227,8 @@ export default function FormulaHub({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          recordId: record.id,
-          updates: { is_favorite: !record.is_favorite }
+          id: record.id,
+          isFavorite: !record.is_favorite,
         })
       })
       
@@ -272,8 +272,8 @@ export default function FormulaHub({
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          recordId: selectedRecord.id,
-          updates: { note: editingNote }
+          id: selectedRecord.id,
+          note: editingNote,
         })
       })
       
