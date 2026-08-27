@@ -1,7 +1,15 @@
 # LLM、Agent 与 Skills
 
+## 0. 0.4.0 可配置专家团队
+
+`backend/server/agent_teams.py` 负责加载版本控制内的内置团队、校验用户团队、解析当前空间的论文/笔记上下文，并按边数组顺序拼装汇合输入。`agent_runner.py` 在旧顺序 `roles` 入口之外增加静态 DAG 拓扑调度：ready 节点在团队 `maxConcurrency`（1–4）内并行执行，节点状态和输出写入 `agent_run_nodes`。
+
+团队节点可覆盖模型、temperature、maxTokens，且只能看到 `allowedTools` 白名单。工具安全等级仍由注册表决定，团队不能降级策略。JSON Schema 输出由 `jsonschema` 校验，首次失败后执行一次无工具修复；仍失败则节点失败，后代跳过，主要输出未完成时整次运行失败。
+
+内置定义位于 `backend/agent_teams/*.json`，用户团队和角色模板按 space-key 入库。每次运行保存团队与输入上下文快照；旧 `backend/agent_roles.json` 和 `roles` 请求继续可用。
+
 > 覆盖 `backend/server/llm.py`、`backend/server/agent_service.py`、`backend/server/agent_runner.py`、`backend/server/skills_bridge.py`、`backend/server/memory.py`、`scripts/chat_agent_stream.py`
-> 核对日期：2026-07-30
+> 核对日期：2026-08-27
 
 ---
 
@@ -91,11 +99,11 @@ endpoint = LLM_BASE_URL.rstrip("/") + LLM_HTTP_PATH
 
 ---
 
-## 3. 角色化多 Agent 管线
+## 3. 旧角色兼容管线
 
 ### 3.1 抽象
 
-一个**角色（role）** = 一段 system prompt + 一个可选的结构化解析器。管线按顺序执行，**上游的 `raw_output` 作为下游的 user 输入**。
+未传 `teamId` 的旧请求继续使用本节的顺序管线：一个**角色（role）** = 一段 system prompt + 一个可选的结构化解析器，**上游的 `raw_output` 作为下游的 user 输入**。新功能应优先使用第 0 节的团队 DAG。
 
 内置角色 `BUILTIN_ROLES`：
 

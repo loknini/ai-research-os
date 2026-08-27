@@ -13,6 +13,7 @@
 |---|---|---|
 | `react` / `react-dom` | ^18.2 | UI 框架（`createRoot` + StrictMode） |
 | `react-router-dom` | ^6.22 | 路由 |
+| `@xyflow/react` | ^12.11 | 专家团队 DAG 画布、连线与节点布局 |
 | `zustand` | ^4.5 | 状态管理（`devtools` + `persist`） |
 | `@radix-ui/react-scroll-area` `-separator` `-slot` | — | shadcn 组件底座 |
 | `class-variance-authority` | ^0.7 | 变体样式（button / badge） |
@@ -24,7 +25,7 @@
 | `react-pdf` | ^10.4 | PDF 预览 |
 | `tailwindcss-animate` | ^1.0 | 动画插件 |
 
-**刻意没有的东西**：UI 组件库（shadcn 是手写复制进仓库的源码，不是依赖）、图表库（Dashboard 进度条是手写 div）、数学公式渲染库（KaTeX/MathJax 未接入，公式 Hub 的 `LatexPreview` 目前是纯文本回显）。
+**刻意没有的东西**：完整 UI 组件库（shadcn 是手写复制进仓库的源码，不是依赖）、通用图表库（`@xyflow/react` 只用于专家团队 DAG）、数学公式渲染库（KaTeX/MathJax 未接入，公式 Hub 的 `LatexPreview` 目前是纯文本回显）。
 
 ### 开发依赖
 
@@ -56,7 +57,7 @@ npm run lint      # eslint --max-warnings 0
 src/
 ├── main.tsx              入口
 ├── App.tsx               路由表 + 全局布局 + 全局挂件；模块顶层调用 installApiMonitor()
-├── hubs/                 11 个功能中心（业务主体）
+├── hubs/                 12 个功能中心（业务主体）
 ├── components/
 │   ├── ui/               13 个 shadcn 风格基元（手写）
 │   ├── layout/           sidebar.tsx / header.tsx
@@ -79,7 +80,7 @@ src/
 
 ## 3. Hub 与路由
 
-### 3.1 路由表（`App.tsx`，11 条）
+### 3.1 路由表（`App.tsx`，12 个 Hub）
 
 | 路径 | Hub | 侧边栏名称 |
 |---|---|---|
@@ -93,9 +94,10 @@ src/
 | `/citation` | citation | 引用生成 |
 | `/task` | task | 任务清单 |
 | `/agent-runs` | agent-runs | 运行历史 |
+| `/teams` | teams | 专家团队 |
 | `/settings` | settings | （在侧边栏 footer） |
 
-无嵌套路由、无懒加载、无 404 兜底——11 个 Hub 全部同步 import 进首屏 bundle。
+无嵌套路由；12 个 Hub 均以 `React.lazy` 做路由级代码分割，`path="*"` 由 NotFound 页面兜底。`/software` 与 `/experiment` 是指向合并后 `/lab` 的兼容重定向。
 
 ### 3.2 App 组件层次
 

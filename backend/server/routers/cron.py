@@ -7,7 +7,7 @@ children inherit ``SPACE_ID`` / ``DATA_DIR``.
 
 Phase 4 扩展：
   * ``job_type`` 字段区分任务类型（command / agent_run / arxiv_fetch）。
-  * ``payload`` 字段存任务参数 JSON（agent_run 的 requirement/roles、
+  * ``payload`` 字段存任务参数 JSON（agent_run 的 requirement/roles 或 teamId/context、
     arxiv_fetch 的 query/keywords/max）。
   * ``GET /api/cron/jobs/{id}/history`` 查询某任务的执行历史。
   * ``GET /api/cron/history`` 查询当前空间全部执行历史。

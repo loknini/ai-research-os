@@ -19,8 +19,8 @@
 #     不使用 --reload（生产式常驻）。
 #   - 前端开发服务器通过 Vite 反代 /api -> 后端（默认 :8000）。
 #   - LLM 配置：在前端「设置 → LLM API 配置」中填写，写入项目根 .env。
-#   - 首次运行会自动创建项目根 .venv 虚拟环境，后端依赖装进 .venv，
-#     不污染系统全局 Python（仅创建 .venv 那一刻用系统 python3）。
+#   - 首次运行会自动创建项目根 .venv；每次启动按 requirements 指纹检查依赖，
+#     有变化或缺失时同步进 .venv，不污染系统全局 Python。
 
 # 用脚本所在目录推导项目根目录（禁止硬编码绝对路径）
 SOURCE="${BASH_SOURCE[0]}"
@@ -118,6 +118,8 @@ export DATA_DIR="$RESOLVED_DATA_DIR"
 # ---- 虚拟环境隔离 ----
 VENV_DIR="$PROJECT_DIR/.venv"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"   # 项目内虚拟环境解释器（即 .venv/bin/python）
+REQUIREMENTS_FILE="$PROJECT_DIR/backend/requirements.txt"
+REQUIREMENTS_STAMP="$VENV_DIR/.airos-requirements.sha256"
 
 echo "AI-Research-OS"
 echo "AI-Powered Research & Development Workbench"
@@ -137,14 +139,28 @@ else
   echo "  虚拟环境已就绪: $VENV_DIR"
 fi
 
-# 安装后端依赖（在 .venv 内）
-if ! "$VENV_PYTHON" -c "import uvicorn" >/dev/null 2>&1; then
-  echo "uvicorn 未安装，正在尝试安装后端依赖到 .venv..."
-  "$VENV_PYTHON" -m pip install -r "$PROJECT_DIR/backend/requirements.txt" || {
+# requirements.txt 内容变化或直接依赖缺失时同步 .venv。
+# 不能只检查 uvicorn：已有虚拟环境可能缺少后来新增的 jsonschema 等依赖。
+REQUIREMENTS_HASH=$("$VENV_PYTHON" -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' "$REQUIREMENTS_FILE")
+INSTALLED_REQUIREMENTS_HASH=$(cat "$REQUIREMENTS_STAMP" 2>/dev/null || true)
+BACKEND_IMPORTS_READY=""
+if [ "$REQUIREMENTS_HASH" = "$INSTALLED_REQUIREMENTS_HASH" ] && \
+   "$VENV_PYTHON" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pypdf, requests, uvicorn" >/dev/null 2>&1; then
+  BACKEND_IMPORTS_READY=1
+fi
+if [ -z "$BACKEND_IMPORTS_READY" ]; then
+  echo "后端依赖有更新或不完整，正在同步到 .venv..."
+  "$VENV_PYTHON" -m pip install -r "$REQUIREMENTS_FILE" || {
     echo "后端依赖安装失败，请手动执行: $VENV_PYTHON -m pip install -r backend/requirements.txt" >&2
     exit 1
   }
+  "$VENV_PYTHON" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pypdf, requests, uvicorn" >/dev/null 2>&1 || {
+    echo "后端依赖安装后仍无法导入，请检查上方 pip 输出" >&2
+    exit 1
+  }
+  printf '%s' "$REQUIREMENTS_HASH" > "$REQUIREMENTS_STAMP"
 fi
+echo "  后端依赖已就绪"
 
 # 前端依赖
 if [ -z "$SKIP_FRONTEND" ]; then

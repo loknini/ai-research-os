@@ -25,6 +25,7 @@ const FormulaHub = lazy(() => import('@/hubs/formula'))
 const CitationHub = lazy(() => import('@/hubs/citation'))
 const AgentRunsHub = lazy(() => import('@/hubs/agent-runs'))
 const CronHub = lazy(() => import('@/hubs/cron'))
+const TeamsHub = lazy(() => import('@/hubs/teams'))
 
 // 安装全局 fetch 监控：真实 /api 流量驱动侧边栏「后端状态」灯，
 // 取代原先每 5 秒的 healthz 轮询（不再有常驻日志噪音与无谓外网探测）。
@@ -95,6 +96,7 @@ function App() {
                   <Route path="/" element={<Dashboard />} />
                   <Route path="/chat" element={<ChatHub />} />
                   <Route path="/paper" element={<PaperHub />} />
+                  <Route path="/teams" element={<TeamsHub />} />
                   <Route path="/lab" element={<LabHub />} />
                   {/* 旧路由保留可直达：研发实验已合并进 /lab */}
                   <Route path="/software" element={<Navigate to="/lab" replace />} />

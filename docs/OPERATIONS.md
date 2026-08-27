@@ -1,6 +1,6 @@
 # 部署与运维
 
-> 环境配置、启动方式、多人协作、数据备份、故障排查。核对日期：2026-08-26；当前版本 0.3.0。
+> 环境配置、启动方式、多人协作、数据备份、故障排查。核对日期：2026-08-27；当前版本 0.4.0。
 
 ---
 
@@ -12,15 +12,16 @@
 | Node.js | ≥ 22 | 是（仅前端） |
 | Git | 任意 | 否 |
 
-后端依赖仅 8 个包（`backend/requirements.txt`）：
+后端直接依赖共 10 个包（`backend/requirements.txt`）：
 
 ```
 fastapi>=0.110      uvicorn[standard]>=0.29   pydantic>=2.6
 pydantic-settings>=2.2   python-dotenv>=1.0   requests>=2.31
-python-multipart>=0.0.9  aiosqlite>=0.20
+python-multipart>=0.0.9  aiosqlite>=0.20       jsonschema>=4.22,<5
+pypdf>=4.0
 ```
 
-`requests` 只给 `scripts/formula_service.py` 用；`python-multipart` 给备份上传用；**没有 openai SDK**，LLM 客户端是标准库实现。
+`requests` 只给 `scripts/formula_service.py` 用；`python-multipart` 给备份上传用；`jsonschema` 校验专家团队节点的结构化输出；`pypdf` 解析 RAG PDF。**没有 openai SDK**，LLM 客户端是标准库实现。
 
 ---
 
@@ -45,7 +46,7 @@ python-multipart>=0.0.9  aiosqlite>=0.20
 ./start.sh --data-dir ~/Sync/airos-data
 ```
 
-脚本首次运行会在项目根创建 `.venv` 并把后端依赖装进去，**不污染系统全局 Python**（仅创建 venv 那一刻用全局解释器）。
+脚本首次运行会在项目根创建 `.venv`；每次启动会按 `backend/requirements.txt` 内容指纹和直接依赖导入结果检查环境，requirements 变化或包缺失时自动补装。依赖始终安装在 `.venv`，**不污染系统全局 Python**（仅创建 venv 那一刻用全局解释器）。
 
 ### 2.2 手动启动
 
@@ -224,6 +225,7 @@ python scripts/qa_verify_agent_runner.py
 
 # 正确性修复（论文旧库迁移、Cron 并发/API、公式、版本、RAG、CLI）
 python scripts/qa_verify_correctness.py
+python scripts/qa_verify_agent_teams.py
 
 # Python 语法与全部独立 QA（PowerShell）
 python -m compileall -q backend scripts

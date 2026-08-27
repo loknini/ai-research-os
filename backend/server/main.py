@@ -16,6 +16,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import FileResponse, JSONResponse, Response
 
 from . import config
 from . import db
@@ -25,6 +27,21 @@ from .llm import llm_client
 from .routers import routers
 
 FRONTEND_DIST = config.PROJECT_ROOT / "frontend" / "dist"
+
+
+class SPAStaticFiles(StaticFiles):
+    """Serve built assets and fall back to index.html for client-side routes."""
+
+    async def get_response(self, path: str, scope) -> Response:
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404 and not path.lstrip("/").startswith("api/"):
+                return FileResponse(FRONTEND_DIST / "index.html")
+            raise
+        if response.status_code == 404 and not path.lstrip("/").startswith("api/"):
+            return FileResponse(FRONTEND_DIST / "index.html")
+        return response
 
 
 @asynccontextmanager
@@ -40,7 +57,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI-Research-OS Backend",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -61,11 +78,24 @@ register_exception_handlers(app)
 for _router in routers:
     app.include_router(_router)
 
+
+@app.api_route(
+    "/api/{unmatched_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+async def api_not_found(unmatched_path: str) -> JSONResponse:
+    """Keep unknown API requests JSON-shaped instead of serving the SPA."""
+    return JSONResponse(
+        {"success": False, "error": "NOT_FOUND", "message": f"API route not found: /api/{unmatched_path}"},
+        status_code=404,
+    )
+
 # Production SPA hosting -----------------------------------------------------
 # Mounted last so that /api/* routes take precedence.  Only mounted when the
 # frontend has been built (``npm run build`` -> frontend/dist).
 if FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
+    app.mount("/", SPAStaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
 
 
 @app.get("/")
@@ -73,7 +103,7 @@ async def root() -> dict:
     return {
         "success": True,
         "name": "AI-Research-OS Backend",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "docs": "/docs",
         "health": "/api/healthz",
     }

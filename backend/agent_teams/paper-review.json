@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "builtin-paper-review",
+  "name": "论文研读专家团队",
+  "description": "并行分析论文的方法、证据与创新性，生成可保存的研读报告。",
+  "category": "paper",
+  "acceptedContexts": ["papers"],
+  "maxConcurrency": 3,
+  "approvalMode": "manual",
+  "outputNodeId": "editor",
+  "nodes": [
+    {"id":"method","name":"方法分析师","description":"比较问题设定、方法机制、假设与复杂度。","systemPrompt":"你是论文方法分析师。引用输入中的论文信息，区分原文事实与推断。","allowedTools":["arxiv_reader","web_search"],"model":null,"temperature":0.2,"maxTokens":2600,"output":{"type":"text"},"position":{"x":70,"y":50}},
+    {"id":"evidence","name":"证据审查员","description":"审查实验设计、指标、基线、消融与结论强度。","systemPrompt":"你是科研证据审查员。保持批判性，不编造输入中不存在的数据。","allowedTools":["arxiv_reader"],"model":null,"temperature":0.2,"maxTokens":2600,"output":{"type":"text"},"position":{"x":70,"y":210}},
+    {"id":"novelty","name":"创新性分析师","description":"分析相对已有工作的贡献、局限和研究机会。","systemPrompt":"你是创新性分析师。明确哪些判断需要额外文献验证。","allowedTools":["arxiv_reader","web_search"],"model":null,"temperature":0.3,"maxTokens":2400,"output":{"type":"text"},"position":{"x":70,"y":370}},
+    {"id":"editor","name":"综述编辑","description":"汇合分析并形成结构清晰的 Markdown 报告。","systemPrompt":"你是学术综述编辑。只输出满足 JSON Schema 的 JSON，不添加代码围栏。","allowedTools":[],"model":null,"temperature":0.2,"maxTokens":3600,"output":{"type":"json_schema","schema":{"type":"object","required":["title","markdown","tags"],"properties":{"title":{"type":"string"},"markdown":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"position":{"x":500,"y":210}}
+  ],
+  "edges": [
+    {"id":"method-editor","source":"method","target":"editor"},
+    {"id":"evidence-editor","source":"evidence","target":"editor"},
+    {"id":"novelty-editor","source":"novelty","target":"editor"}
+  ]
+}

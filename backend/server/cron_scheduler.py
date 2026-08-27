@@ -217,9 +217,11 @@ async def _exec_command(job: Dict[str, Any], space_id: str) -> Tuple[str, str]:
 async def _exec_agent_run(job: Dict[str, Any], space_id: str) -> Tuple[str, str]:
     """执行 agent_run 类型任务（触发多角色 Agent 管线）。
 
-    payload 示例：{"requirement": "...", "roles": ["architect","planner"]}
+    payload 示例：{"requirement": "...", "teamId": "builtin-paper-review",
+                  "context": {"kind": "papers", "entityIds": []}}
+    未传 teamId 时继续接受旧 roles 数组。
     """
-    from . import agent_runner
+    from . import agent_runner, agent_teams
 
     payload, payload_error = _parse_payload(job)
     if payload_error or payload is None:
@@ -234,7 +236,25 @@ async def _exec_agent_run(job: Dict[str, Any], space_id: str) -> Tuple[str, str]
         not isinstance(roles, list) or not all(isinstance(role, str) and role for role in roles)
     ):
         return "error", "agent_run payload 'roles' must be a list of role names"
-    run_id = await agent_runner.submit_run(space_id, requirement, roles=roles)
+    team_snapshot = None
+    resolved_context = None
+    team_id = payload.get("teamId")
+    if team_id:
+        if not isinstance(team_id, str):
+            return "error", "agent_run payload 'teamId' must be a string"
+        team_snapshot = await agent_teams.resolve_team(team_id, space_id)
+        if not team_snapshot:
+            return "error", "agent team not found"
+        try:
+            team_snapshot, _warnings = agent_teams.validate_team(team_snapshot)
+            resolved_context = await agent_teams.resolve_input_context(payload.get("context"), space_id)
+        except agent_teams.TeamValidationError as exc:
+            return "error", str(exc)
+        if resolved_context["kind"] not in team_snapshot["acceptedContexts"]:
+            return "error", f"team does not accept {resolved_context['kind']} context"
+    run_id = await agent_runner.submit_run(
+        space_id, requirement, roles=roles,
+        team_snapshot=team_snapshot, input_context=resolved_context)
     return "success", f"agent run submitted: {run_id}"
 
 

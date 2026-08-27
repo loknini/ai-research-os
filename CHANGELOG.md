@@ -4,6 +4,17 @@
 
 ---
 
+## [0.4.0] - 2026-08-27 · 可配置专家团队与 DAG 编排
+
+- 新增独立“专家团队”一级页面：内置软件规划、论文研读、知识综合三支只读团队，用户可按 space-key 克隆、编辑、删除及 JSON 导入导出。
+- 新增静态 DAG 编排器，支持多根节点、并行分支、扇入汇合、1–4 并发上限、团队快照和节点级运行历史；不支持条件边、环和自动返工。
+- 节点支持模型、temperature、maxTokens、允许工具及 Text/JSON Schema 输出契约；结构化校验失败只进行一次无工具修复。
+- 新增 `agent_teams`、`agent_role_templates`、`agent_run_nodes`，扩展运行快照、输入上下文及节点级审批字段；迁移保持幂等和旧运行可读。
+- 软件、论文、知识 Hub 接入专家团队，所有生成结果先预览，再由用户明确应用或保存；SwanLab 与实验接口保持不变。
+- 新增 `jsonschema` 与 `@xyflow/react` 依赖、`qa_verify_agent_teams.py` 离线回归；应用版本统一为 `0.4.0`。
+
+---
+
 ## [0.3.0] - 2026-08-26 · 正确性修复与文档同步
 
 - 修复 `LLMClient._reachable()` 因定义丢失导致 `/api/llm/status` 与 `is_available()` 抛 `AttributeError`；新增无网络回归 `qa_verify_llm_status.py`。

@@ -23,6 +23,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Generator
 
+from jsonschema import ValidationError, validate as validate_json
+
 if __name__ == "__main__" and not __package__:
     print(
         "Run this package CLI with: python -m backend.server.agent_service <command> [args]",
@@ -50,11 +52,13 @@ except Exception:  # pragma: no cover - 独立 CLI 回退
         return False, ""
 
 
-def call_llm(messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
+def call_llm(messages: List[Dict[str, str]], temperature: float = 0.7,
+             model: Optional[str] = None, max_tokens: Optional[int] = None) -> str:
     """调用 LLM；优先走可配置的 llm.py，失败回退到本地 urllib 实现。"""
     if llm_client is not None:
         try:
-            text = llm_client.call_llm(messages, temperature=temperature)
+            text = llm_client.call_llm(
+                messages, temperature=temperature, model=model, max_tokens=max_tokens)
             if text is None:
                 raise LLMUnavailableError("LLM 返回空响应（服务不可用）")
             return text
@@ -325,6 +329,8 @@ def run_role(
     input_text: str,
     space_id: str | None = None,
     enable_tools: bool = True,
+    node_spec: Optional[Dict[str, Any]] = None,
+    approval_mode: Optional[str] = None,
 ) -> Generator[Dict[str, Any], None, None]:
     """执行单个角色，产出 start / progress / complete 事件流。
 
@@ -343,8 +349,19 @@ def run_role(
     3. **上下文管理**：消息超预算时用 LLM 把早期历史压缩成摘要（见
        ``context.compact_messages``），替代粗暴的轮次截断。
     """
-    spec = resolve_role(key)
+    if node_spec is None:
+        spec = resolve_role(key)
+    else:
+        spec = {
+            "label": node_spec.get("name", key),
+            "system": node_spec.get("systemPrompt", ""),
+            "parser": None,
+            **node_spec,
+        }
     label = spec["label"]
+    model = spec.get("model") or None
+    temperature = spec.get("temperature")
+    max_tokens = spec.get("maxTokens")
 
     yield {"type": "start", "agent": key, "message": f"开始{label}..."}
 
@@ -360,6 +377,10 @@ def run_role(
     execute_tool = None
     if enable_tools and llm_client is not None:
         tools, execute_tool = _load_agent_tools()
+        if node_spec is not None:
+            allowed = set(node_spec.get("allowedTools") or [])
+            tools = [tool for tool in (tools or [])
+                     if tool.get("function", {}).get("name") in allowed] or None
 
     # 安全上限 + 上下文预算（环境变量可调；压缩替代粗暴截断）
     MAX_TOOL_ROUNDS = int(os.environ.get("AGENT_MAX_TOOL_ROUNDS", "8"))
@@ -384,14 +405,18 @@ def run_role(
                 # —— 工具路径：流式 + 原生 function calling —— #
                 assistant_text = ""
                 tool_calls_this_round: List[dict] = []
-                for item in llm_client.stream_llm(messages, tools=tools):
+                for item in llm_client.stream_llm(
+                    messages, tools=tools, model=model,
+                    temperature=temperature, max_tokens=max_tokens):
                     if isinstance(item, str):
                         assistant_text += item
                     elif isinstance(item, dict) and "tool_calls" in item:
                         tool_calls_this_round = item["tool_calls"]
             else:
                 # —— 无工具路径：纯文本调用（兼容独立 CLI / 旧行为） —— #
-                assistant_text = call_llm(messages) or ""
+                assistant_text = call_llm(
+                    messages, temperature=temperature if temperature is not None else 0.7,
+                    model=model, max_tokens=max_tokens) or ""
                 tool_calls_this_round = []
 
             final_text = assistant_text
@@ -405,7 +430,7 @@ def run_role(
                 params = _safe_params(call.get("arguments"))
 
                 # —— 工具审批：敏感/危险工具需要审批时暂停，等待消费方决策 ——
-                need_approval, policy = tool_needs_approval(name)
+                need_approval, policy = tool_needs_approval(name, mode=approval_mode)
                 decision: Optional[bool] = None
                 if need_approval:
                     approval_id = str(uuid.uuid4())
@@ -429,6 +454,7 @@ def run_role(
                     result = execute_tool(
                         name, params, space_id=space_id,
                         approve=(lambda n, p: bool(decision)) if decision is not None else None,
+                        mode=approval_mode,
                     )
                 except Exception as exc:  # 防御性兜底
                     result = {"success": False, "error": f"工具执行异常: {exc}"}
@@ -465,7 +491,9 @@ def run_role(
             yield {"type": "__replay", "phase": key, "round": _round, "messages": list(messages)}
         else:
             # 达到最大轮次仍有未处理的工具调用：强制做一次无工具的最终回答
-            final_text = call_llm(messages) or ""
+            final_text = call_llm(
+                messages, temperature=temperature if temperature is not None else 0.7,
+                model=model, max_tokens=max_tokens) or ""
     except LLMUnavailableError as exc:
         yield {"type": "error", "message": f"{label}调用 LLM 失败：{exc}"}
         return
@@ -476,12 +504,56 @@ def run_role(
 
     parser = spec.get("parser")
     structured = PARSERS[parser](final_text) if parser else None
+    output_contract = spec.get("output") or {"type": "text"}
+    if output_contract.get("type") == "json_schema":
+        schema = output_contract.get("schema") or {}
+        try:
+            structured = _parse_json_output(final_text)
+            validate_json(instance=structured, schema=schema)
+        except (json.JSONDecodeError, ValidationError, ValueError) as first_error:
+            repair_messages = [
+                {"role": "system", "content": "Repair the response. Output only valid JSON matching the supplied JSON Schema."},
+                {"role": "user", "content": json.dumps({
+                    "schema": schema, "invalidResponse": final_text,
+                    "validationError": str(first_error),
+                }, ensure_ascii=False)},
+            ]
+            repaired = call_llm(repair_messages, temperature=0, model=model, max_tokens=max_tokens) or ""
+            try:
+                structured = _parse_json_output(repaired)
+                validate_json(instance=structured, schema=schema)
+                final_text = repaired
+            except (json.JSONDecodeError, ValidationError, ValueError) as repair_error:
+                yield {"type": "error", "agent": key,
+                       "message": f"{label} structured output validation failed after one repair: {repair_error}"}
+                return
 
     yield {
         "type": "complete",
         "agent": key,
         "result": {"success": True, "raw_output": final_text, "structured": structured},
     }
+
+
+def _parse_json_output(text: str) -> Any:
+    value = text.strip()
+    if value.startswith("```"):
+        lines = value.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        value = "\n".join(lines).strip()
+    return json.loads(value)
+
+
+def run_node(node_spec: Dict[str, Any], input_text: str,
+             space_id: str | None = None,
+             approval_mode: str = "manual") -> Generator[Dict[str, Any], None, None]:
+    """Execute a snapshotted DAG node; ``run_role`` remains the legacy wrapper."""
+    node_id = str(node_spec.get("id") or "node")
+    return run_role(node_id, input_text, space_id=space_id,
+                    enable_tools=True, node_spec=node_spec, approval_mode=approval_mode)
 
 
 # 内部事件前缀：仅供 runner 消费（审批/重放），对外消费方一律过滤。

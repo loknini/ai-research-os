@@ -34,12 +34,23 @@ interface RunSummary {
   projectId?: string
   requirement: string
   roles: string[]
+  teamId?: string
+  teamName?: string
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
   errorMessage?: string
   resultSummary?: Record<string, any> | null
   createdAt: number
   startedAt?: number
   completedAt?: number
+}
+
+interface RunNode {
+  nodeId: string
+  name: string
+  status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'skipped' | 'cancelled'
+  textOutput?: string
+  structuredOutput?: unknown
+  errorMessage?: string
 }
 
 interface RunEvent {
@@ -56,6 +67,7 @@ interface ApprovalRecord {
   runId: string
   spaceId: string
   tool: string
+  nodeId?: string | null
   parameters: Record<string, any>
   status: 'pending' | 'approved' | 'denied' | 'timed_out' | 'cancelled'
   createdAt: number
@@ -112,7 +124,7 @@ export default function AgentRunsHub() {
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [detail, setDetail] = useState<{ run: RunSummary; events: RunEvent[] } | null>(null)
+  const [detail, setDetail] = useState<{ run: RunSummary; events: RunEvent[]; nodes: RunNode[]; primaryOutput?: unknown } | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   const [detailTab, setDetailTab] = useState<'events' | 'approvals' | 'replay'>('events')
   const [approvals, setApprovals] = useState<ApprovalRecord[]>([])
@@ -153,7 +165,7 @@ export default function AgentRunsHub() {
       const resp = await fetch(`/api/agent/runs/${id}`)
       const data = await resp.json()
       if (data.success) {
-        setDetail({ run: data.run, events: data.events || [] })
+        setDetail({ run: data.run, events: data.events || [], nodes: data.nodes || [], primaryOutput: data.primaryOutput })
         // pendingApprovals 由 GET /runs/{id} 直接返回，审批面板再拉全量历史
         setApprovals(data.pendingApprovals || [])
         return true
@@ -296,6 +308,7 @@ export default function AgentRunsHub() {
                           <span className="text-xs text-muted-foreground">{relTime(run.createdAt)}</span>
                         </div>
                         <p className="text-sm font-medium truncate">{run.requirement}</p>
+                        {run.teamName && <div className="mt-1 text-xs font-medium text-primary">团队：{run.teamName}</div>}
                         <div className="flex flex-wrap gap-1 mt-1">
                           {run.roles.map((role) => {
                             const m = ROLE_META[role] || ROLE_META.user
@@ -366,6 +379,20 @@ export default function AgentRunsHub() {
                     <span className="text-xs text-muted-foreground">创建于 {relTime(detail.run.createdAt)}</span>
                   </div>
                   <p className="text-sm">{detail.run.requirement}</p>
+                  {detail.run.teamName && <p className="text-xs font-medium text-primary">团队：{detail.run.teamName}</p>}
+                  {detail.nodes.length > 0 && (
+                    <div className="flex flex-wrap gap-2 pt-2">
+                      {detail.nodes.map(node => (
+                        <span key={node.nodeId} title={node.errorMessage || node.textOutput}
+                          className={cn('rounded border px-2 py-1 text-xs',
+                            node.status === 'completed' && 'border-green-400 bg-green-500/10 text-green-700',
+                            node.status === 'running' && 'border-blue-400 bg-blue-500/10 text-blue-700',
+                            (node.status === 'failed' || node.status === 'skipped') && 'border-red-400 bg-red-500/10 text-red-700')}>
+                          {node.name} · {node.status}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   {detail.run.errorMessage && (
                     <p className="text-xs text-red-600">错误：{detail.run.errorMessage}</p>
                   )}
@@ -560,6 +587,7 @@ function ApprovalRow({
           <code className="text-xs font-mono px-1.5 py-0.5 rounded bg-background border border-border/60">
             {approval.tool}
           </code>
+          {approval.nodeId && <Badge variant="outline" className="text-[10px]">节点 {approval.nodeId}</Badge>}
           <span className={cn('inline-flex items-center px-1.5 py-0.5 rounded text-xs', st.className)}>
             {st.label}
           </span>

@@ -21,7 +21,7 @@
 D:\project\ai-research-os/
 ├── frontend/              # React 18 + TypeScript 前端
 │   └── src/
-│       ├── hubs/          # 功能模块（Dashboard/Paper/Task/Software/... 共 11 个路由）
+│       ├── hubs/          # 功能模块（Dashboard/Paper/Teams/Lab/... 共 12 个 Hub）
 │       ├── components/    # 通用 / 布局 / UI 组件（含 .glass 设计系统）
 │       ├── stores/        # Zustand 状态管理（按 Hub 拆分）
 │       ├── services/      # API 客户端（apiMonitor.ts 单点注入 X-Space-Key）
@@ -35,14 +35,15 @@ D:\project\ai-research-os/
 │   │   ├── llm.py         # LLM 客户端（OpenAI 兼容，urllib，零额外依赖）
 │   │   ├── db.py          # 引导 database.py + init_db()
 │   │   ├── deps.py        # get_space_id 空间隔离依赖
-│   │   ├── agent_runner.py# 后台非阻塞 Agent 运行器
+│   │   ├── agent_runner.py# 后台非阻塞 Agent / DAG 运行器
+│   │   ├── agent_teams.py # 团队定义校验、内置团队与上下文解析
 │   │   └── routers/       # tasks / projects / notes / papers / chat / agent / settings ...
 │   ├── skills/            # Agent Skills（backend/skills/<name>/SKILL.md，零依赖约定）
 │   └── requirements.txt   # 后端依赖（不含 openai）
 ├── scripts/               # Python 后端脚本（业务逻辑，输出 JSON 供后端解析）
 │   ├── database.py        # SQLite 数据模型（aiosqlite 异步，WAL）
 │   ├── fetch_arxiv.py     # arXiv 抓取
-│   ├── agent_service.py   # 角色化 Multi-Agent 管线（**真身**）
+│   ├── agent_service.py   # 兼容入口；可配置执行器真身位于 backend/server/
 │   └── ...
 ├── data/                  # 数据存储（SQLite / PDF / 导出，已 gitignore）
 ├── docs/                  # 架构与设计文档（见 docs/README.md 索引）
@@ -73,7 +74,7 @@ D:\project\ai-research-os/
 | | LLM 客户端 (llm.py) | OpenAI 兼容接口，urllib 实现，零新增依赖 |
 | | aiosqlite + SQLite (WAL) | 本地数据持久化，每请求独立连接 |
 | | SSE 流式 | Chat 与 Agent 均使用 SSE；前端分别按各自事件语义解析 |
-| **存储** | SQLite + 文件系统 | 本地数据；按 space-key 软隔离（26 张业务表均含 `space_id`） |
+| **存储** | SQLite + 文件系统 | 本地数据；按 space-key 软隔离（29 张业务表均含 `space_id`） |
 
 ---
 
@@ -84,7 +85,7 @@ D:\project\ai-research-os/
 | **Dashboard** | 首页仪表盘、全局统计 | ✅ 已实现 |
 | **Paper Hub** | 论文抓取、筛选、AI 总结、PDF 预览 | ✅ 已实现 |
 | **Task Hub** | 任务管理、子任务、优先级、AI 建议 | ✅ 已实现 |
-| **Software Hub** | 从 Idea 到开发计划（Architect+Planner 多 Agent） | ✅ 已实现（后台运行） |
+| **Software Hub** | 从 Idea 到开发计划（可配置专家团队） | ✅ 已实现（后台运行、显式应用） |
 | **Knowledge Hub** | 研究笔记、Markdown、版本历史 | ✅ 已实现 |
 | **Experiment Hub** | SwanLab 实验追踪、对比 | ✅ 已实现（需 SwanLab Key） |
 | **Chat Hub** | ReAct 对话 + 工具调用 | ✅ 已实现 |
@@ -92,6 +93,7 @@ D:\project\ai-research-os/
 | **Citation Hub** | 引用检索与 BibTeX 生成 | ✅ 已实现 |
 | **Settings Hub** | LLM/SwanLab 配置、数据备份迁移 | ✅ 已实现 |
 | **Agent Runs** | 后台运行历史、进度、完成提醒 | ✅ 已实现 |
+| **Expert Teams** | 可视化 DAG、角色模板、导入导出 | ✅ 已实现 |
 
 ---
 
@@ -212,4 +214,4 @@ npm run dev
 
 - 当前日期：2026-08-26
 - 项目状态：功能基本完备，文档基于代码实况重构中
-- 版本：v0.3（Agent 工程能力：工具审批 / 可重放日志 / 上下文管理 / 插件化）
+- 版本：v0.4（可配置专家团队 / DAG 编排 / 工具审批 / 可重放日志）

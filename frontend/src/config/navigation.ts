@@ -21,6 +21,7 @@ import {
   CheckSquare,
   History,
   Timer,
+  Users,
 } from 'lucide-react'
 
 export interface NavItem {
@@ -60,6 +61,14 @@ export const navGroups: NavGroup[] = [
         path: '/chat',
         description: '智能对话',
         keywords: ['对话', 'chat', 'assistant', '助手'],
+      },
+      {
+        id: 'teams',
+        name: '专家团队',
+        icon: Users,
+        path: '/teams',
+        description: '可配置多角色 DAG 编排',
+        keywords: ['agent', 'team', '专家', '编排', 'DAG'],
       },
       {
         id: 'paper',

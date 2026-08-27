@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "builtin-knowledge-synthesis",
+  "name": "知识综合专家团队",
+  "description": "整理并关联多篇笔记，经批判性审查后生成新的知识笔记。",
+  "category": "knowledge",
+  "acceptedContexts": ["notes"],
+  "maxConcurrency": 2,
+  "approvalMode": "manual",
+  "outputNodeId": "editor",
+  "nodes": [
+    {"id":"organizer","name":"资料整理员","description":"提取概念、主张、证据与未决问题。","systemPrompt":"你是研究资料整理员。忠实整理输入笔记并保留来源线索。","allowedTools":[],"model":null,"temperature":0.2,"maxTokens":2600,"output":{"type":"text"},"position":{"x":70,"y":90}},
+    {"id":"connector","name":"关联分析师","description":"发现笔记之间的支持、冲突、因果和主题联系。","systemPrompt":"你是知识关联分析师。区分明确联系与推测联系。","allowedTools":["web_search"],"model":null,"temperature":0.3,"maxTokens":2600,"output":{"type":"text"},"position":{"x":70,"y":300}},
+    {"id":"critic","name":"批判性审查员","description":"综合上游材料，识别矛盾、证据空缺与错误概括。","systemPrompt":"你是批判性审查员。给出具体修订建议，禁止凭空补充事实。","allowedTools":[],"model":null,"temperature":0.2,"maxTokens":2600,"output":{"type":"text"},"position":{"x":440,"y":195}},
+    {"id":"editor","name":"知识编辑","description":"生成一篇可独立阅读的新知识笔记。","systemPrompt":"你是知识编辑。只输出满足 JSON Schema 的 JSON，不添加代码围栏。","allowedTools":[],"model":null,"temperature":0.2,"maxTokens":3600,"output":{"type":"json_schema","schema":{"type":"object","required":["title","markdown","tags"],"properties":{"title":{"type":"string"},"markdown":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"position":{"x":790,"y":195}}
+  ],
+  "edges": [
+    {"id":"organizer-critic","source":"organizer","target":"critic"},
+    {"id":"connector-critic","source":"connector","target":"critic"},
+    {"id":"critic-editor","source":"critic","target":"editor"}
+  ]
+}

@@ -19,11 +19,10 @@ class ChatRequest(BaseModel):
 
 
 class AgentRunRequest(BaseModel):
-    """Request body for ``POST /api/agent/run`` and ``/api/agent/collaborate``.
+    """Request body for ``POST /api/agent/runs``.
 
-    Frontend ``agent-workflow.tsx`` sends ``requirement`` (+ ``workflow``);
-    ``aiAgent.ts`` historically sent ``message`` (+ ``system_prompt``).  Both are
-    supported.
+    ``teamId`` selects a snapshotted DAG; without it, ``roles`` and the historic
+    ``message`` alias remain supported by the legacy role pipeline.
     """
 
     requirement: str = ""
@@ -31,6 +30,8 @@ class AgentRunRequest(BaseModel):
     workflow: str = "workflow"
     projectId: Optional[str] = None
     roles: Optional[List[str]] = None
+    teamId: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None
 
 
 class ApprovalDecision(BaseModel):

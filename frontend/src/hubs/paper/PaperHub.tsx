@@ -47,6 +47,7 @@ import {
 import { usePaperData } from './hooks/usePaperData'
 import PaperFilters from './components/PaperFilters'
 import FetchPapersTab, { type FetchBatchResult } from './components/FetchPapersTab'
+import { TeamContextRunDialog } from '@/components/agent/team-context-run-dialog'
 
 export default function PaperHub() {
   const { papers, setPapers, updatePaper, deletePaper, isLoadingPapers, setLoadingPapers, isConnected } = useAppStore()
@@ -78,6 +79,7 @@ export default function PaperHub() {
   const [isBatchMode, setIsBatchMode] = useState(false)
   const [batchTagInput, setBatchTagInput] = useState('')
   const [showBatchTagInput, setShowBatchTagInput] = useState(false)
+  const [showTeamRun, setShowTeamRun] = useState(false)
 
   // 分页状态
   const [currentPage, setCurrentPage] = useState(1)
@@ -454,6 +456,10 @@ export default function PaperHub() {
                   </Button>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
+                  <Button variant="outline" size="sm" disabled={selectedPapers.size < 1 || selectedPapers.size > 20}
+                    onClick={() => setShowTeamRun(true)}>
+                    专家研读
+                  </Button>
                   {showBatchTagInput ? (
                     <div className="flex gap-2">
                       <Input
@@ -718,6 +724,28 @@ export default function PaperHub() {
             </div>
           </div>
         </div>
+      )}
+
+      {showTeamRun && (
+        <TeamContextRunDialog
+          kind="papers"
+          entities={papers.map(paper => ({ id: paper.id, title: paper.title }))}
+          initialIds={Array.from(selectedPapers).slice(0, 20)}
+          defaultTeamId="builtin-paper-review"
+          applyLabel="保存为 AI 笔记"
+          onClose={() => setShowTeamRun(false)}
+          onApply={async (output, entityIds) => {
+            const report = output as { title?: string; markdown?: string; tags?: string[] }
+            const sources = entityIds.map(id => papers.find(paper => paper.id === id)).filter(Boolean)
+              .map(paper => `- ${paper!.title}${paper!.arxivId ? ` (arXiv:${paper!.arxivId})` : ''}`).join('\n')
+            const response = await fetch('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ title: report.title || '论文研读报告',
+                content: `${report.markdown || JSON.stringify(output, null, 2)}\n\n## 来源论文\n${sources}`,
+                type: 'summary', tags: report.tags || ['AI研读'], aiGenerated: true }) })
+            if (response.ok) { showToast('研读报告已保存为 AI 笔记', 'success'); setShowTeamRun(false) }
+            else showToast('保存笔记失败', 'error')
+          }}
+        />
       )}
     </div>
   )

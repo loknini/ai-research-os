@@ -7,14 +7,14 @@
 
 ## 1. 系统定位
 
-面向研究生的本地优先（local-first）科研工作台。11 个功能中心（Hub）覆盖论文、任务、项目、笔记、实验、公式、引用、对话与 Agent 运行，全部数据落在本机 SQLite + 文件系统，不依赖任何云服务。LLM 能力可插拔：不配置 LLM 时，所有 CRUD 与检索功能照常工作。
+面向研究生的本地优先（local-first）科研工作台。12 个功能中心（Hub）覆盖论文、任务、项目、笔记、实验、公式、引用、对话、专家团队与 Agent 运行，全部数据落在本机 SQLite + 文件系统，不依赖任何云服务。LLM 能力可插拔：不配置 LLM 时，所有 CRUD 与检索功能照常工作。
 
 三条硬约束贯穿整个设计：
 
 | 约束 | 体现 |
 |---|---|
 | **本地优先** | 单文件 SQLite（WAL）+ `data/` 目录，可整体拷贝/同步盘/备份包迁移 |
-| **零重依赖** | 后端 9 个直接 pip 依赖，LLM 客户端用标准库 urllib 手写，前端 shadcn 组件源码内置 |
+| **零重依赖** | 后端保持少量直接 pip 依赖，LLM 客户端用标准库 urllib 手写，前端 shadcn 组件源码内置 |
 | **不登录的多人可用** | space-key 软隔离：一个 HTTP 头分空间，无账号体系、无密码、无 session |
 
 ---
@@ -46,7 +46,7 @@
 └──────────┬────────────────────────┬───────────────┬──────────────┘
            ▼                        ▼               ▼
    data/ai_research_os.db     外部 API          LLM 端点
-   （WAL，26 张表）        arXiv/Crossref/     （OpenAI 兼容）
+   （WAL，29 张表）        arXiv/Crossref/     （OpenAI 兼容）
                           SwanLab/SimpleTex
 ```
 
@@ -60,8 +60,9 @@
 
 ```
 backend/
-├── agent_roles.json          Agent 角色管线配置（数组顺序 = 执行顺序）
-├── requirements.txt          8 个依赖，无 openai SDK
+├── agent_roles.json          旧角色请求兼容配置
+├── agent_teams/              三支版本化内置专家团队定义
+├── requirements.txt          少量依赖，无 openai SDK
 ├── scripts/                 顶层工具包（database / fetch_arxiv / chat_agent_stream / summarize_paper …）
 ├── server/
 │   ├── __init__.py           包说明文档（已无 sys.path 注入 hack）
@@ -71,14 +72,15 @@ backend/
 │   ├── deps.py               space-key 解析依赖（normalize_space_key / get_space_id）
 │   ├── db.py                 数据层引导壳，import scripts/database.py 并再导出
 │   ├── llm.py                OpenAI 兼容 LLM 客户端（urllib 手写，含 SSE 与 function calling）
-│   ├── agent_runner.py       后台非阻塞 Agent runner（线程 + 自建事件循环）
+│   ├── agent_runner.py       后台非阻塞 Agent / DAG runner（线程 + 自建事件循环）
+│   ├── agent_teams.py        团队校验、内置定义、上下文可信解析
 │   ├── skills_bridge.py      SKILL.md 扫描与调用（Agent Skills 开放标准）
 │   ├── memory.py             按空间的持久记忆（data/memory/<space_id>.md）
 │   ├── helpers.py            run_script()：subprocess 调 scripts/*.py 并解析 stdout JSON
 │   ├── errors.py             统一错误体 + APIError + SSE 辅助
 │   ├── health.py             /api/healthz 与 /api/llm/status
 │   ├── schemas.py            跨 router 共享的 Pydantic 模型
-│   └── routers/              21 个 router，共 113 条 /api 路由
+│   └── routers/              21 个 router（完整契约见 API.md）
 └── skills/                   目录式技能：<name>/SKILL.md (+ scripts/)
 ```
 
@@ -102,7 +104,7 @@ backend/
 
 ### 3.3 前端 `frontend/src/`
 
-11 个 Hub + 全局挂件，详见 [FRONTEND.md](./FRONTEND.md)。关键点：所有 `/api` 请求经 `services/apiMonitor.ts` 对 `window.fetch` 的单点 patch 注入 `X-Space-Key`，业务代码无需关心空间。
+12 个 Hub + 全局挂件，详见 [FRONTEND.md](./FRONTEND.md)。关键点：所有 `/api` 请求经 `services/apiMonitor.ts` 对 `window.fetch` 的单点 patch 注入 `X-Space-Key`，业务代码无需关心空间。
 
 ---
 

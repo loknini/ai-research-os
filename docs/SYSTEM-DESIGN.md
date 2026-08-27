@@ -19,13 +19,13 @@
 
 | 层 | 技术 | 说明 |
 |---|---|---|
-| 前端 | React 18 + TypeScript + Vite 5 | 路由级懒加载（11 个 Hub 全部 lazy） |
+| 前端 | React 18 + TypeScript + Vite 5 | 路由级懒加载（12 个 Hub 全部 lazy） |
 | | TailwindCSS + shadcn/ui（源码内置） | 无额外 UI 库 |
 | | Zustand + React Router v6 | 按 Hub 拆分 store |
 | 后端 | FastAPI + uvicorn（多 Worker） | `backend.server.main:app`，端口 8000 |
 | | aiosqlite + SQLite WAL | 每请求独立连接，多进程安全 |
 | | SSE | Agent 与 Chat 均为 SSE，但使用不同事件类型与前端状态机 |
-| 存储 | SQLite + 文件系统 | 26 张业务表全带 `space_id`；`data/<module>/<space_id>/` |
+| 存储 | SQLite + 文件系统 | 29 张业务表全带 `space_id`；`data/<module>/<space_id>/` |
 
 ## 3. 系统架构总览
 
@@ -88,8 +88,9 @@ urllib 手写的 OpenAI 兼容客户端，全局单例 `llm_client`：
 
 | 模块 | 职责与关键机制 |
 |---|---|
-| `agent_service.py` | 角色化管线真身：architect → planner → developer → reviewer，由 `agent_roles.json` 配置驱动（改配置不改代码）。每角色 = system prompt + 可选结构化解析器；角色内 ReAct 循环（LLM 流式 → 工具调用 → 结果回灌，≤8 轮） |
-| `agent_runner.py` | 后台非阻塞 runner：`submit_run` 落库即返回 run_id，执行搬进守护线程（线程内自建事件循环跑 aiosqlite）。**双层取消**：同 Worker 内存 `threading.Event`，跨 Worker 读 DB 状态 |
+| `agent_service.py` | 通用节点执行器：节点快照提供 system prompt、工具白名单、模型参数和文本/JSON Schema 输出契约；旧 `run_role` 与 `agent_roles.json` 保持兼容。角色内 ReAct 循环（LLM 流式 → 工具调用 → 结果回灌，≤8 轮） |
+| `agent_runner.py` | 后台非阻塞 DAG runner：`submit_run` 落库即返回 run_id，按拓扑与 `maxConcurrency` 并行调度，汇合输入遵循边数组顺序；线程内自建事件循环跑 aiosqlite。**双层取消**：同 Worker 内存 `threading.Event`，跨 Worker 读 DB 状态 |
+| `agent_teams.py` | 校验 schemaVersion=1 静态 DAG、加载内置团队/角色模板、按空间解析可信论文与笔记上下文；团队在提交时快照 |
 | `tool_registry.py` | 插件化工具注册表：`@register_tool` 装饰器 + `tools/` 目录 pkgutil 自动发现（新增工具零改动主循环）。**三级策略**：safe / sensitive / dangerous × auto / manual / strict 审批模式，dangerous 非 strict 一律拦截（fail-closed） |
 | `tools/` | 内置工具：`core_tools.py`（笔记/任务等写库工具）+ `code_exec.py`（subprocess 沙箱执行 LLM 生成代码） |
 | `context.py` | 共享上下文管理：CJK 加权 token 估算 → 超预算把早期历史 LLM 压缩成摘要（切分点选在 user 边界，**不破坏 assistant(tool_calls) 与 tool 结果配对**） |
@@ -111,7 +112,7 @@ urllib 手写的 OpenAI 兼容客户端，全局单例 `llm_client`：
 
 ### 4.7 数据层（`scripts/database.py`）
 
-- **26 张业务表**全带 `space_id`；其中 25 张纳入通用幂等迁移，`cron_run_history` 在 DDL 中原生包含该列。存量数据归 `__default__`，子表反范式写父空间；
+- **29 张业务表**全带 `space_id`；其中 28 张纳入通用幂等迁移，`cron_run_history` 在 DDL 中原生包含该列。存量数据归 `__default__`，子表反范式写父空间；
 - 连接纪律：aiosqlite 每请求独立连接（绝不跨协程共享），建连即设 `busy_timeout=5000` → `journal_mode=WAL` → `synchronous=NORMAL`，锁竞争有限重试；
 - 更新语义：写操作返回 `rowcount > 0`，不跨空间误报成功。
 
@@ -152,7 +153,7 @@ sequenceDiagram
 
 ### 5.3 Agent 后台运行管线（SSE / 轮询）
 
-即前文流程图：提交（立即返回 run_id）→ 守护线程逐角色执行（上游 raw_output = 下游输入）→ 角色内 ReAct（审批暂停 / 上下文压缩 / 重放日志）→ 事件逐帧落库（`agent_runs` / `agent_run_events` / `agent_replay_messages` / `agent_tool_approvals`）→ 前端 `GET /runs/{id}` 轮询或 SSE 订阅 → `GenerationWatcher` 完成提醒。
+团队运行：提交（立即返回 run_id，并保存团队/上下文快照）→ 守护线程按拓扑并行执行 ready 节点 → 直接前驱输出按边顺序汇入下游 → 节点内 ReAct（审批暂停 / 上下文压缩 / 重放日志）→ 节点与事件逐帧落库（`agent_run_nodes` / `agent_runs` / `agent_run_events` / `agent_replay_messages` / `agent_tool_approvals`）→ 前端轮询或 SSE 订阅 → `GenerationWatcher` 完成提醒。旧 `roles` 请求仍走顺序兼容管线。
 
 关键点：**审批是生成器暂停语义**——`run_role` yield `__approval_required` 后挂起，runner 落 pending 审批行并轮询 DB 等用户点击，`gen.send(bool)` 回传后继续；无决策者 / 超时 / 取消一律按拒绝（fail-closed）。
 
@@ -179,7 +180,7 @@ sequenceDiagram
 | 上下文压缩而非轮次截断 | 截断会切断 tool 配对导致 API 报错；摘要保留语义且切分点选 user 边界 |
 | cron 乐观锁而非分布式锁 | SQLite `UPDATE rowcount` 原子性足够，零新增依赖 |
 | 工具 `@register_tool` + 目录自动发现 | 新增工具零改动主循环；策略（safe/sensitive/dangerous）随注册声明 |
-| 前端路由全部 lazy | 11 个 Hub 代码分割，缩小首屏包体 |
+| 前端路由全部 lazy | 12 个 Hub 代码分割，缩小首屏包体 |
 
 ## 7. 部署形态
 
@@ -193,7 +194,7 @@ sequenceDiagram
 |---|---|
 | 加一个 API 端点 | `backend/server/routers/`（记得 `space_id` 过滤 + 注册进 `__init__.py`） |
 | 加一个 Agent 工具 | `backend/server/tools/<name>.py` + `@register_tool(policy=...)` |
-| 加/调/关一个角色 | `backend/agent_roles.json`（无需改代码） |
+| 编排专家团队或角色模板 | `/teams`（内置定义在 `backend/agent_teams/`，旧角色兼容配置仍在 `backend/agent_roles.json`） |
 | 加一张表 | `scripts/database.py`（DDL 原生写 `space_id`；需兼容旧表时加入 `SPACE_TABLES`） |
 | 加一个 Hub | `frontend/src/hubs/<name>/` + `navigation.ts` 注册 + `App.tsx` 懒加载路由 |
 | 加一个定时任务类型 | `cron_scheduler.py` 的分派逻辑 |

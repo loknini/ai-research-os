@@ -1,7 +1,7 @@
 {
   "name": "ai-research-os-frontend",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -16,6 +16,7 @@
     "@radix-ui/react-slot": "^1.2.4",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@uiw/react-markdown-editor": "^6.1.4",
+    "@xyflow/react": "^12.11.5",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.0",
     "lucide-react": "^0.344.0",

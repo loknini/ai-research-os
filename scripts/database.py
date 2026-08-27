@@ -8,7 +8,7 @@ SQLite 数据库管理模块（aiosqlite 异步版 + space-key 软隔离）
     "database is locked" 并支持多 worker 并发读写。
 
 第 1 层（数据隔离）：
-  * 全部 26 张业务表包含 `space_id` 列（25 张走通用幂等迁移），存量记录自动归属
+  * 全部 29 张业务表包含 `space_id` 列（28 张走通用幂等迁移），存量记录自动归属
     默认空间 `__default__`。
   * 所有读写路径都按 `space_id` 过滤 / 打标；子表（note_links / chat_messages /
     experiment_runs / agent_messages / code_generations）反范式写入父空间。
@@ -48,15 +48,16 @@ def _clean_text_for_db(text: Optional[str]) -> Optional[str]:
     return text.encode("utf-8", errors="ignore").decode("utf-8")
 
 
-# 需要由通用迁移统一补 space_id 列与索引的用户表（25 张）。
+# 需要由通用迁移统一补 space_id 列与索引的用户表（28 张）。
 # cron_run_history 在建表 DDL 中已原生包含 space_id，因此不进入此迁移列表；
-# 当前数据库合计 26 张业务表，全部按 space_id 隔离。
+# 当前数据库合计 29 张业务表，全部按 space_id 隔离。
 SPACE_TABLES = [
     "papers", "cron_jobs", "software_projects", "tasks", "code_generations",
     "notes", "note_links", "experiments", "experiment_runs", "version_history",
     "conversations", "chat_messages", "agent_sessions", "agent_messages",
     "agent_generated_files", "formula_history", "obsidian_vaults", "obsidian_files",
     "agent_runs", "agent_run_events", "agent_tool_approvals", "agent_replay_messages",
+    "agent_teams", "agent_role_templates", "agent_run_nodes",
     "rag_sources", "rag_documents", "rag_chunks",
 ]
 
@@ -126,7 +127,7 @@ async def init_db() -> None:
     """初始化数据库表（幂等；安全可重复调用）。
 
     1. 用 CREATE TABLE IF NOT EXISTS 保证表结构存在（与既有 DDL 完全一致）。
-    2. 为 18 张用户表统一补 `space_id` 列 + 索引（新库 / 老库走同一路径）。
+    2. 为 SPACE_TABLES 中的用户表统一补 `space_id` 列 + 索引（新库 / 老库走同一路径）。
        WHERE 过滤 + 索引保证任意空间查询都是单列过滤，无需 JOIN。
     """
     async with get_db() as conn:
@@ -456,9 +457,58 @@ async def init_db() -> None:
                 result_summary TEXT,  -- JSON: 各角色结构化产物
                 created_at INTEGER NOT NULL,
                 started_at INTEGER,
-                completed_at INTEGER
+                completed_at INTEGER,
+                team_id TEXT,
+                team_name TEXT,
+                team_snapshot TEXT,
+                input_context TEXT
             )
         ''')
+
+        # User-authored definitions are space-private. Built-in teams and role
+        # templates remain version-controlled JSON and are not inserted here.
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS agent_teams (
+                id TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                category TEXT,
+                definition TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS agent_role_templates (
+                id TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                definition TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS agent_run_nodes (
+                run_id TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                space_id TEXT NOT NULL,
+                node_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                text_output TEXT,
+                structured_output TEXT,
+                error_message TEXT,
+                queued_at INTEGER,
+                started_at INTEGER,
+                completed_at INTEGER,
+                PRIMARY KEY (run_id, node_id)
+            )
+        ''')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_agent_teams_space ON agent_teams(space_id, updated_at DESC)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_agent_role_templates_space ON agent_role_templates(space_id, updated_at DESC)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_agent_run_nodes_run ON agent_run_nodes(run_id, space_id)')
 
         # ---------------- Agent 运行事件流表 ----------------
         await conn.execute('''
@@ -486,6 +536,7 @@ async def init_db() -> None:
                 run_id TEXT NOT NULL,
                 space_id TEXT NOT NULL,
                 tool TEXT NOT NULL,
+                node_id TEXT,
                 parameters TEXT NOT NULL,  -- JSON: 本次调用参数
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at INTEGER NOT NULL,
@@ -652,6 +703,24 @@ async def init_db() -> None:
                 f"CREATE INDEX IF NOT EXISTS idx_{tbl}_space ON {tbl}(space_id)"
             )
 
+        # Agent team migration. Each ALTER is independently idempotent so
+        # concurrent uvicorn workers can initialize an old database safely.
+        async def ensure_column(table: str, column: str, declaration: str) -> None:
+            existing = await (await conn.execute(f"PRAGMA table_info({table})")).fetchall()
+            if column in {row["name"] for row in existing}:
+                return
+            try:
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+            except sqlite3.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+
+        await ensure_column("agent_runs", "team_id", "TEXT")
+        await ensure_column("agent_runs", "team_name", "TEXT")
+        await ensure_column("agent_runs", "team_snapshot", "TEXT")
+        await ensure_column("agent_runs", "input_context", "TEXT")
+        await ensure_column("agent_tool_approvals", "node_id", "TEXT")
+
         # 一次性迁移：papers 表补 bibtex 列（老库无此列，幂等执行）
         cols = await (await conn.execute("PRAGMA table_info(papers)")).fetchall()
         if "bibtex" not in {r["name"] for r in cols}:
@@ -729,6 +798,15 @@ async def _maybe_migrate_paper_space_uniqueness(conn: aiosqlite.Connection) -> N
         await _create_paper_indexes(conn)
         return
 
+    # Some legacy databases may already contain unrelated orphan rows from
+    # older versions that did not enable foreign_keys consistently.  The
+    # papers rebuild must not introduce any *new* violation, but pre-existing
+    # violations in other tables must not make the application unbootable.
+    baseline_violations = {
+        tuple(row) for row in
+        await (await conn.execute("PRAGMA foreign_key_check")).fetchall()
+    }
+
     # PRAGMA foreign_keys cannot be changed inside a transaction.  Commit any
     # preceding idempotent DDL, then serialize the table rebuild across workers.
     await conn.commit()
@@ -792,9 +870,14 @@ async def _maybe_migrate_paper_space_uniqueness(conn: aiosqlite.Connection) -> N
             await conn.execute(index_sql)
         await _create_paper_indexes(conn)
 
-        violations = await (await conn.execute("PRAGMA foreign_key_check")).fetchall()
-        if violations:
-            raise RuntimeError(f"paper uniqueness migration broke foreign keys: {violations}")
+        violations = {
+            tuple(row) for row in
+            await (await conn.execute("PRAGMA foreign_key_check")).fetchall()
+        }
+        new_violations = violations - baseline_violations
+        if new_violations:
+            raise RuntimeError(
+                f"paper uniqueness migration broke foreign keys: {sorted(new_violations)}")
         await conn.commit()
     except Exception:
         await conn.rollback()
@@ -2509,6 +2592,141 @@ async def get_agent_messages(session_id: str, space_id: str = DEFAULT_SPACE) -> 
         } for row in rows]
 
 
+# ==================== Agent teams and role templates ====================
+
+def _team_record_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
+    definition = json.loads(row['definition']) if row['definition'] else {}
+    return {
+        **definition,
+        'id': row['id'],
+        'name': row['name'],
+        'description': row['description'] or '',
+        'category': row['category'] or 'custom',
+        'builtin': False,
+        'createdAt': row['created_at'],
+        'updatedAt': row['updated_at'],
+    }
+
+
+async def list_agent_teams(space_id: str = DEFAULT_SPACE) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await _fetchall(
+            conn, 'SELECT * FROM agent_teams WHERE space_id = ? ORDER BY updated_at DESC',
+            (space_id,))
+        return [_team_record_to_dict(row) for row in rows]
+
+
+async def get_agent_team(team_id: str, space_id: str = DEFAULT_SPACE) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await _fetchone(
+            conn, 'SELECT * FROM agent_teams WHERE id = ? AND space_id = ?',
+            (team_id, space_id))
+        return _team_record_to_dict(row) if row else None
+
+
+async def create_agent_team(definition: Dict[str, Any], space_id: str = DEFAULT_SPACE,
+                            team_id: Optional[str] = None) -> Dict[str, Any]:
+    now = int(time.time() * 1000)
+    team_id = team_id or str(uuid.uuid4())
+    payload = {key: value for key, value in definition.items()
+               if key not in {'id', 'builtin', 'createdAt', 'updatedAt'}}
+    async with get_db() as conn:
+        await conn.execute('''
+            INSERT INTO agent_teams
+            (id, space_id, name, description, category, definition, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (team_id, space_id, payload.get('name', ''), payload.get('description', ''),
+              payload.get('category', 'custom'), json.dumps(payload, ensure_ascii=False), now, now))
+    return await get_agent_team(team_id, space_id) or {}
+
+
+async def update_agent_team(team_id: str, definition: Dict[str, Any],
+                            space_id: str = DEFAULT_SPACE) -> Optional[Dict[str, Any]]:
+    payload = {key: value for key, value in definition.items()
+               if key not in {'id', 'builtin', 'createdAt', 'updatedAt'}}
+    async with get_db() as conn:
+        cur = await conn.execute('''
+            UPDATE agent_teams SET name = ?, description = ?, category = ?,
+                definition = ?, updated_at = ? WHERE id = ? AND space_id = ?
+        ''', (payload.get('name', ''), payload.get('description', ''), payload.get('category', 'custom'),
+              json.dumps(payload, ensure_ascii=False), int(time.time() * 1000), team_id, space_id))
+        if cur.rowcount <= 0:
+            return None
+    return await get_agent_team(team_id, space_id)
+
+
+async def delete_agent_team(team_id: str, space_id: str = DEFAULT_SPACE) -> bool:
+    async with get_db() as conn:
+        cur = await conn.execute(
+            'DELETE FROM agent_teams WHERE id = ? AND space_id = ?', (team_id, space_id))
+        return cur.rowcount > 0
+
+
+def _role_template_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
+    definition = json.loads(row['definition']) if row['definition'] else {}
+    return {
+        **definition, 'id': row['id'], 'name': row['name'],
+        'description': row['description'] or '', 'builtin': False,
+        'createdAt': row['created_at'], 'updatedAt': row['updated_at'],
+    }
+
+
+async def list_agent_role_templates(space_id: str = DEFAULT_SPACE) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await _fetchall(
+            conn, 'SELECT * FROM agent_role_templates WHERE space_id = ? ORDER BY updated_at DESC',
+            (space_id,))
+        return [_role_template_to_dict(row) for row in rows]
+
+
+async def get_agent_role_template(template_id: str,
+                                  space_id: str = DEFAULT_SPACE) -> Optional[Dict[str, Any]]:
+    async with get_db() as conn:
+        row = await _fetchone(conn,
+            'SELECT * FROM agent_role_templates WHERE id = ? AND space_id = ?',
+            (template_id, space_id))
+        return _role_template_to_dict(row) if row else None
+
+
+async def create_agent_role_template(definition: Dict[str, Any], space_id: str = DEFAULT_SPACE,
+                                     template_id: Optional[str] = None) -> Dict[str, Any]:
+    now = int(time.time() * 1000)
+    template_id = template_id or str(uuid.uuid4())
+    payload = {key: value for key, value in definition.items()
+               if key not in {'id', 'builtin', 'createdAt', 'updatedAt'}}
+    async with get_db() as conn:
+        await conn.execute('''
+            INSERT INTO agent_role_templates
+            (id, space_id, name, description, definition, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''', (template_id, space_id, payload.get('name', ''), payload.get('description', ''),
+              json.dumps(payload, ensure_ascii=False), now, now))
+    return await get_agent_role_template(template_id, space_id) or {}
+
+
+async def update_agent_role_template(template_id: str, definition: Dict[str, Any],
+                                     space_id: str = DEFAULT_SPACE) -> Optional[Dict[str, Any]]:
+    payload = {key: value for key, value in definition.items()
+               if key not in {'id', 'builtin', 'createdAt', 'updatedAt'}}
+    async with get_db() as conn:
+        cur = await conn.execute('''
+            UPDATE agent_role_templates SET name = ?, description = ?, definition = ?, updated_at = ?
+            WHERE id = ? AND space_id = ?
+        ''', (payload.get('name', ''), payload.get('description', ''),
+              json.dumps(payload, ensure_ascii=False), int(time.time() * 1000), template_id, space_id))
+        if cur.rowcount <= 0:
+            return None
+    return await get_agent_role_template(template_id, space_id)
+
+
+async def delete_agent_role_template(template_id: str, space_id: str = DEFAULT_SPACE) -> bool:
+    async with get_db() as conn:
+        cur = await conn.execute(
+            'DELETE FROM agent_role_templates WHERE id = ? AND space_id = ?',
+            (template_id, space_id))
+        return cur.rowcount > 0
+
+
 # ==================== Agent 后台运行（非阻塞 runner，按空间隔离） ====================
 
 def _run_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
@@ -2521,6 +2739,10 @@ def _run_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
         'projectId': row['project_id'],
         'requirement': row['requirement'],
         'roles': json.loads(row['roles']) if row['roles'] else [],
+        'teamId': row['team_id'],
+        'teamName': row['team_name'],
+        'teamSnapshot': json.loads(row['team_snapshot']) if row['team_snapshot'] else None,
+        'inputContext': json.loads(row['input_context']) if row['input_context'] else None,
         'status': row['status'],
         'errorMessage': row['error_message'],
         'resultSummary': json.loads(row['result_summary']) if row['result_summary'] else None,
@@ -2531,18 +2753,24 @@ def _run_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
 
 
 async def create_agent_run(run_id: str, space_id: str, project_id: Optional[str],
-                           requirement: str, roles: Any = None, status: str = 'running') -> str:
+                           requirement: str, roles: Any = None, status: str = 'running',
+                           team_id: Optional[str] = None, team_name: Optional[str] = None,
+                           team_snapshot: Any = None, input_context: Any = None) -> str:
     """创建一条后台 Agent 运行记录（按空间打标）并返回 run id。"""
     try:
         now = int(time.time() * 1000)
         async with get_db() as conn:
             await conn.execute('''
                 INSERT INTO agent_runs
-                (id, space_id, project_id, requirement, roles, status, created_at, started_at, completed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, space_id, project_id, requirement, roles, status, created_at, started_at,
+                 completed_at, team_id, team_name, team_snapshot, input_context)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 run_id, space_id, project_id, requirement,
-                json.dumps(roles or [], ensure_ascii=False), status, now, None, None))
+                json.dumps(roles or [], ensure_ascii=False), status, now, None, None,
+                team_id, team_name,
+                json.dumps(team_snapshot, ensure_ascii=False) if team_snapshot is not None else None,
+                json.dumps(input_context, ensure_ascii=False) if input_context is not None else None))
         return run_id
     except Exception as e:
         print(f"Create agent run error: {e}")
@@ -2613,6 +2841,35 @@ async def add_agent_run_event(run_id: str, space_id: str, event: Dict[str, Any])
         return False
 
 
+async def finish_agent_run(run_id: str, space_id: str, status: str,
+                           event: Dict[str, Any], result_summary: Any = None,
+                           error_message: Optional[str] = None) -> bool:
+    """Atomically transition a live run and append exactly one terminal event.
+
+    The guarded UPDATE prevents a late worker result from reviving a run after
+    another worker (or the user) has cancelled it.
+    """
+    if status not in {'completed', 'failed'}:
+        raise ValueError("finish_agent_run status must be completed or failed")
+    now = int(time.time() * 1000)
+    summary_json = (json.dumps(result_summary, ensure_ascii=False)
+                    if result_summary is not None else None)
+    async with get_db() as conn:
+        cur = await conn.execute('''
+            UPDATE agent_runs SET status = ?, result_summary = COALESCE(?, result_summary),
+                error_message = ?, completed_at = ?
+            WHERE id = ? AND space_id = ? AND status IN ('pending', 'running')
+        ''', (status, summary_json, error_message, now, run_id, space_id))
+        if cur.rowcount <= 0:
+            return False
+        event_type = event.get('type') or status
+        await conn.execute('''
+            INSERT INTO agent_run_events (run_id, space_id, type, data, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (run_id, space_id, event_type, json.dumps(event, ensure_ascii=False), now))
+        return True
+
+
 async def get_agent_run_events(run_id: str, space_id: str = DEFAULT_SPACE,
                                after_id: int = 0) -> List[Dict[str, Any]]:
     """获取某运行、某空间的全部（或 after_id 之后的增量）事件，按 id 升序。"""
@@ -2647,13 +2904,84 @@ async def list_agent_runs(space_id: str = DEFAULT_SPACE, project_id: Optional[st
 
 
 async def cancel_agent_run(run_id: str, space_id: str = DEFAULT_SPACE) -> bool:
-    """将运行置为 cancelled（仅当仍处于 pending/running 时生效）。"""
+    """Atomically mark a live run cancelled and append its terminal event."""
     async with get_db() as conn:
+        now = int(time.time() * 1000)
         cur = await conn.execute(
             "UPDATE agent_runs SET status = 'cancelled', completed_at = ? "
             "WHERE id = ? AND space_id = ? AND status IN ('pending', 'running')",
-            (int(time.time() * 1000), run_id, space_id))
+            (now, run_id, space_id))
+        if cur.rowcount <= 0:
+            return False
+        event = {"type": "run_cancelled", "message": "Run cancelled"}
+        await conn.execute('''
+            INSERT INTO agent_run_events (run_id, space_id, type, data, created_at)
+            VALUES (?, ?, 'run_cancelled', ?, ?)
+        ''', (run_id, space_id, json.dumps(event, ensure_ascii=False), now))
+        return True
+
+
+def _run_node_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
+    return {
+        'runId': row['run_id'], 'nodeId': row['node_id'], 'name': row['node_name'],
+        'status': row['status'], 'textOutput': row['text_output'],
+        'structuredOutput': json.loads(row['structured_output']) if row['structured_output'] else None,
+        'errorMessage': row['error_message'], 'queuedAt': row['queued_at'],
+        'startedAt': row['started_at'], 'completedAt': row['completed_at'],
+    }
+
+
+async def create_agent_run_nodes(run_id: str, space_id: str,
+                                 nodes: List[Dict[str, Any]]) -> None:
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        for node in nodes:
+            await conn.execute('''
+                INSERT OR IGNORE INTO agent_run_nodes
+                (run_id, node_id, space_id, node_name, status, queued_at)
+                VALUES (?, ?, ?, ?, 'pending', ?)
+            ''', (run_id, node['id'], space_id, node.get('name', node['id']), now))
+
+
+async def update_agent_run_node(run_id: str, node_id: str, space_id: str,
+                                status: Optional[str] = None, text_output: Optional[str] = None,
+                                structured_output: Any = None, error_message: Optional[str] = None,
+                                started_at: Optional[int] = None,
+                                completed_at: Optional[int] = None) -> bool:
+    values_by_column = {
+        'status': status, 'text_output': text_output,
+        'structured_output': (json.dumps(structured_output, ensure_ascii=False)
+                              if structured_output is not None else None),
+        'error_message': error_message, 'started_at': started_at, 'completed_at': completed_at,
+    }
+    updates = {key: value for key, value in values_by_column.items() if value is not None}
+    if not updates:
+        return False
+    assignments = ', '.join(f'{column} = ?' for column in updates)
+    async with get_db() as conn:
+        cur = await conn.execute(
+            f'UPDATE agent_run_nodes SET {assignments} WHERE run_id = ? AND node_id = ? AND space_id = ?',
+            (*updates.values(), run_id, node_id, space_id))
         return cur.rowcount > 0
+
+
+async def list_agent_run_nodes(run_id: str,
+                               space_id: str = DEFAULT_SPACE) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await _fetchall(conn, '''
+            SELECT * FROM agent_run_nodes WHERE run_id = ? AND space_id = ?
+            ORDER BY queued_at ASC, node_id ASC
+        ''', (run_id, space_id))
+        return [_run_node_to_dict(row) for row in rows]
+
+
+async def cancel_pending_agent_run_nodes(run_id: str, space_id: str,
+                                         status: str = 'cancelled') -> None:
+    async with get_db() as conn:
+        await conn.execute('''
+            UPDATE agent_run_nodes SET status = ?, completed_at = ?
+            WHERE run_id = ? AND space_id = ? AND status IN ('pending', 'ready')
+        ''', (status, int(time.time() * 1000), run_id, space_id))
 
 
 # ==================== Agent 工具审批（P0，按空间隔离） ====================
@@ -2664,6 +2992,7 @@ def _approval_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
         'runId': row['run_id'],
         'spaceId': row['space_id'],
         'tool': row['tool'],
+        'nodeId': row['node_id'],
         'parameters': json.loads(row['parameters']) if row['parameters'] else {},
         'status': row['status'],
         'createdAt': row['created_at'],
@@ -2672,15 +3001,17 @@ def _approval_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
 
 
 async def create_agent_tool_approval(approval_id: str, run_id: str, space_id: str,
-                                     tool: str, parameters: Any) -> bool:
+                                     tool: str, parameters: Any,
+                                     node_id: Optional[str] = None) -> bool:
     """落一条 pending 审批记录，返回是否成功。"""
     try:
         now = int(time.time() * 1000)
         async with get_db() as conn:
             await conn.execute('''
-                INSERT INTO agent_tool_approvals (id, run_id, space_id, tool, parameters, status, created_at, decided_at)
-                VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL)
-            ''', (approval_id, run_id, space_id, tool,
+                INSERT INTO agent_tool_approvals
+                (id, run_id, space_id, tool, node_id, parameters, status, created_at, decided_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, NULL)
+            ''', (approval_id, run_id, space_id, tool, node_id,
                   json.dumps(parameters, ensure_ascii=False), now))
         return True
     except Exception as e:

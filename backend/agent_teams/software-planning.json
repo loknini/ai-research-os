@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "builtin-software-planning",
+  "name": "软件规划专家团队",
+  "description": "把软件想法转化为可审阅、可应用的项目方案。",
+  "category": "software",
+  "acceptedContexts": ["generic", "software_idea"],
+  "maxConcurrency": 2,
+  "approvalMode": "manual",
+  "outputNodeId": "integrator",
+  "nodes": [
+    {"id":"architect","name":"架构师","description":"分析边界、模块、技术栈与接口。","systemPrompt":"你是资深软件架构师。给出具体、可验证的架构分析，不执行写操作。","allowedTools":["web_search","code_review"],"model":null,"temperature":0.3,"maxTokens":3000,"output":{"type":"text"},"position":{"x":80,"y":80}},
+    {"id":"risk","name":"风险分析师","description":"识别技术、交付、安全与维护风险。","systemPrompt":"你是审慎的工程风险分析师。按概率、影响与缓解措施分析风险。","allowedTools":["web_search","code_review"],"model":null,"temperature":0.2,"maxTokens":2200,"output":{"type":"text"},"position":{"x":80,"y":260}},
+    {"id":"planner","name":"规划师","description":"综合架构和风险，拆解里程碑与任务。","systemPrompt":"你是工程规划师。把上游结论转化为有依赖关系和验收标准的实施计划。","allowedTools":[],"model":null,"temperature":0.3,"maxTokens":3000,"output":{"type":"text"},"position":{"x":390,"y":170}},
+    {"id":"reviewer","name":"评审者","description":"检查方案的一致性、遗漏和不可执行之处。","systemPrompt":"你是严格的软件方案评审者。指出问题并给出可直接采用的修订意见。","allowedTools":[],"model":null,"temperature":0.2,"maxTokens":2200,"output":{"type":"text"},"position":{"x":690,"y":170}},
+    {"id":"integrator","name":"项目方案整合者","description":"输出可应用到项目表单的结构化草案。","systemPrompt":"你是项目方案编辑。只输出满足 JSON Schema 的 JSON，不添加代码围栏。","allowedTools":[],"model":null,"temperature":0.2,"maxTokens":3000,"output":{"type":"json_schema","schema":{"type":"object","required":["name","description","techStack","features","architecture","milestones"],"properties":{"name":{"type":"string"},"description":{"type":"string"},"techStack":{"type":"array","items":{"type":"string"}},"features":{"type":"array","items":{"type":"string"}},"architecture":{"type":"string"},"milestones":{"type":"array","items":{"type":"object","required":["title","description"],"properties":{"title":{"type":"string"},"description":{"type":"string"}}}}},"additionalProperties":true}},"position":{"x":980,"y":170}}
+  ],
+  "edges": [
+    {"id":"architect-planner","source":"architect","target":"planner"},
+    {"id":"risk-planner","source":"risk","target":"planner"},
+    {"id":"planner-reviewer","source":"planner","target":"reviewer"},
+    {"id":"reviewer-integrator","source":"reviewer","target":"integrator"}
+  ]
+}

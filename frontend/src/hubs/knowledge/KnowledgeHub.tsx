@@ -27,6 +27,7 @@ import {
   RefreshCw,
   Link2,
   FunctionSquare,
+  BrainCircuit,
   X
 } from 'lucide-react'
 import { NOTE_TYPE_CONFIG } from './config'
@@ -38,6 +39,7 @@ import { NoteCard } from './components/NoteCard'
 import { NoteEditor } from './components/NoteEditor'
 import { VaultSelectorDialog } from './components/VaultSelectorDialog'
 import FormulaHub from '@/hubs/formula'
+import { TeamContextRunDialog } from '@/components/agent/team-context-run-dialog'
 
 export default function KnowledgeHub() {
   // 状态
@@ -78,6 +80,7 @@ export default function KnowledgeHub() {
 
   // 公式识别弹窗（笔记编辑器「插入公式」）
   const [formulaOpen, setFormulaOpen] = useState(false)
+  const [showKnowledgeTeam, setShowKnowledgeTeam] = useState(false)
 
   // 派生数据
   const { stats, filteredNotes } = useKnowledgeData(notes, filterType, filterFavorite, searchQuery)
@@ -271,6 +274,12 @@ export default function KnowledgeHub() {
         title="知识库"
         description="管理研究笔记、想法和知识"
         actions={
+          <>
+          <HeaderAction
+            icon={BrainCircuit}
+            label="知识综合"
+            onClick={() => setShowKnowledgeTeam(true)}
+          />
           <HeaderAction
             icon={Plus}
             label="新建笔记"
@@ -280,6 +289,7 @@ export default function KnowledgeHub() {
               setShowEditor(true)
             }}
           />
+          </>
         }
       />
 
@@ -667,6 +677,32 @@ export default function KnowledgeHub() {
             </div>
           </div>
         </div>
+      )}
+
+      {showKnowledgeTeam && (
+        <TeamContextRunDialog
+          kind="notes"
+          entities={notes.map(note => ({ id: note.id, title: note.title }))}
+          initialIds={selectedNote ? [selectedNote.id] : []}
+          defaultTeamId="builtin-knowledge-synthesis"
+          applyLabel="保存为新的 AI 笔记"
+          onClose={() => setShowKnowledgeTeam(false)}
+          onApply={async output => {
+            const report = output as { title?: string; markdown?: string; tags?: string[] }
+            const ok = await saveNote({
+              title: report.title || '知识综合',
+              content: report.markdown || JSON.stringify(output, null, 2),
+              type: 'note', tags: report.tags || ['AI综合'], aiGenerated: true
+            })
+            if (ok) {
+              toast({ title: '已保存新的 AI 笔记', variant: 'success' })
+              setShowKnowledgeTeam(false)
+              await loadData()
+            } else {
+              toast({ title: '保存失败', variant: 'error' })
+            }
+          }}
+        />
       )}
     </div>
   )

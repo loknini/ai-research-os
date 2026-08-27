@@ -1,6 +1,6 @@
 # API 参考
 
-> 应用版本 **0.3.0**；全部 **113 条 `/api/*` 路由 + 1 条根路由**，按 21 个 router 分组。核对日期：2026-08-26
+> 应用版本 **0.4.0**；路由以 FastAPI `/docs` 动态清单为准。核对日期：2026-08-27
 > 交互式文档：服务启动后访问 `http://localhost:8000/docs`（FastAPI 自动生成）
 
 ---
@@ -76,27 +76,51 @@ X-Space-Key: <你的空间口令>
 
 `roles` 省略时使用 `backend/agent_roles.json` 的启用顺序。
 
+团队运行时 `teamId` 优先于旧 `roles`；论文和笔记正文只由后端按当前空间解析，前端只能提交实体 ID（最多 20 个）：
+
+```json
+{
+  "teamId": "builtin-paper-review",
+  "requirement": "比较这些论文的方法与证据",
+  "context": {"kind": "papers", "entityIds": ["paper-id-1"], "variables": {}}
+}
+```
+
+### 3.2 专家团队与角色模板
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET / POST | `/api/agent/teams` | 内置与当前空间团队列表 / 创建用户团队 |
+| GET / PUT / DELETE | `/api/agent/teams/{id}` | 详情 / 更新 / 删除；内置项只读 |
+| POST | `/api/agent/teams/{id}/clone` | 克隆内置或用户团队到当前空间 |
+| GET | `/api/agent/teams/{id}/export` | 导出团队定义，不包含凭据、历史或审批 |
+| POST | `/api/agent/teams/import` | 导入并生成新 ID；重名自动追加“副本” |
+| GET / POST | `/api/agent/role-templates` | 内置与用户角色模板列表 / 创建 |
+| PUT / DELETE | `/api/agent/role-templates/{id}` | 更新 / 删除用户模板 |
+| POST | `/api/agent/role-templates/{id}/clone` | 复制模板快照 |
+| GET | `/api/agent/tools` | 工具名、说明、来源和安全策略 |
+
+团队定义固定 `schemaVersion: 1`。保存及导入会校验节点/边唯一性、端点、无环、所有节点可达主要输出、模型参数及 JSON Schema；缺失工具仅警告，运行时自动剔除。
+
 **审批决策**（`POST /runs/{run_id}/approvals/{approval_id}`）：
 
 ```json
 { "approved": true }
 ```
 
-- 审批模式由 `AGENT_APPROVAL_MODE` 控制：`auto`（默认，sensitive 直通）/ `manual`（sensitive 等待审批）/ `strict`（sensitive + dangerous 均等待审批）。
+- 团队运行使用团队快照中的 `approvalMode`；旧 `roles` 运行使用 `AGENT_APPROVAL_MODE`。取值均为 `auto`（sensitive 直通）/ `manual`（sensitive 等待审批）/ `strict`（sensitive + dangerous 均等待审批）。
 - `dangerous` 工具在非 strict 模式一律拒绝（fail-closed）；未提供审批通道的调用方同样拒绝。
 - 超时（`AGENT_APPROVAL_TIMEOUT`，默认 300s）按拒绝处理；取消运行会把待审批项标记为 `cancelled`。
 
-### 3.2 会话与兼容接口
+### 3.3 会话接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/agent/run` | SSE 直跑角色管线（**会阻塞该 worker 协程**，保留兼容） |
-| POST | `/api/agent/collaborate` | 同上，历史别名，共用同一 handler |
 | POST | `/api/agent/sessions` | 创建 agent session |
 | GET | `/api/agent/sessions?projectId=` | session 列表 |
 | GET | `/api/agent/sessions/{session_id}/messages` | session 消息 |
 
-### 3.3 SSE 事件帧
+### 3.4 SSE 事件帧
 
 ```
 data: {"type":"run_start", ...}
@@ -106,6 +130,8 @@ data: {"type":"complete","role":"architect","output":"...","parsed":{...}}
 data: {"type":"run_complete"} | {"type":"run_cancelled"} | {"type":"error","message":"..."}
 data: [DONE]
 ```
+
+DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_failed` / `node_skipped`；每帧带 `nodeId`。并行工具审批同样带 `nodeId`，重放日志的 `phase` 使用节点 ID。
 
 新增内部能力事件（2026-08-21）：
 
@@ -245,6 +271,8 @@ data: [DONE]
 | GET | `/api/cron/jobs/{job_id}/history` | 单个任务最近执行历史 |
 | GET | `/api/cron/history` | 当前空间全部 Cron 执行历史 |
 | DELETE | `/api/cron/jobs/{job_id}` | 删除 |
+
+`agent_run` 的 `payload` 可使用 `{requirement, teamId, context}`；`teamId` 优先，论文/笔记实体仍按任务所属空间解析。未传团队时继续接受 `{requirement, roles}`。
 
 ---
 

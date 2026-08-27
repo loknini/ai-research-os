@@ -13,8 +13,8 @@
 #   - 前端开发服务器通过 Vite 反代 /api -> 后端（默认 :8000）。
 #   - LLM 配置：在「设置 → LLM API 配置」中填写（硅基流动 / 智谱 / Ollama 等），
 #     配置即时生效并写入项目根 .env。
-#   - 首次运行会自动创建项目根 .venv 虚拟环境，后端依赖装进 .venv，
-#     不污染系统全局 Python（仅创建 .venv 那一刻用全局 python）。
+#   - 首次运行会自动创建项目根 .venv；每次启动按 requirements 指纹检查依赖，
+#     有变化或缺失时同步进 .venv，不污染系统全局 Python。
 
 param(
     [switch]$SkipFrontend,
@@ -55,6 +55,8 @@ if (-not $DataDir) {
 # 项目内虚拟环境（不污染全局 Python）
 $VenvDir = "$ProjectDir\.venv"
 $VenvPython = "$VenvDir\Scripts\python.exe"
+$RequirementsFile = "$ProjectDir\backend\requirements.txt"
+$RequirementsStamp = "$VenvDir\.airos-requirements.sha256"
 
 Write-Host @"
 ╔═══════════════════════════════════════════════════════════════╗
@@ -85,16 +87,33 @@ if (-not (Test-Path $VenvPython)) {
     Write-Host "   ✅ 虚拟环境已就绪: $VenvDir" -ForegroundColor Green
 }
 
-# 检查 uvicorn（在 .venv 内）—— 基于退出码判断，避免空 stdout 被误判
-& "$VenvPython" -c "import uvicorn" 2>$null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "⚠️  uvicorn 未安装，正在尝试安装后端依赖到 .venv..." -ForegroundColor Yellow
-    & "$VenvPython" -m pip install -r "$ProjectDir\backend\requirements.txt"
+# requirements.txt 内容变化或直接依赖缺失时同步 .venv。
+# 不能只检查 uvicorn：已有虚拟环境可能缺少后来新增的 jsonschema 等依赖。
+$RequirementsHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $RequirementsFile).Hash.ToLowerInvariant()
+$InstalledRequirementsHash = ""
+if (Test-Path -LiteralPath $RequirementsStamp) {
+    $InstalledRequirementsHash = (Get-Content -LiteralPath $RequirementsStamp -Raw).Trim()
+}
+$BackendImportsReady = $false
+if ($InstalledRequirementsHash -eq $RequirementsHash) {
+    & "$VenvPython" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pypdf, requests, uvicorn" 2>$null
+    $BackendImportsReady = ($LASTEXITCODE -eq 0)
+}
+if (-not $BackendImportsReady) {
+    Write-Host "⚠️  后端依赖有更新或不完整，正在同步到 .venv..." -ForegroundColor Yellow
+    & "$VenvPython" -m pip install -r "$RequirementsFile"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "❌ 后端依赖安装失败，请手动执行: $VenvPython -m pip install -r backend/requirements.txt" -ForegroundColor Red
         exit 1
     }
+    & "$VenvPython" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pypdf, requests, uvicorn" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "❌ 后端依赖安装后仍无法导入，请检查上方 pip 输出" -ForegroundColor Red
+        exit 1
+    }
+    Set-Content -LiteralPath $RequirementsStamp -Value $RequirementsHash -Encoding Ascii -NoNewline
 }
+Write-Host "   ✅ 后端依赖已就绪" -ForegroundColor Green
 
 # 前端依赖
 if (-not $SkipFrontend) {

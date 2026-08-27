@@ -2,7 +2,9 @@
 
 > 面向研究生与科研工作者的**一站式 AI 研究与开发工作台** —— 模块化、可视化、AI 驱动。
 
-当前版本：**0.3.0**
+当前版本：**0.4.0**
+
+0.4.0 新增“专家团队”：可在 `/teams` 用可视化 DAG 编排角色、并行分支与汇合节点。内置软件规划、论文研读、知识综合团队只读，克隆后可按当前 space-key 私有修改；软件、论文和知识 Hub 的结果均先预览，再显式应用。
 
 AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 AI 辅助软件开发整合到一个工作台中。你可以用它抓取并总结 arXiv 论文、管理研究任务、记录 Markdown 笔记、追踪 SwanLab 实验、对本地文档做 RAG 问答，并用 Multi-Agent 把「想法」拆解成可执行的开发计划，还能用 Cron 定时调度这一切。
 
@@ -23,7 +25,8 @@ AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 A
 | **AI 助手** | 智能对话（Chat Hub） | 真实 LLM 流式响应、ReAct 工具调用、**RAG 文档接地问答**（自动引用标注）、会话分支/重生成 |
 | **论文中心** | 论文抓取 / 管理 / 总结 | arXiv 自动抓取、AI 中文总结、PDF 在线预览、标签系统、**BibTeX 引用生成**、引用工具（Citation Hub） |
 | **知识库** | 研究笔记管理 | Markdown 编辑器、版本历史对比恢复、**公式 OCR 工具**、Obsidian 联动 |
-| **研发实验** | 软件开发 + 实验追踪 | **Architect + Planner + Reviewer Multi-Agent 规划**、任务自动拆解、后台运行、SwanLab 实验对比 |
+| **专家团队** | 多角色 Agent 编排 | 可视化静态 DAG、并行与汇合、角色模板、导入导出、运行预览 |
+| **研发实验** | 软件开发 + 实验追踪 | **可配置软件规划团队**、任务自动拆解、后台运行、SwanLab 实验对比 |
 | **设置** | 全局配置与数据管理 | LLM 连接、集成服务、**RAG 索引源管理**、数据备份迁移、Skill 管理 |
 
 ### 工具（Cmd+K 命令面板，不占一级导航）
@@ -53,7 +56,7 @@ AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 A
 ```
 ┌──────────────────────────────────────────────────────────┐
 │               前端层 (React 18 + TypeScript + Vite)         │
-│   仪表盘 · AI助手 · 论文中心 · 知识库 · 研发实验 · 设置       │
+│   仪表盘 · AI助手 · 论文中心 · 专家团队 · 知识库 · 研发实验  │
 │   + Cmd+K 命令面板（工具命令：公式/引用/任务/运行历史/Cron）  │
 │   开发态: vite dev(:5173) 通过 proxy 把 /api 转发到后端      │
 │   生产态: npm run build → dist/ 由后端直接静态托管           │
@@ -120,7 +123,7 @@ AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 A
 | 博查 Bocha Key | — | **仅 Agent 联网搜索需要**（不配置则自动降级 Wikipedia） |
 
 > Windows 用户建议使用 PowerShell 运行 `start.ps1`；macOS / Linux 用户使用 `start.sh` 或手动启动。
-> Python 后端依赖见 `backend/requirements.txt`：`fastapi`、`uvicorn[standard]`、`pydantic`、`pydantic-settings`、`python-dotenv`、`requests`、`python-multipart`、`aiosqlite`、`pypdf`（**不含 `openai`**）。
+> Python 后端依赖见 `backend/requirements.txt`：`fastapi`、`uvicorn[standard]`、`pydantic`、`pydantic-settings`、`python-dotenv`、`requests`、`python-multipart`、`aiosqlite`、`jsonschema`、`pypdf`（**不含 `openai`**）。
 
 ---
 
@@ -139,7 +142,7 @@ cd ai-research-os
 .\start.ps1
 ```
 
-该脚本会自动完成：检查 Python → 创建项目内 `.venv` 虚拟环境 → 安装后端依赖到 `.venv` → 安装前端依赖 → 创建数据目录 → 启动 FastAPI 后端（多 worker）→ 启动前端开发服务器。**无需手动装依赖**。
+该脚本会自动完成：检查 Python → 创建项目内 `.venv` 虚拟环境 → 按 `backend/requirements.txt` 内容指纹同步后端依赖到 `.venv` → 安装前端依赖 → 创建数据目录 → 启动 FastAPI 后端（多 worker）→ 启动前端开发服务器。requirements 变化或已安装包缺失时会自动补装，**无需手动装依赖**。
 
 macOS / Linux：
 
@@ -296,7 +299,7 @@ curl -X POST http://localhost:8000/api/backup/import -F "file=@airos-backup.zip"
 
 ### 3. 后端依赖隔离（venv，不污染全局 Python）
 
-`start.ps1` / `start.sh` 首次运行时会自动在项目根创建 `.venv` 虚拟环境，并把 `backend/requirements.txt` 的依赖安装进该虚拟环境，之后所有后端操作（检测 uvicorn / 启动 uvicorn）都使用 `.venv` 内的解释器——**不会污染系统全局 Python**。正式部署（Docker）时容器本身天然隔离，无需额外处理。
+`start.ps1` / `start.sh` 首次运行时会自动在项目根创建 `.venv` 虚拟环境；每次启动会比较 `backend/requirements.txt` 的内容指纹并预检全部直接依赖，文件变化或包缺失时自动同步。之后所有后端操作都使用 `.venv` 内的解释器——**不会污染系统全局 Python**。正式部署（Docker）时容器本身天然隔离，无需额外处理。
 
 > 想完全手动控制？参考上方「方式二：手动启动」，用你自己的虚拟环境 `pip install -r backend/requirements.txt` 即可。
 
@@ -352,7 +355,7 @@ SQLite **不支持多进程并发写**。两个 app 进程同时写一个 `.db` 
 3. **导出引用**：点击论文卡片的「引用」按钮，生成 BibTeX 并一键回填到笔记。
 
 **Agent 开发工作流**
-4. **多 Agent 规划**：进入 *研发实验* → 新建项目并描述想法 → Architect + Planner + Reviewer 协作输出技术方案与任务清单（可后台运行，完成时 toast 提醒）。
+4. **专家团队规划**：进入 *研发实验* → 新建项目并描述想法 → 选择兼容 `software_idea` 的团队协作输出项目草案；预览确认后再应用到项目（可后台运行，完成时 toast 提醒）。
 5. **工具审批**：若后端开启 `manual` / `strict` 审批模式，Agent 要写库时会弹出「允许执行 / 拒绝」审批卡片；拒绝即 fail-closed 不执行。
 6. **查看回放**：在 *运行历史* 打开某次运行 → 「工具审批」tab 看审批决策，「会话回放」tab 看每轮模型实际看到的消息序列。
 
@@ -685,7 +688,7 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
 
 - **SYSTEM-DESIGN.md** — 一页式综合设计（分层架构图、核心模块、四条核心数据流、关键决策）
 - **ARCHITECTURE.md** — 系统定位、进程模型、分层、请求生命周期、关键架构决策
-- **DATA-MODEL.md** — SQLite 数据模型、space-key 隔离、26 张业务表、更新语义
+- **DATA-MODEL.md** — SQLite 数据模型、space-key 隔离、29 张业务表、更新语义
 - **API.md** — 全部 `/api/*` 路由、SSE 帧格式、curl 速查
 - **AGENT-LLM.md** — LLM 客户端、Chat ReAct 循环、角色化 Agent 管线、Skills 约定
 - **FRONTEND.md** — 前端技术栈、路由、状态管理、设计系统

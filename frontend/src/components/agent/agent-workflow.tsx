@@ -38,6 +38,7 @@ interface AgentMessage {
 interface ApprovalInfo {
   approvalId: string
   tool: string
+  nodeId?: string
   parameters: Record<string, any>
   policy?: string
   status: 'pending' | 'approved' | 'denied' | 'timed_out' | 'cancelled'
@@ -46,7 +47,19 @@ interface ApprovalInfo {
 interface AgentWorkflowProps {
   projectId?: string
   requirement: string
+  teamId?: string
+  context?: {
+    kind: 'generic' | 'software_idea' | 'papers' | 'notes'
+    entityIds?: string[]
+    variables?: Record<string, unknown>
+  }
   onComplete?: (result: Record<string, any>) => void
+  onEvent?: (event: Record<string, any>) => void
+}
+
+interface NodeRuntimeState {
+  name: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'skipped' | 'cancelled'
 }
 
 // Agent 角色配置
@@ -93,16 +106,19 @@ const agentConfig = {
   }
 }
 
-export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkflowProps) {
+export function AgentWorkflow({ projectId, requirement, teamId, context, onComplete, onEvent }: AgentWorkflowProps) {
   const [isRunning, setIsRunning] = useState(false)
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [runId, setRunId] = useState<string | null>(null)
-  const [currentPhase, setCurrentPhase] = useState<'idle' | 'architect' | 'planner' | 'developer' | 'reviewer' | 'completed' | 'cancelled'>('idle')
+  const [currentPhase, setCurrentPhase] = useState('idle')
   const [results, setResults] = useState<Record<string, any>>({})
+  const [nodeStates, setNodeStates] = useState<Record<string, NodeRuntimeState>>({})
   const [pendingApprovals, setPendingApprovals] = useState<ApprovalInfo[]>([])
   const scrollRef = useRef<HTMLDivElement>(null)
   const resultsRef = useRef<Record<string, any>>({})
+  const primaryOutputRef = useRef<unknown>(null)
   const cancelledRef = useRef(false)
+  const failedRef = useRef(false)
   const runIdRef = useRef<string | null>(null)
   const location = useLocation()
   const { registerGeneration, markNotified } = useGenerationStore()
@@ -139,6 +155,7 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
         const info: ApprovalInfo = {
           approvalId: update.approvalId,
           tool: update.tool,
+          nodeId: update.nodeId,
           parameters: update.parameters || {},
           policy: update.policy,
           status: update.status
@@ -201,12 +218,17 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
       }
 
       case 'run_complete':
+        primaryOutputRef.current = update.primaryOutput
         setCurrentPhase('completed')
         if (runIdRef.current) markNotified(runIdRef.current)
         break
 
       case 'run_cancelled':
         cancelledRef.current = true
+        setPendingApprovals([])
+        setNodeStates(previous => Object.fromEntries(Object.entries(previous).map(([id, node]) => [
+          id, node.status === 'completed' || node.status === 'failed' ? node : { ...node, status: 'cancelled' }
+        ])))
         if (runIdRef.current) markNotified(runIdRef.current)
         addMessage({
           agentRole: 'user',
@@ -216,7 +238,43 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
         })
         break
 
+      case 'node_queued':
+      case 'node_start':
+      case 'node_complete':
+      case 'node_failed':
+      case 'node_skipped': {
+        const statusByType: Record<string, NodeRuntimeState['status']> = {
+          node_queued: 'queued', node_start: 'running', node_complete: 'completed',
+          node_failed: 'failed', node_skipped: 'skipped'
+        }
+        setNodeStates(previous => ({
+          ...previous,
+          [update.nodeId]: { name: update.name || update.nodeId, status: statusByType[update.type] }
+        }))
+        if (update.type === 'node_failed' || update.type === 'node_skipped') {
+          addMessage({
+            agentRole: 'user',
+            messageType: update.type === 'node_failed' ? 'error' : 'progress',
+            content: update.error || update.reason || `${update.name || update.nodeId} ${statusByType[update.type]}`,
+            stepName: update.type === 'node_failed' ? '节点失败' : '节点跳过'
+          })
+        }
+        break
+      }
+
+      case 'run_failed':
+        failedRef.current = true
+        setCurrentPhase('failed')
+        if (runIdRef.current) markNotified(runIdRef.current)
+        addMessage({
+          agentRole: 'user', messageType: 'error',
+          content: update.message || '主要输出节点未完成，运行失败', stepName: '失败'
+        })
+        break
+
       case 'error':
+        failedRef.current = true
+        setCurrentPhase('failed')
         if (runIdRef.current) markNotified(runIdRef.current)
         addMessage({
           agentRole: 'user',
@@ -237,19 +295,33 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
     setRunId(null)
     runIdRef.current = null
     setResults({})
+    setNodeStates({})
     setPendingApprovals([])
     resultsRef.current = {}
+    primaryOutputRef.current = null
     cancelledRef.current = false
+    failedRef.current = false
     setCurrentPhase('architect')
 
     // 1) 提交后台运行（请求立即返回，不阻塞）
-    const submitRes = await fetch('/api/agent/runs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ requirement, projectId })
-    })
-    const submitData = await submitRes.json()
+    let submitRes: Response
+    let submitData: Record<string, any>
+    try {
+      submitRes = await fetch('/api/agent/runs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ requirement, projectId, teamId, context })
+      })
+      submitData = await submitRes.json()
+    } catch {
+      addMessage({ agentRole: 'user', messageType: 'error', content: '无法连接到后端服务', stepName: '错误' })
+      setCurrentPhase('failed')
+      setIsRunning(false)
+      return
+    }
     if (!submitRes.ok || !submitData.success) {
+      failedRef.current = true
+      setCurrentPhase('failed')
       addMessage({
         agentRole: 'user',
         messageType: 'error',
@@ -267,14 +339,28 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
     registerGeneration({ id: rid, type: 'agent', sourcePath: location.pathname, label: requirement })
 
     // 2) 订阅后台运行的 SSE 事件流（后台线程逐帧落库，此处轮询式消费）
-    const response = await fetch(`/api/agent/runs/${rid}/stream`)
+    let response: Response
+    try {
+      response = await fetch(`/api/agent/runs/${rid}/stream`)
+    } catch {
+      addMessage({ agentRole: 'user', messageType: 'error', content: '无法订阅运行事件', stepName: '错误' })
+      setCurrentPhase('failed')
+      setIsRunning(false)
+      return
+    }
     if (!response.ok) {
+      failedRef.current = true
+      setCurrentPhase('failed')
+      addMessage({ agentRole: 'user', messageType: 'error', content: '运行事件订阅失败', stepName: '错误' })
       setIsRunning(false)
       return
     }
 
     const reader = response.body?.getReader()
     if (!reader) {
+      failedRef.current = true
+      setCurrentPhase('failed')
+      addMessage({ agentRole: 'user', messageType: 'error', content: '后端未返回事件流', stepName: '错误' })
       setIsRunning(false)
       return
     }
@@ -297,13 +383,19 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
         const data = trimmed.slice(6)
         if (data === '[DONE]') {
           setIsRunning(false)
-          setCurrentPhase(cancelledRef.current ? 'cancelled' : 'completed')
-          if (!cancelledRef.current) onComplete?.({ ...resultsRef.current })
+          setCurrentPhase(cancelledRef.current ? 'cancelled' : failedRef.current ? 'failed' : 'completed')
+          if (!cancelledRef.current && !failedRef.current) onComplete?.({
+            ...resultsRef.current,
+            resultSummary: { ...resultsRef.current },
+            primaryOutput: primaryOutputRef.current,
+            runId: runIdRef.current
+          })
           return
         }
 
         try {
           const parsed = JSON.parse(data)
+          onEvent?.(parsed)
           handleAgentUpdate(parsed)
         } catch {
           // 忽略解析错误
@@ -312,7 +404,7 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
     }
 
     setIsRunning(false)
-  }, [requirement, isRunning, projectId, onComplete, registerGeneration, location.pathname, addMessage, handleAgentUpdate])
+  }, [requirement, isRunning, projectId, teamId, context, onComplete, onEvent, registerGeneration, location.pathname, addMessage, handleAgentUpdate])
 
   // 取消后台运行
   const cancelRun = useCallback(async () => {
@@ -433,7 +525,8 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
     developer: '开发工程师正在实现...',
     reviewer: '评审专家正在审查...',
     completed: '规划完成！',
-    cancelled: '运行已取消'
+    cancelled: '运行已取消',
+    failed: '运行失败'
   }
 
   return (
@@ -447,7 +540,7 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
             <div>
               <CardTitle className="text-lg">多 Agent 协作规划</CardTitle>
               <p className="text-sm text-muted-foreground">
-                {phaseText[currentPhase]}
+                {phaseText[currentPhase] || '专家团队正在运行…'}
               </p>
             </div>
           </div>
@@ -474,13 +567,21 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
       </CardHeader>
 
       <CardContent>
+        {Object.keys(nodeStates).length > 0 && <div className="mb-4 flex flex-wrap gap-2">
+          {Object.entries(nodeStates).map(([nodeId, node]) => <Badge key={nodeId} variant="outline" className={cn(
+            node.status === 'completed' && 'border-green-500 text-green-600',
+            node.status === 'failed' && 'border-red-500 text-red-600',
+            node.status === 'running' && 'border-blue-500 text-blue-600',
+            (node.status === 'skipped' || node.status === 'cancelled') && 'opacity-60'
+          )}>{node.name} · {node.status}</Badge>)}
+        </div>}
         {/* 消息列表 */}
         <ScrollArea ref={scrollRef} className="h-[400px] pr-4">
           {messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
               <Sparkles className="w-12 h-12 mb-4 opacity-50" />
               <p>点击"开始协作"启动多 Agent 规划</p>
-              <p className="text-sm mt-2">后台运行 · Architect → Planner 协作流程</p>
+              <p className="text-sm mt-2">{teamId ? '后台运行 · DAG 节点按依赖并行调度' : '后台运行 · 兼容角色管线'}</p>
             </div>
           ) : (
             <div className="space-y-2">
@@ -502,6 +603,7 @@ export function AgentWorkflow({ projectId, requirement, onComplete }: AgentWorkf
                       {ap.policy && (
                         <Badge variant="secondary" className="text-xs">{ap.policy}</Badge>
                       )}
+                      {ap.nodeId && <Badge variant="outline" className="text-xs">节点 {ap.nodeId}</Badge>}
                     </div>
                     <p className="text-sm text-foreground break-all">
                       Agent 请求调用工具 <code className="px-1 py-0.5 rounded bg-muted text-xs font-mono">{ap.tool}</code>

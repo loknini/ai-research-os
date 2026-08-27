@@ -1,7 +1,7 @@
 # 数据模型与空间隔离
 
 > 实现文件：`scripts/database.py`（约 3100 行，aiosqlite）；引导壳：`backend/server/db.py`
-> 对应应用版本 **0.3.0**；核对日期：2026-08-26
+> 对应应用版本 **0.4.0**；核对日期：2026-08-27
 
 ---
 
@@ -12,8 +12,8 @@
 | 数据库 | SQLite 单文件，默认 `<项目根>/data/ai_research_os.db` |
 | 覆盖方式 | `DB_PATH`（优先） > `DATA_DIR`/ai_research_os.db > 默认 |
 | 驱动 | `aiosqlite`（异步）；`scripts/obsidian_service.py` 是唯一例外，仍用同步 `sqlite3` |
-| 表数量 | **26 张业务表**（全部含 `space_id`） |
-| 空间迁移 | 25 张在 `SPACE_TABLES` 中统一补列/建索引；`cron_run_history` 的 DDL 原生包含 `space_id` |
+| 表数量 | **29 张业务表**（全部含 `space_id`） |
+| 空间迁移 | 28 张在 `SPACE_TABLES` 中统一补列/建索引；`cron_run_history` 的 DDL 原生包含 `space_id` |
 | 时间戳 | 毫秒级 Unix 时间戳 `int(time.time() * 1000)`；例外：`obsidian_vaults` 的 DDL 默认值是秒级 |
 | 文件产物 | `data/papers/<space_id>/pdfs/`、`data/memory/<space_id>.md`、`data/.swanlab/config.json`（全局） |
 
@@ -60,7 +60,7 @@ space_id = "lab-zhang"  →  每条 SQL 带 WHERE space_id = ?
 
 ### 2.2 隔离范围
 
-**由通用迁移维护的 25 张表**（`SPACE_TABLES`）：
+**由通用迁移维护的 28 张表**（`SPACE_TABLES`）：
 
 ```
 papers            cron_jobs         software_projects   tasks
@@ -69,11 +69,11 @@ experiment_runs   version_history   conversations       chat_messages
 agent_sessions    agent_messages    agent_generated_files
 formula_history   obsidian_vaults   obsidian_files
 agent_runs        agent_run_events  agent_tool_approvals
-agent_replay_messages               rag_sources
+agent_replay_messages agent_teams agent_role_templates agent_run_nodes rag_sources
 rag_documents     rag_chunks
 ```
 
-**DDL 原生隔离表**：`cron_run_history`。因此当前数据库总计 26 张业务表，全部包含 `space_id`。
+**DDL 原生隔离表**：`cron_run_history`。因此当前数据库总计 29 张业务表，全部包含 `space_id`。
 
 **不隔离（全局）**：LLM 配置、SwanLab 配置、CORS/服务参数、备份导出（整库）、Skills 目录。
 
@@ -155,9 +155,17 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 
 **`agent_runs`**（后台运行主表）— `id TEXT` / `space_id NOT NULL`(DDL 内建) / `project_id` / `requirement` / `roles`(JSON) / `status`(pending·running·completed·failed·cancelled) / `error_message` / `result_summary`(JSON) / `created_at` / `started_at` / `completed_at`
 
+0.4.0 为其增加 `team_id` / `team_name` / `team_snapshot`(JSON) / `input_context`(JSON)。团队在提交时完整快照，后续编辑或删除不影响历史运行。
+
+**`agent_teams`** — 当前空间的用户团队元数据与完整 DAG JSON；内置团队保存在 `backend/agent_teams/*.json`，不写入数据库。
+
+**`agent_role_templates`** — 当前空间的用户角色模板。拖入团队时复制节点快照，不形成共享引用。
+
+**`agent_run_nodes`** — `(run_id,node_id)` 复合主键；保存节点状态、文本/结构化输出、错误及排队/起止时间。
+
 **`agent_run_events`**（事件流）— `id INTEGER AUTOINCREMENT`（**SSE 游标**） / `run_id` / `space_id NOT NULL` / `type` / `data`(JSON，与 SSE 帧同构) / `created_at`
 
-**`agent_tool_approvals`** — 工具审批审计表：`id` / `run_id` / `tool_name` / `parameters`(JSON) / `status` / 决策时间。
+**`agent_tool_approvals`** — 工具审批审计表：`id` / `run_id` / `node_id`(可空，兼容旧运行) / `tool` / `parameters`(JSON) / `status` / 决策时间。
 
 **`agent_replay_messages`** — 模型可见消息重放表：按 `run_id` / `phase` / `round` 保存 role、content、tool_calls 与 tool_call_id。
 

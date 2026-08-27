@@ -124,6 +124,19 @@ async def verify_paper_migration() -> None:
     check("迁移夹具已写入论文与关联笔记", inserted and note_ok)
     await downgrade_papers_to_legacy()
 
+    # Simulate an unrelated orphan left by a very old release that did not
+    # consistently enable foreign_keys. It must not block the papers rebuild.
+    async with database.get_db() as conn:
+        await conn.commit()
+        await conn.execute("PRAGMA foreign_keys=OFF")
+        await conn.execute('''
+            INSERT INTO agent_sessions
+            (id, project_id, session_type, input_data, started_at, space_id)
+            VALUES ('legacy-orphan', 'missing-project', 'architect', '{}', 1, 'alpha')
+        ''')
+        await conn.commit()
+        await conn.execute("PRAGMA foreign_keys=ON")
+
     run_parallel_database_cli()
     await database.init_db()
     await database.init_db()
@@ -138,11 +151,17 @@ async def verify_paper_migration() -> None:
         note = await (await conn.execute(
             "SELECT paper_id FROM notes WHERE id = 'linked-note'"
         )).fetchone()
+        violations_with_legacy_orphan = await (
+            await conn.execute("PRAGMA foreign_key_check")).fetchall()
+        await conn.execute("DELETE FROM agent_sessions WHERE id = 'legacy-orphan'")
         violations = await (await conn.execute("PRAGMA foreign_key_check")).fetchall()
         index_names = {row["name"] for row in index_rows}
     check("论文唯一性迁为 (space_id, arxiv_id)", ("space_id", "arxiv_id") in unique_sets)
     check("旧全局 arxiv_id UNIQUE 已移除", ("arxiv_id",) not in unique_sets)
     check("迁移保留论文 ID 与笔记外键", note is not None and note["paper_id"] == "legacy-paper")
+    check("论文迁移容忍且不扩散既有无关外键违规",
+          [tuple(row) for row in violations_with_legacy_orphan] == [
+              ("agent_sessions", 1, "software_projects", 0)])
     check("迁移后 foreign_key_check 通过", not violations, str(violations))
 
     check("论文迁移保留既有自定义索引", "idx_papers_custom_title_date" in index_names)
@@ -331,11 +350,26 @@ def verify_clis() -> None:
     check("Agent 模块 CLI 保持可用", module.returncode == 0 and "architect" in module.stdout)
 
 
+def verify_startup_dependency_sync() -> None:
+    powershell = (PROJECT_ROOT / "start.ps1").read_text(encoding="utf-8")
+    shell = (PROJECT_ROOT / "start.sh").read_text(encoding="utf-8")
+    for label, source in (("PowerShell", powershell), ("Shell", shell)):
+        check(
+            f"{label} 启动脚本按 requirements 指纹同步依赖",
+            ".airos-requirements.sha256" in source and "requirements.txt" in source,
+        )
+        check(
+            f"{label} 启动脚本预检 jsonschema",
+            "import aiosqlite, dotenv, fastapi, jsonschema" in source,
+        )
+
+
 async def main() -> int:
     try:
         await verify_paper_migration()
         await verify_cron()
         await verify_api_and_writes()
+        verify_startup_dependency_sync()
         verify_clis()
     finally:
         from backend.server.cron_scheduler import stop_scheduler
