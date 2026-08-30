@@ -42,7 +42,7 @@ def _expect(name: str, ok: bool, detail: str = "") -> bool:
 
 
 def check_pdf_viewer_no_deadloop() -> bool:
-    print("\n[1/3] PDFViewer 源码层断言（不死循环 + 用 Document 内置 props）")
+    print("\n[1/5] PDFViewer 源码层断言（不死循环 + 用 Document 内置 props）")
     src = _read(PDF_VIEWER)
     results: list[bool] = []
 
@@ -190,7 +190,7 @@ def check_pdf_viewer_no_deadloop() -> bool:
 
 
 def check_paperhub_preview_url() -> bool:
-    print("\n[2/3] PaperHub 接入层断言（指向正确 URL）")
+    print("\n[2/5] PaperHub 接入层断言（指向正确 URL）")
     src = _read(PAPER_HUB)
     results: list[bool] = []
 
@@ -228,7 +228,7 @@ def check_paperhub_preview_url() -> bool:
 
 
 def check_papercard_no_localpath_guard() -> bool:
-    print("\n[3/3] PaperCard「查看」按钮无 localPath 守卫")
+    print("\n[3/5] PaperCard「查看」按钮无 localPath 守卫")
     src = _read(PAPER_CARD)
     # 检查「查看」按钮（onPreviewPDF）的渲染条件里没有 paper.localPath
     # 正确写法是 `{onPreviewPDF && (<Button ... onClick={onPreviewPDF}>...查看...</Button>)}`
@@ -252,6 +252,19 @@ def check_papercard_no_localpath_guard() -> bool:
     return all(results)
 
 
+def check_papercard_single_pdf_action() -> bool:
+    """卡片只保留懒下载的查看入口，显式下载留在查看器工具栏。"""
+    print("\n[4/5] PaperCard PDF 操作不重复")
+    card_src = _read(PAPER_CARD)
+    hub_src = _read(PAPER_HUB)
+    return _expect(
+        "PaperCard 只保留查看，不再并列显示语义重复的下载",
+        "onDownloadPDF" not in card_src
+        and "downloadPaperPDF" not in hub_src
+        and re.search(r">\s*查看\s*</Button>", card_src) is not None,
+    )
+
+
 def check_pdf_dialog_flex_layout() -> bool:
     """回归弹窗 flex 布局——保证 title bar 与 PDFViewer 兄弟节点不重叠，scrollbar 不越界。
 
@@ -261,7 +274,7 @@ def check_pdf_dialog_flex_layout() -> bool:
     修法：弹窗改 `flex flex-col`、title 加 `shrink-0`、内层 `flex-1 min-h-0`。
     `min-h-0` 不可省——flex 子项默认 min-height: auto，overflow-auto 不会触发。
     """
-    print("\n[4/4] PDFPreviewDialog 弹窗 flex 布局（scrollbar 不越界）")
+    print("\n[5/5] PDFPreviewDialog 弹窗 flex 布局（scrollbar 不越界）")
     src = _read(PDF_VIEWER)
     results: list[bool] = []
 
@@ -306,10 +319,11 @@ def main() -> int:
     a = check_pdf_viewer_no_deadloop()
     b = check_paperhub_preview_url()
     c = check_papercard_no_localpath_guard()
+    e = check_papercard_single_pdf_action()
     d = check_pdf_dialog_flex_layout()
 
     print("\n" + "=" * 60)
-    if a and b and c and d:
+    if a and b and c and d and e:
         print("✅ ALL_PASS")
         return 0
     else:

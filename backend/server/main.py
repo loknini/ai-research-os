@@ -22,6 +22,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from . import config
 from . import db
 from .cron_scheduler import start_scheduler
+from .development_runner import start_development_runner
 from .errors import register_exception_handlers
 from .llm import llm_client
 from .routers import routers
@@ -52,12 +53,13 @@ async def lifespan(app: FastAPI):
     await db.init_db()
     # 启动 cron 调度器守护线程（多 Worker 各跑一个，靠 DB 原子领取防重）。
     start_scheduler()
+    start_development_runner()
     yield
 
 
 app = FastAPI(
     title="AI-Research-OS Backend",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
 )
 
@@ -103,7 +105,7 @@ async def root() -> dict:
     return {
         "success": True,
         "name": "AI-Research-OS Backend",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "docs": "/docs",
         "health": "/api/healthz",
     }

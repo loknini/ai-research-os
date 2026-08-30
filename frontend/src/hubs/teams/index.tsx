@@ -5,15 +5,24 @@ import {
   type Connection, type Edge, type EdgeChange, type Node, type NodeChange
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { Bot, Copy, Download, Network, Pencil, Play, Plus, RefreshCw, Save, Trash2, Upload, Users } from 'lucide-react'
+import { Bot, Copy, Download, Eye, Network, Pencil, Play, Plus, RefreshCw, Save, Trash2, Upload, Users } from 'lucide-react'
 import { Header } from '@/components/layout/header'
 import { AgentWorkflow } from '@/components/agent/agent-workflow'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { useNavigate } from 'react-router-dom'
 
-type ContextKind = 'generic' | 'software_idea' | 'papers' | 'notes'
+type ContextKind = 'generic' | 'software_idea' | 'software_project' | 'papers' | 'notes'
+
+const CONTEXT_LABELS: Record<ContextKind, string> = {
+  generic: '通用任务',
+  software_idea: '软件想法',
+  software_project: '软件研发',
+  papers: '论文研读',
+  notes: '知识综合'
+}
 
 interface TeamNodeSpec {
   id: string
@@ -26,6 +35,7 @@ interface TeamNodeSpec {
   maxTokens: number | null
   output: { type: 'text' | 'json_schema'; schema?: Record<string, unknown> }
   position: { x: number; y: number }
+  stage?: 'analysis' | 'implementation' | 'testing' | 'review'
 }
 
 interface AgentTeam {
@@ -34,6 +44,7 @@ interface AgentTeam {
   name: string
   description: string
   category: string
+  workflowType?: 'dag' | 'development'
   acceptedContexts: ContextKind[]
   maxConcurrency: number
   approvalMode: 'auto' | 'manual' | 'strict'
@@ -89,12 +100,13 @@ async function requestJson(url: string, init?: RequestInit) {
 }
 
 function TeamEditor({
-  initial, templates, tools, models, onFetchModels, onSaved, onClose
+  initial, templates, tools, models, readOnly = false, onFetchModels, onSaved, onClose
 }: {
   initial: AgentTeam
   templates: RoleTemplate[]
   tools: ToolCapability[]
   models: string[]
+  readOnly?: boolean
   onFetchModels: () => Promise<void>
   onSaved: () => void
   onClose: () => void
@@ -198,8 +210,8 @@ function TeamEditor({
   }
 
   return (
-    <div className="grid h-[calc(100vh-8.5rem)] min-h-[650px] grid-cols-[230px_1fr_310px] overflow-hidden rounded-xl border bg-card">
-      <aside className="overflow-y-auto border-r p-3">
+    <div className={`grid h-[calc(100vh-8.5rem)] min-h-[650px] overflow-hidden rounded-xl border bg-card ${readOnly ? 'grid-cols-[1fr_340px]' : 'grid-cols-[230px_1fr_310px]'}`}>
+      {!readOnly && <aside className="overflow-y-auto border-r p-3">
         <div className="mb-3 text-sm font-semibold">角色模板</div>
         <div className="space-y-2">
           {templates.map(template => (
@@ -216,18 +228,23 @@ function TeamEditor({
           ))}
         </div>
         <p className="mt-3 text-xs text-muted-foreground">拖入画布，或双击添加。模板会复制为节点快照。</p>
-      </aside>
+      </aside>}
 
-      <section className="relative" onDrop={onDrop} onDragOver={event => event.preventDefault()}>
+      <section className="relative" onDrop={readOnly ? undefined : onDrop}
+        onDragOver={readOnly ? undefined : event => event.preventDefault()}>
         <div className="absolute left-3 right-3 top-3 z-10 flex items-center gap-2 rounded-lg border bg-background/90 p-2 backdrop-blur">
-          <Input value={team.name} onChange={event => setTeam({ ...team, name: event.target.value })} />
-          <Button size="sm" variant="outline" onClick={onClose}>退出</Button>
-          <Button size="sm" onClick={save}><Save className="mr-1 h-4 w-4" />校验并保存</Button>
+          <Input value={team.name} disabled={readOnly} onChange={event => setTeam({ ...team, name: event.target.value })} />
+          {readOnly && <Badge variant="secondary" className="shrink-0">内置团队 · 只读</Badge>}
+          <Button size="sm" variant="outline" onClick={onClose}>{readOnly ? '关闭' : '退出'}</Button>
+          {!readOnly && <Button size="sm" onClick={save}><Save className="mr-1 h-4 w-4" />校验并保存</Button>}
         </div>
         <ReactFlow
           nodes={flowNodes} edges={flowEdges}
-          onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect}
+          onNodesChange={readOnly ? undefined : onNodesChange}
+          onEdgesChange={readOnly ? undefined : onEdgesChange}
+          onConnect={readOnly ? undefined : onConnect}
           onNodeClick={(_, node) => setSelectedNodeId(node.id)} fitView
+          nodesDraggable={!readOnly} nodesConnectable={!readOnly}
         >
           <Background /><MiniMap /><Controls />
         </ReactFlow>
@@ -238,14 +255,16 @@ function TeamEditor({
         <div className="mb-4 space-y-3">
           <label className="block text-xs font-medium">描述
             <textarea className="mt-1 min-h-20 w-full rounded border bg-background p-2 text-sm" value={team.description}
+              readOnly={readOnly}
               onChange={event => setTeam({ ...team, description: event.target.value })} />
           </label>
           <label className="block text-xs font-medium">并发上限
-            <Input type="number" min={1} max={4} value={team.maxConcurrency}
+            <Input type="number" min={1} max={4} value={team.maxConcurrency} disabled={readOnly}
               onChange={event => setTeam({ ...team, maxConcurrency: Number(event.target.value) })} />
           </label>
           <label className="block text-xs font-medium">审批模式
             <select className="mt-1 h-9 w-full rounded border bg-background px-2" value={team.approvalMode}
+              disabled={readOnly}
               onChange={event => setTeam({ ...team, approvalMode: event.target.value as AgentTeam['approvalMode'] })}>
               <option value="manual">manual</option><option value="auto">auto</option><option value="strict">strict</option>
             </select>
@@ -253,10 +272,10 @@ function TeamEditor({
           {team.approvalMode === 'auto' && <p className="text-xs text-amber-600">auto 会自动执行 sensitive 工具；dangerous 工具仍会被拦截。</p>}
           <div className="text-xs font-medium">可用上下文</div>
           <div className="flex flex-wrap gap-1">
-            {(['generic', 'software_idea', 'papers', 'notes'] as ContextKind[]).map(kind => (
-              <button key={kind} className={`rounded border px-2 py-1 text-xs ${team.acceptedContexts.includes(kind) ? 'bg-primary text-primary-foreground' : ''}`}
+            {(['generic', 'software_idea', 'software_project', 'papers', 'notes'] as ContextKind[]).map(kind => (
+              <button key={kind} disabled={readOnly} className={`rounded border px-2 py-1 text-xs ${team.acceptedContexts.includes(kind) ? 'bg-primary text-primary-foreground' : ''}`}
                 onClick={() => setTeam({ ...team, acceptedContexts: team.acceptedContexts.includes(kind)
-                  ? team.acceptedContexts.filter(value => value !== kind) : [...team.acceptedContexts, kind] })}>{kind}</button>
+                  ? team.acceptedContexts.filter(value => value !== kind) : [...team.acceptedContexts, kind] })}>{CONTEXT_LABELS[kind]}</button>
             ))}
           </div>
         </div>
@@ -264,25 +283,28 @@ function TeamEditor({
         {selectedNode ? (
           <div className="space-y-3 border-t pt-4">
             <div className="font-semibold">节点配置</div>
-            <Input value={selectedNode.name} onChange={event => updateNode({ name: event.target.value })} />
+            <Input value={selectedNode.name} disabled={readOnly} onChange={event => updateNode({ name: event.target.value })} />
             <textarea className="min-h-20 w-full rounded border bg-background p-2 text-sm" value={selectedNode.description}
+              readOnly={readOnly}
               onChange={event => updateNode({ description: event.target.value })} placeholder="任务说明" />
             <textarea className="min-h-32 w-full rounded border bg-background p-2 text-sm" value={selectedNode.systemPrompt}
+              readOnly={readOnly}
               onChange={event => updateNode({ systemPrompt: event.target.value })} placeholder="System prompt" />
             <div className="flex gap-2">
-              <Input list="team-node-models" value={selectedNode.model || ''}
+              <Input list="team-node-models" value={selectedNode.model || ''} disabled={readOnly}
                 onChange={event => updateNode({ model: event.target.value || null })} placeholder="模型 ID（空值继承全局）" />
-              <Button size="icon" variant="outline" title="读取模型列表" onClick={() => void onFetchModels()}><RefreshCw className="h-4 w-4" /></Button>
+              {!readOnly && <Button size="icon" variant="outline" title="读取模型列表" onClick={() => void onFetchModels()}><RefreshCw className="h-4 w-4" /></Button>}
               <datalist id="team-node-models">{models.map(model => <option key={model} value={model} />)}</datalist>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <Input type="number" step="0.1" min="0" max="2" value={selectedNode.temperature ?? ''}
+              <Input type="number" step="0.1" min="0" max="2" value={selectedNode.temperature ?? ''} disabled={readOnly}
                 onChange={event => updateNode({ temperature: event.target.value ? Number(event.target.value) : null })} placeholder="temperature" />
-              <Input type="number" min="1" max="32768" value={selectedNode.maxTokens ?? ''}
+              <Input type="number" min="1" max="32768" value={selectedNode.maxTokens ?? ''} disabled={readOnly}
                 onChange={event => updateNode({ maxTokens: event.target.value ? Number(event.target.value) : null })} placeholder="maxTokens" />
             </div>
             <label className="block text-xs font-medium">输出契约
               <select className="mt-1 h-9 w-full rounded border bg-background px-2" value={selectedNode.output.type}
+                disabled={readOnly}
                 onChange={event => updateNode({ output: event.target.value === 'text' ? { type: 'text' } : {
                   type: 'json_schema', schema: { type: 'object' }
                 } })}>
@@ -292,6 +314,7 @@ function TeamEditor({
             {selectedNode.output.type === 'json_schema' && (
               <textarea className="min-h-32 w-full rounded border bg-background p-2 font-mono text-xs"
                 value={schemaDrafts[selectedNode.id] ?? JSON.stringify(selectedNode.output.schema || {}, null, 2)}
+                readOnly={readOnly}
                 onChange={event => {
                   const value = event.target.value
                   setSchemaDrafts(current => ({ ...current, [selectedNode.id]: value }))
@@ -303,6 +326,7 @@ function TeamEditor({
               {tools.map(tool => (
                 <label key={tool.name} className="flex items-start gap-2 rounded p-1 text-xs hover:bg-muted">
                   <input type="checkbox" checked={selectedNode.allowedTools.includes(tool.name)}
+                    disabled={readOnly}
                     onChange={() => updateNode({ allowedTools: selectedNode.allowedTools.includes(tool.name)
                       ? selectedNode.allowedTools.filter(name => name !== tool.name)
                       : [...selectedNode.allowedTools, tool.name] })} />
@@ -312,13 +336,13 @@ function TeamEditor({
             </div>
             {selectedNode.allowedTools.some(name => tools.find(tool => tool.name === name)?.policy !== 'safe') &&
               <p className="text-xs text-amber-600">该节点包含 sensitive 或 dangerous 工具；系统安全策略始终生效，团队配置不能降低其等级。</p>}
-            <Button size="sm" variant="outline" className="w-full" onClick={() => setTeam({ ...team, outputNodeId: selectedNode.id })}>设为主要输出</Button>
-            <Button size="sm" variant="destructive" className="w-full" onClick={() => {
+            {!readOnly && <Button size="sm" variant="outline" className="w-full" onClick={() => setTeam({ ...team, outputNodeId: selectedNode.id })}>设为主要输出</Button>}
+            {!readOnly && <Button size="sm" variant="destructive" className="w-full" onClick={() => {
               setTeam({ ...team, nodes: team.nodes.filter(node => node.id !== selectedNode.id),
                 edges: team.edges.filter(edge => edge.source !== selectedNode.id && edge.target !== selectedNode.id),
                 outputNodeId: team.outputNodeId === selectedNode.id ? '' : team.outputNodeId })
               setSelectedNodeId(null)
-            }}>删除节点</Button>
+            }}>删除节点</Button>}
           </div>
         ) : <p className="text-sm text-muted-foreground">选择一个节点进行配置。</p>}
       </aside>
@@ -327,11 +351,12 @@ function TeamEditor({
 }
 
 function RoleTemplateEditor({
-  initial, tools, models, onFetchModels, onSaved, onClose
+  initial, tools, models, readOnly = false, onFetchModels, onSaved, onClose
 }: {
   initial: RoleTemplate
   tools: ToolCapability[]
   models: string[]
+  readOnly?: boolean
   onFetchModels: () => Promise<void>
   onSaved: () => void
   onClose: () => void
@@ -366,31 +391,34 @@ function RoleTemplateEditor({
 
   return (
     <Card className="max-w-4xl">
-      <CardHeader><CardTitle>{role.id ? '编辑角色模板' : '新建角色模板'}</CardTitle>
-        <CardDescription>模板拖入团队时会复制为独立节点快照，之后修改模板不会影响已有团队。</CardDescription></CardHeader>
+      <CardHeader><CardTitle>{readOnly ? '查看角色模板' : role.id ? '编辑角色模板' : '新建角色模板'}</CardTitle>
+        <CardDescription>{readOnly ? '这是内置只读模板；你可以查看完整配置，克隆后再修改。' : '模板拖入团队时会复制为独立节点快照，之后修改模板不会影响已有团队。'}</CardDescription></CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-2">
         <div className="space-y-3">
-          <Input value={role.name} onChange={event => setRole({ ...role, name: event.target.value })} placeholder="角色名称" />
+          <Input value={role.name} disabled={readOnly} onChange={event => setRole({ ...role, name: event.target.value })} placeholder="角色名称" />
           <textarea className="min-h-20 w-full rounded border bg-background p-2 text-sm" value={role.description}
+            readOnly={readOnly}
             onChange={event => setRole({ ...role, description: event.target.value })} placeholder="角色说明" />
           <textarea className="min-h-40 w-full rounded border bg-background p-2 text-sm" value={role.systemPrompt}
+            readOnly={readOnly}
             onChange={event => setRole({ ...role, systemPrompt: event.target.value })} placeholder="System prompt" />
           <div className="flex gap-2">
-            <Input list="role-template-models" value={role.model || ''}
+            <Input list="role-template-models" value={role.model || ''} disabled={readOnly}
               onChange={event => setRole({ ...role, model: event.target.value || null })} placeholder="模型 ID（空值继承全局）" />
-            <Button size="icon" variant="outline" title="读取模型列表" onClick={() => void onFetchModels()}><RefreshCw className="h-4 w-4" /></Button>
+            {!readOnly && <Button size="icon" variant="outline" title="读取模型列表" onClick={() => void onFetchModels()}><RefreshCw className="h-4 w-4" /></Button>}
             <datalist id="role-template-models">{models.map(model => <option key={model} value={model} />)}</datalist>
           </div>
           <div className="grid grid-cols-2 gap-2">
-            <Input type="number" step="0.1" min="0" max="2" value={role.temperature ?? ''}
+            <Input type="number" step="0.1" min="0" max="2" value={role.temperature ?? ''} disabled={readOnly}
               onChange={event => setRole({ ...role, temperature: event.target.value ? Number(event.target.value) : null })} placeholder="temperature" />
-            <Input type="number" min="1" max="32768" value={role.maxTokens ?? ''}
+            <Input type="number" min="1" max="32768" value={role.maxTokens ?? ''} disabled={readOnly}
               onChange={event => setRole({ ...role, maxTokens: event.target.value ? Number(event.target.value) : null })} placeholder="maxTokens" />
           </div>
         </div>
         <div className="space-y-3">
           <label className="block text-xs font-medium">输出契约
             <select className="mt-1 h-9 w-full rounded border bg-background px-2" value={role.output.type}
+              disabled={readOnly}
               onChange={event => {
                 const output = event.target.value === 'text' ? { type: 'text' as const }
                   : { type: 'json_schema' as const, schema: { type: 'object' } }
@@ -401,12 +429,13 @@ function RoleTemplateEditor({
             </select>
           </label>
           {role.output.type === 'json_schema' && <textarea className="min-h-40 w-full rounded border bg-background p-2 font-mono text-xs"
-            value={schemaDraft} onChange={event => setSchemaDraft(event.target.value)} />}
+            value={schemaDraft} readOnly={readOnly} onChange={event => setSchemaDraft(event.target.value)} />}
           <div className="text-xs font-medium">允许工具</div>
           <div className="max-h-52 space-y-1 overflow-y-auto rounded border p-2">
             {tools.map(tool => (
               <label key={tool.name} className="flex items-start gap-2 rounded p-1 text-xs hover:bg-muted">
                 <input type="checkbox" checked={role.allowedTools.includes(tool.name)}
+                  disabled={readOnly}
                   onChange={() => setRole({ ...role, allowedTools: role.allowedTools.includes(tool.name)
                     ? role.allowedTools.filter(name => name !== tool.name)
                     : [...role.allowedTools, tool.name] })} />
@@ -419,8 +448,8 @@ function RoleTemplateEditor({
             <p className="text-xs text-amber-600">该模板包含有副作用的工具；实际运行仍受团队审批模式和系统安全策略约束。</p>}
         </div>
         <div className="flex items-center gap-2 md:col-span-2">
-          <Button onClick={() => void save()}><Save className="mr-2 h-4 w-4" />保存模板</Button>
-          <Button variant="outline" onClick={onClose}>取消</Button>
+          {!readOnly && <Button onClick={() => void save()}><Save className="mr-2 h-4 w-4" />保存模板</Button>}
+          <Button variant="outline" onClick={onClose}>{readOnly ? '关闭' : '取消'}</Button>
           {message && <span className="text-sm text-destructive">{message}</span>}
         </div>
       </CardContent>
@@ -429,17 +458,21 @@ function RoleTemplateEditor({
 }
 
 export default function TeamsHub() {
+  const navigate = useNavigate()
   const [teams, setTeams] = useState<AgentTeam[]>([])
   const [templates, setTemplates] = useState<RoleTemplate[]>([])
   const [tools, setTools] = useState<ToolCapability[]>([])
   const [models, setModels] = useState<string[]>([])
   const [view, setView] = useState<'teams' | 'editor' | 'roles'>('teams')
   const [editing, setEditing] = useState<AgentTeam>(emptyTeam())
+  const [editorReadOnly, setEditorReadOnly] = useState(false)
   const [editingRole, setEditingRole] = useState<RoleTemplate | null>(null)
+  const [roleReadOnly, setRoleReadOnly] = useState(false)
   const [runTeam, setRunTeam] = useState<AgentTeam | null>(null)
   const [requirement, setRequirement] = useState('')
   const [runOutput, setRunOutput] = useState<unknown>(null)
   const [runNodeStatuses, setRunNodeStatuses] = useState<Record<string, string>>({})
+  const [useContexts, setUseContexts] = useState<Record<string, ContextKind>>({})
   const importRef = useRef<HTMLInputElement>(null)
 
   const load = useCallback(async () => {
@@ -509,10 +542,25 @@ export default function TeamsHub() {
     await load()
   }
 
+  const goUseTeam = (team: AgentTeam, kind: ContextKind) => {
+    if (kind === 'generic') {
+      setRunOutput(null); setRunNodeStatuses({}); setRunTeam(team)
+      return
+    }
+    const teamId = encodeURIComponent(team.id || '')
+    const destinations: Record<Exclude<ContextKind, 'generic'>, string> = {
+      software_idea: `/lab?tab=software&action=idea&teamId=${teamId}`,
+      software_project: `/lab?tab=software&action=develop&teamId=${teamId}`,
+      papers: `/paper?action=expert-review&teamId=${teamId}`,
+      notes: `/knowledge?action=knowledge-synthesis&teamId=${teamId}`
+    }
+    navigate(destinations[kind])
+  }
+
   if (view === 'editor') return (
     <div className="h-full overflow-auto p-6">
       <ReactFlowProvider>
-        <TeamEditor initial={editing} templates={templates} tools={tools} models={models} onFetchModels={fetchModels}
+        <TeamEditor initial={editing} templates={templates} tools={tools} models={models} readOnly={editorReadOnly} onFetchModels={fetchModels}
           onClose={() => setView('teams')} onSaved={async () => { await load(); setView('teams') }} />
       </ReactFlowProvider>
     </div>
@@ -525,22 +573,24 @@ export default function TeamsHub() {
         <div className="flex flex-wrap gap-2">
           <Button variant={view === 'teams' ? 'default' : 'outline'} onClick={() => setView('teams')}><Users className="mr-2 h-4 w-4" />团队</Button>
           <Button variant={view === 'roles' ? 'default' : 'outline'} onClick={() => setView('roles')}><Bot className="mr-2 h-4 w-4" />角色模板</Button>
-          <Button variant="outline" onClick={() => { setEditing(emptyTeam()); setView('editor') }}><Plus className="mr-2 h-4 w-4" />新建团队</Button>
-          {view === 'roles' && <Button variant="outline" onClick={() => setEditingRole(emptyRole())}><Plus className="mr-2 h-4 w-4" />新建角色</Button>}
+          <Button variant="outline" onClick={() => { setEditing(emptyTeam()); setEditorReadOnly(false); setView('editor') }}><Plus className="mr-2 h-4 w-4" />新建团队</Button>
+          {view === 'roles' && <Button variant="outline" onClick={() => { setEditingRole(emptyRole()); setRoleReadOnly(false) }}><Plus className="mr-2 h-4 w-4" />新建角色</Button>}
           <Button variant="outline" onClick={() => importRef.current?.click()}><Upload className="mr-2 h-4 w-4" />导入</Button>
           <input ref={importRef} type="file" accept="application/json" className="hidden" onChange={event => void importTeam(event.target.files?.[0])} />
         </div>
 
         {view === 'roles' ? (
           <div className="space-y-4">
-            {editingRole && <RoleTemplateEditor initial={editingRole} tools={tools} models={models} onFetchModels={fetchModels}
+            {editingRole && <RoleTemplateEditor initial={editingRole} tools={tools} models={models} readOnly={roleReadOnly} onFetchModels={fetchModels}
               onClose={() => setEditingRole(null)} onSaved={async () => { setEditingRole(null); await load() }} />}
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {templates.map(template => (
                 <Card key={template.id}><CardHeader><CardTitle className="text-base">{template.name}</CardTitle><CardDescription>{template.description}</CardDescription></CardHeader>
                   <CardContent className="flex justify-between"><Badge>{template.builtin ? '内置' : '我的'}</Badge>
                     <div className="flex gap-2">
-                      {!template.builtin && <Button size="sm" variant="outline" title="编辑" onClick={() => setEditingRole(template)}><Pencil className="h-4 w-4" /></Button>}
+                      {template.builtin
+                        ? <Button size="sm" variant="outline" onClick={() => { setEditingRole(template); setRoleReadOnly(true) }}><Eye className="mr-1 h-4 w-4" />查看</Button>
+                        : <Button size="sm" variant="outline" title="编辑" onClick={() => { setEditingRole(template); setRoleReadOnly(false) }}><Pencil className="h-4 w-4" /></Button>}
                       <Button size="sm" variant="outline" title="克隆" onClick={async () => { await requestJson(`/api/agent/role-templates/${template.id}/clone`, { method: 'POST' }); await load() }}><Copy className="h-4 w-4" /></Button>
                       {!template.builtin && <Button size="sm" variant="destructive" title="删除" onClick={async () => {
                         if (window.confirm('确定删除这个角色模板？')) {
@@ -559,15 +609,23 @@ export default function TeamsHub() {
                 <div className="flex items-center justify-between"><Badge variant={team.builtin ? 'secondary' : 'default'}>{team.builtin ? '内置' : '我的团队'}</Badge><Network className="h-5 w-5 text-muted-foreground" /></div>
                 <CardTitle className="text-lg">{team.name}</CardTitle><CardDescription>{team.description}</CardDescription>
               </CardHeader><CardContent className="mt-auto space-y-3">
-                <div className="flex flex-wrap gap-1">{team.acceptedContexts.map(kind => <Badge key={kind} variant="outline">{kind}</Badge>)}</div>
-                <div className="text-xs text-muted-foreground">{team.nodes.length} 个节点 · 并发 {team.maxConcurrency} · {team.approvalMode}</div>
+                <div className="flex flex-wrap gap-1">{team.acceptedContexts.map(kind => <Badge key={kind} variant="outline">{CONTEXT_LABELS[kind]}</Badge>)}</div>
+                <div className="text-xs text-muted-foreground">{team.nodes.length} 个节点 · {team.workflowType === 'development' ? '固定研发流程' : `并发 ${team.maxConcurrency}`} · {team.approvalMode}</div>
                 <div className="flex flex-wrap gap-2">
-                  {team.builtin ? <Button size="sm" variant="outline" onClick={() => void clone(team.id!)}><Copy className="mr-1 h-4 w-4" />克隆</Button>
-                    : <Button size="sm" onClick={() => { setEditing(team); setView('editor') }}>编排</Button>}
+                  {team.acceptedContexts.length > 1 && <select
+                    aria-label={`${team.name} 使用场景`}
+                    className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+                    value={useContexts[team.id || team.name] || team.acceptedContexts[0]}
+                    onChange={event => setUseContexts(current => ({ ...current, [team.id || team.name]: event.target.value as ContextKind }))}
+                  >{team.acceptedContexts.map(kind => <option key={kind} value={kind}>{CONTEXT_LABELS[kind]}</option>)}</select>}
+                  <Button size="sm" onClick={() => goUseTeam(team,
+                    useContexts[team.id || team.name] || team.acceptedContexts[0])}>去使用</Button>
+                  {team.builtin ? <>
+                    <Button size="sm" variant="outline" onClick={() => { setEditing(team); setEditorReadOnly(true); setView('editor') }}><Eye className="mr-1 h-4 w-4" />查看</Button>
+                    <Button size="sm" variant="outline" onClick={() => void clone(team.id!)}><Copy className="mr-1 h-4 w-4" />克隆</Button>
+                  </> : <Button size="sm" onClick={() => { setEditing(team); setEditorReadOnly(false); setView('editor') }}>编排</Button>}
                   <Button size="sm" variant="outline" onClick={() => void exportTeam(team)}><Download className="h-4 w-4" /></Button>
-                  {team.acceptedContexts.includes('generic') && <Button size="sm" variant="outline" onClick={() => {
-                    setRunOutput(null); setRunNodeStatuses({}); setRunTeam(team)
-                  }}><Play className="mr-1 h-4 w-4" />试运行</Button>}
+                  {team.acceptedContexts.includes('generic') && <Button size="sm" variant="outline" onClick={() => goUseTeam(team, 'generic')}><Play className="mr-1 h-4 w-4" />试运行</Button>}
                   {!team.builtin && <Button size="sm" variant="destructive" onClick={() => void remove(team.id!)}><Trash2 className="h-4 w-4" /></Button>}
                 </div>
               </CardContent></Card>

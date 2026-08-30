@@ -1,7 +1,7 @@
 # 数据模型与空间隔离
 
 > 实现文件：`scripts/database.py`（约 3100 行，aiosqlite）；引导壳：`backend/server/db.py`
-> 对应应用版本 **0.4.0**；核对日期：2026-08-27
+> 对应应用版本 **0.5.0**；核对日期：2026-08-28
 
 ---
 
@@ -156,6 +156,14 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 **`agent_runs`**（后台运行主表）— `id TEXT` / `space_id NOT NULL`(DDL 内建) / `project_id` / `requirement` / `roles`(JSON) / `status`(pending·running·completed·failed·cancelled) / `error_message` / `result_summary`(JSON) / `created_at` / `started_at` / `completed_at`
 
 0.4.0 为其增加 `team_id` / `team_name` / `team_snapshot`(JSON) / `input_context`(JSON)。团队在提交时完整快照，后续编辑或删除不影响历史运行。
+
+0.5.0 为研发运行增加 `run_kind` / `phase` / `iteration` / `max_iterations` / `deadline_at` / `workspace_snapshot` / `checkpoint` / `authorization` / `lease_owner` / `lease_expires_at` / `budget_used_ms`。旧行的 `run_kind` 幂等默认为 `dag`。
+
+**`development_run_steps`** — 按运行、轮次和阶段保存角色节点、尝试、状态、输入摘要、结构化输出、错误和起止时间。
+
+**`development_artifacts`** — 保存计划、命令日志、测试报告和审查结果；大产物只保存工作区相对路径。
+
+**`software_projects.development_config`** — JSON，保存运行时、包管理器、测试/构建参数数组和忽略路径。
 
 **`agent_teams`** — 当前空间的用户团队元数据与完整 DAG JSON；内置团队保存在 `backend/agent_teams/*.json`，不写入数据库。
 

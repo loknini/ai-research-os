@@ -59,6 +59,7 @@ SPACE_TABLES = [
     "agent_runs", "agent_run_events", "agent_tool_approvals", "agent_replay_messages",
     "agent_teams", "agent_role_templates", "agent_run_nodes",
     "rag_sources", "rag_documents", "rag_chunks",
+    "development_run_steps", "development_artifacts",
 ]
 
 
@@ -205,6 +206,7 @@ async def init_db() -> None:
                 features TEXT,  -- JSON 功能列表
                 milestones TEXT,  -- JSON 里程碑
                 ai_generated_code INTEGER DEFAULT 0,  -- 是否使用 AI 生成代码
+                development_config TEXT,  -- JSON: 研发运行时、验证命令与忽略路径
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
@@ -465,6 +467,45 @@ async def init_db() -> None:
             )
         ''')
 
+        # ---------------- 持久化研发工作区 ----------------
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS development_run_steps (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                space_id TEXT NOT NULL,
+                iteration INTEGER NOT NULL,
+                phase TEXT NOT NULL,
+                stage_node_id TEXT,
+                attempt INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'pending',
+                input_summary TEXT,
+                output TEXT,
+                error_message TEXT,
+                started_at INTEGER,
+                completed_at INTEGER,
+                UNIQUE(run_id, iteration, phase, attempt)
+            )
+        ''')
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS development_artifacts (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                space_id TEXT NOT NULL,
+                iteration INTEGER NOT NULL DEFAULT 0,
+                kind TEXT NOT NULL,
+                relative_path TEXT,
+                content TEXT,
+                metadata TEXT,
+                created_at INTEGER NOT NULL
+            )
+        ''')
+        await conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_development_steps_run '
+            'ON development_run_steps(run_id, space_id, iteration)')
+        await conn.execute(
+            'CREATE INDEX IF NOT EXISTS idx_development_artifacts_run '
+            'ON development_artifacts(run_id, space_id, iteration)')
+
         # User-authored definitions are space-private. Built-in teams and role
         # templates remain version-controlled JSON and are not inserted here.
         await conn.execute('''
@@ -719,7 +760,19 @@ async def init_db() -> None:
         await ensure_column("agent_runs", "team_name", "TEXT")
         await ensure_column("agent_runs", "team_snapshot", "TEXT")
         await ensure_column("agent_runs", "input_context", "TEXT")
+        await ensure_column("agent_runs", "run_kind", "TEXT NOT NULL DEFAULT 'dag'")
+        await ensure_column("agent_runs", "phase", "TEXT")
+        await ensure_column("agent_runs", "iteration", "INTEGER NOT NULL DEFAULT 0")
+        await ensure_column("agent_runs", "max_iterations", "INTEGER")
+        await ensure_column("agent_runs", "deadline_at", "INTEGER")
+        await ensure_column("agent_runs", "workspace_snapshot", "TEXT")
+        await ensure_column("agent_runs", "checkpoint", "TEXT")
+        await ensure_column("agent_runs", "authorization", "TEXT")
+        await ensure_column("agent_runs", "lease_owner", "TEXT")
+        await ensure_column("agent_runs", "lease_expires_at", "INTEGER")
+        await ensure_column("agent_runs", "budget_used_ms", "INTEGER NOT NULL DEFAULT 0")
         await ensure_column("agent_tool_approvals", "node_id", "TEXT")
+        await ensure_column("software_projects", "development_config", "TEXT")
 
         # 一次性迁移：papers 表补 bibtex 列（老库无此列，幂等执行）
         cols = await (await conn.execute("PRAGMA table_info(papers)")).fetchall()
@@ -1343,6 +1396,8 @@ def project_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
         'features': json.loads(row['features']) if row['features'] else [],
         'milestones': json.loads(row['milestones']) if row['milestones'] else [],
         'aiGeneratedCode': bool(row['ai_generated_code']),
+        'developmentConfig': (json.loads(row['development_config'])
+                              if 'development_config' in row.keys() and row['development_config'] else {}),
         'createdAt': row['created_at'],
         'updatedAt': row['updated_at'],
     }
@@ -1408,6 +1463,7 @@ async def update_project(project_id: str, updates: Dict[str, Any], space_id: str
             allowed_fields = {
                 'name', 'description', 'ideaDescription', 'techStack', 'status',
                 'localPath', 'githubUrl', 'architecture', 'features', 'milestones', 'aiGeneratedCode',
+                'developmentConfig',
             }
             updates = {k: v for k, v in updates.items() if k in allowed_fields}
             if not updates:
@@ -1418,13 +1474,14 @@ async def update_project(project_id: str, updates: Dict[str, Any], space_id: str
                 'localPath': 'local_path',
                 'githubUrl': 'github_url',
                 'aiGeneratedCode': 'ai_generated_code',
+                'developmentConfig': 'development_config',
             }
             set_clauses: List[str] = []
             values: List[Any] = []
             for key, value in updates.items():
                 db_key = field_mapping.get(key, key)
                 set_clauses.append(f"{db_key} = ?")
-                if key in ['techStack', 'architecture', 'features', 'milestones']:
+                if key in ['techStack', 'architecture', 'features', 'milestones', 'developmentConfig']:
                     values.append(json.dumps(value, ensure_ascii=False))
                 elif key == 'aiGeneratedCode':
                     values.append(1 if value else 0)
@@ -2733,6 +2790,9 @@ def _run_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
     """将 agent_runs 行转换为前端契约的 camelCase 字典。"""
     if not row:
         return {}
+    keys = set(row.keys())
+    def parsed(column: str) -> Any:
+        return json.loads(row[column]) if column in keys and row[column] else None
     return {
         'id': row['id'],
         'spaceId': row['space_id'],
@@ -2749,13 +2809,27 @@ def _run_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
         'createdAt': row['created_at'],
         'startedAt': row['started_at'],
         'completedAt': row['completed_at'],
+        'runKind': row['run_kind'] if 'run_kind' in keys else 'dag',
+        'phase': row['phase'] if 'phase' in keys else None,
+        'iteration': row['iteration'] if 'iteration' in keys else 0,
+        'maxIterations': row['max_iterations'] if 'max_iterations' in keys else None,
+        'deadlineAt': row['deadline_at'] if 'deadline_at' in keys else None,
+        'workspaceSnapshot': parsed('workspace_snapshot'),
+        'checkpoint': parsed('checkpoint'),
+        'authorization': parsed('authorization'),
+        'budgetUsedMs': row['budget_used_ms'] if 'budget_used_ms' in keys else 0,
     }
 
 
 async def create_agent_run(run_id: str, space_id: str, project_id: Optional[str],
                            requirement: str, roles: Any = None, status: str = 'running',
                            team_id: Optional[str] = None, team_name: Optional[str] = None,
-                           team_snapshot: Any = None, input_context: Any = None) -> str:
+                           team_snapshot: Any = None, input_context: Any = None,
+                           run_kind: str = 'dag', phase: Optional[str] = None,
+                           max_iterations: Optional[int] = None,
+                           deadline_at: Optional[int] = None,
+                           workspace_snapshot: Any = None, checkpoint: Any = None,
+                           authorization: Any = None) -> str:
     """创建一条后台 Agent 运行记录（按空间打标）并返回 run id。"""
     try:
         now = int(time.time() * 1000)
@@ -2763,14 +2837,20 @@ async def create_agent_run(run_id: str, space_id: str, project_id: Optional[str]
             await conn.execute('''
                 INSERT INTO agent_runs
                 (id, space_id, project_id, requirement, roles, status, created_at, started_at,
-                 completed_at, team_id, team_name, team_snapshot, input_context)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 completed_at, team_id, team_name, team_snapshot, input_context,
+                 run_kind, phase, max_iterations, deadline_at, workspace_snapshot,
+                 checkpoint, authorization)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 run_id, space_id, project_id, requirement,
                 json.dumps(roles or [], ensure_ascii=False), status, now, None, None,
                 team_id, team_name,
                 json.dumps(team_snapshot, ensure_ascii=False) if team_snapshot is not None else None,
-                json.dumps(input_context, ensure_ascii=False) if input_context is not None else None))
+                json.dumps(input_context, ensure_ascii=False) if input_context is not None else None,
+                run_kind, phase, max_iterations, deadline_at,
+                json.dumps(workspace_snapshot, ensure_ascii=False) if workspace_snapshot is not None else None,
+                json.dumps(checkpoint, ensure_ascii=False) if checkpoint is not None else None,
+                json.dumps(authorization, ensure_ascii=False) if authorization is not None else None))
         return run_id
     except Exception as e:
         print(f"Create agent run error: {e}")
@@ -2781,13 +2861,31 @@ async def update_agent_run(run_id: str, space_id: str, status: Optional[str] = N
                            error_message: Optional[str] = None,
                            result_summary: Any = None,
                            started_at: Optional[int] = None,
-                           completed_at: Optional[int] = None) -> bool:
+                           completed_at: Optional[int] = None,
+                           phase: Optional[str] = None,
+                           iteration: Optional[int] = None,
+                           max_iterations: Optional[int] = None,
+                           deadline_at: Optional[int] = None,
+                           workspace_snapshot: Any = None,
+                           checkpoint: Any = None,
+                           authorization: Any = None,
+                           budget_used_ms: Optional[int] = None,
+                           lease_owner: Optional[str] = None,
+                           lease_expires_at: Optional[int] = None) -> bool:
     """更新一条后台运行记录（按空间校验）。仅接受白名单字段。"""
-    allowed = {'status', 'error_message', 'result_summary', 'started_at', 'completed_at'}
+    allowed = {
+        'status', 'error_message', 'result_summary', 'started_at', 'completed_at',
+        'phase', 'iteration', 'max_iterations', 'deadline_at', 'workspace_snapshot',
+        'checkpoint', 'authorization', 'budget_used_ms', 'lease_owner', 'lease_expires_at',
+    }
     updates = {
         'status': status, 'error_message': error_message,
         'result_summary': result_summary, 'started_at': started_at,
-        'completed_at': completed_at,
+        'completed_at': completed_at, 'phase': phase, 'iteration': iteration,
+        'max_iterations': max_iterations, 'deadline_at': deadline_at,
+        'workspace_snapshot': workspace_snapshot, 'checkpoint': checkpoint,
+        'authorization': authorization, 'budget_used_ms': budget_used_ms,
+        'lease_owner': lease_owner, 'lease_expires_at': lease_expires_at,
     }
     updates = {k: v for k, v in updates.items() if v is not None and k in allowed}
     if not updates:
@@ -2795,7 +2893,7 @@ async def update_agent_run(run_id: str, space_id: str, status: Optional[str] = N
     set_clauses: List[str] = []
     values: List[Any] = []
     for key, value in updates.items():
-        if key == 'result_summary':
+        if key in {'result_summary', 'workspace_snapshot', 'checkpoint', 'authorization'}:
             value = json.dumps(value, ensure_ascii=False)
         set_clauses.append(f"{key} = ?")
         values.append(value)
@@ -2919,6 +3017,191 @@ async def cancel_agent_run(run_id: str, space_id: str = DEFAULT_SPACE) -> bool:
             VALUES (?, ?, 'run_cancelled', ?, ?)
         ''', (run_id, space_id, json.dumps(event, ensure_ascii=False), now))
         return True
+
+
+# ==================== 持久化研发运行 ====================
+
+async def claim_development_run(run_id: str, space_id: str, owner: str,
+                                lease_ms: int = 30000) -> bool:
+    """原子领取一条待执行/租约过期的研发运行。"""
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        cur = await conn.execute('''
+            UPDATE agent_runs SET lease_owner = ?, lease_expires_at = ?, status = 'running',
+                started_at = COALESCE(started_at, ?)
+            WHERE id = ? AND space_id = ? AND run_kind = 'development'
+              AND status IN ('pending', 'running')
+              AND (lease_owner IS NULL OR lease_owner = ? OR lease_expires_at IS NULL OR lease_expires_at < ?)
+        ''', (owner, now + lease_ms, now, run_id, space_id, owner, now))
+        return cur.rowcount > 0
+
+
+async def renew_development_lease(run_id: str, space_id: str, owner: str,
+                                  lease_ms: int = 30000) -> bool:
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        cur = await conn.execute('''
+            UPDATE agent_runs SET lease_expires_at = ?
+            WHERE id = ? AND space_id = ? AND run_kind = 'development'
+              AND status = 'running' AND lease_owner = ?
+        ''', (now + lease_ms, run_id, space_id, owner))
+        return cur.rowcount > 0
+
+
+async def finish_development_run(run_id: str, space_id: str, owner: str,
+                                 status: str, phase: str,
+                                 result_summary: Any = None,
+                                 error_message: Optional[str] = None) -> bool:
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        cur = await conn.execute('''
+            UPDATE agent_runs SET status = ?, phase = ?, result_summary = COALESCE(?, result_summary),
+                error_message = ?, completed_at = ?, lease_owner = NULL, lease_expires_at = NULL
+            WHERE id = ? AND space_id = ? AND run_kind = 'development' AND lease_owner = ?
+              AND status = 'running'
+        ''', (status, phase,
+              json.dumps(result_summary, ensure_ascii=False) if result_summary is not None else None,
+              error_message, now, run_id, space_id, owner))
+        if cur.rowcount <= 0:
+            return False
+        event = {"type": "run_complete" if status == "completed" else "run_failed",
+                 "phase": phase, "message": error_message or phase}
+        await conn.execute('''
+            INSERT INTO agent_run_events (run_id, space_id, type, data, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (run_id, space_id, event["type"], json.dumps(event, ensure_ascii=False), now))
+        return True
+
+
+async def continue_development_run(run_id: str, space_id: str,
+                                   additional_iterations: int,
+                                   additional_minutes: int,
+                                   feedback: Optional[str] = None) -> bool:
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        row = await _fetchone(conn, '''
+            SELECT max_iterations, deadline_at, checkpoint FROM agent_runs
+            WHERE id = ? AND space_id = ? AND run_kind = 'development'
+              AND status = 'failed' AND phase = 'budget_exhausted'
+        ''', (run_id, space_id))
+        if not row:
+            return False
+        checkpoint = json.loads(row['checkpoint']) if row['checkpoint'] else {}
+        if feedback:
+            previous = checkpoint.get('feedback') or ''
+            checkpoint['feedback'] = (f"{previous}\n\n用户追加反馈：{feedback}" if previous else
+                                      f"用户追加反馈：{feedback}")[-40000:]
+        cur = await conn.execute('''
+            UPDATE agent_runs SET status = 'pending', phase = 'queued', completed_at = NULL,
+                error_message = NULL, max_iterations = ?, deadline_at = ?, checkpoint = ?,
+                lease_owner = NULL, lease_expires_at = NULL
+            WHERE id = ? AND space_id = ?
+        ''', ((row['max_iterations'] or 0) + additional_iterations,
+              max(now, row['deadline_at'] or now) + additional_minutes * 60 * 1000,
+              json.dumps(checkpoint, ensure_ascii=False), run_id, space_id))
+        return cur.rowcount > 0
+
+
+async def list_claimable_development_runs(limit: int = 20) -> List[Dict[str, Any]]:
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        rows = await _fetchall(conn, '''
+            SELECT * FROM agent_runs WHERE run_kind = 'development'
+              AND status IN ('pending', 'running')
+              AND (lease_owner IS NULL OR lease_expires_at IS NULL OR lease_expires_at < ?)
+            ORDER BY created_at ASC LIMIT ?
+        ''', (now, limit))
+        return [_run_to_dict(row) for row in rows]
+
+
+async def create_development_step(run_id: str, space_id: str, iteration: int,
+                                  phase: str, stage_node_id: Optional[str] = None,
+                                  input_summary: Optional[str] = None,
+                                  attempt: int = 1) -> str:
+    step_id = str(uuid.uuid4())
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        await conn.execute('''
+            INSERT OR REPLACE INTO development_run_steps
+            (id, run_id, space_id, iteration, phase, stage_node_id, attempt, status,
+             input_summary, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)
+        ''', (step_id, run_id, space_id, iteration, phase, stage_node_id,
+              attempt, _clean_text_for_db(input_summary), now))
+    return step_id
+
+
+async def finish_development_step(step_id: str, run_id: str, space_id: str,
+                                  status: str, output: Any = None,
+                                  error_message: Optional[str] = None) -> bool:
+    now = int(time.time() * 1000)
+    output_text = (json.dumps(output, ensure_ascii=False)
+                   if output is not None and not isinstance(output, str) else output)
+    async with get_db() as conn:
+        cur = await conn.execute('''
+            UPDATE development_run_steps SET status = ?, output = ?, error_message = ?, completed_at = ?
+            WHERE id = ? AND run_id = ? AND space_id = ?
+        ''', (status, _clean_text_for_db(output_text), _clean_text_for_db(error_message),
+              now, step_id, run_id, space_id))
+        return cur.rowcount > 0
+
+
+def _development_step_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:
+    output: Any = row['output']
+    if output:
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            pass
+    return {
+        'id': row['id'], 'runId': row['run_id'], 'iteration': row['iteration'],
+        'phase': row['phase'], 'stageNodeId': row['stage_node_id'],
+        'attempt': row['attempt'], 'status': row['status'],
+        'inputSummary': row['input_summary'], 'output': output,
+        'errorMessage': row['error_message'], 'startedAt': row['started_at'],
+        'completedAt': row['completed_at'],
+    }
+
+
+async def list_development_steps(run_id: str, space_id: str) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await _fetchall(conn, '''
+            SELECT * FROM development_run_steps WHERE run_id = ? AND space_id = ?
+            ORDER BY iteration ASC, started_at ASC
+        ''', (run_id, space_id))
+        return [_development_step_to_dict(row) for row in rows]
+
+
+async def add_development_artifact(run_id: str, space_id: str, iteration: int,
+                                   kind: str, content: Optional[str] = None,
+                                   relative_path: Optional[str] = None,
+                                   metadata: Any = None) -> str:
+    artifact_id = str(uuid.uuid4())
+    async with get_db() as conn:
+        await conn.execute('''
+            INSERT INTO development_artifacts
+            (id, run_id, space_id, iteration, kind, relative_path, content, metadata, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (artifact_id, run_id, space_id, iteration, kind, relative_path,
+              _clean_text_for_db(content[:262144] if content else None),
+              json.dumps(metadata, ensure_ascii=False) if metadata is not None else None,
+              int(time.time() * 1000)))
+    return artifact_id
+
+
+async def list_development_artifacts(run_id: str, space_id: str) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await _fetchall(conn, '''
+            SELECT * FROM development_artifacts WHERE run_id = ? AND space_id = ?
+            ORDER BY created_at ASC
+        ''', (run_id, space_id))
+        return [{
+            'id': row['id'], 'runId': row['run_id'], 'iteration': row['iteration'],
+            'kind': row['kind'], 'relativePath': row['relative_path'],
+            'content': row['content'],
+            'metadata': json.loads(row['metadata']) if row['metadata'] else None,
+            'createdAt': row['created_at'],
+        } for row in rows]
 
 
 def _run_node_to_dict(row: aiosqlite.Row) -> Dict[str, Any]:

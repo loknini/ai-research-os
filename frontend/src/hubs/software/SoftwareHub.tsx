@@ -21,11 +21,17 @@ import { ProjectCard } from './components/ProjectCard'
 import { ProjectDetail } from './components/ProjectDetail'
 import { ProjectForm } from './components/ProjectForm'
 import { IdeaFormDialog } from './components/IdeaFormDialog'
+import { useSearchParams } from 'react-router-dom'
 
 export default function SoftwareHub({ embedded = false }: { embedded?: boolean } = {}) {
+  const [searchParams, setSearchParams] = useSearchParams()
   // 状态
   const [projects, setProjects] = useState<SoftwareProject[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
+  const [developmentRuns, setDevelopmentRuns] = useState<Array<{
+    id: string; projectId?: string; runKind?: string; status: string; phase?: string
+    iteration?: number; maxIterations?: number; requirement: string
+  }>>([])
   const [isLoading, setIsLoading] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [showIdeaForm, setShowIdeaForm] = useState(false)
@@ -33,6 +39,9 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
   const [deletingProject, setDeletingProject] = useState<SoftwareProject | null>(null)
   const [editingProject, setEditingProject] = useState<SoftwareProject | null>(null)
   const [projectFormMode, setProjectFormMode] = useState<'create' | 'import'>('create')
+  const [linkedTeamId, setLinkedTeamId] = useState<string | undefined>()
+  const [developmentRequested, setDevelopmentRequested] = useState(false)
+  const [linkedProjectId, setLinkedProjectId] = useState<string | null>(null)
 
   // 筛选
   const [filterStatus, setFilterStatus] = useState<ProjectStatus | 'all'>('all')
@@ -54,9 +63,10 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
   const loadData = useCallback(async () => {
     setIsLoading(true)
     try {
-      const [projectsRes, tasksRes] = await Promise.all([
+      const [projectsRes, tasksRes, runsRes] = await Promise.all([
         fetchProjects(),
-        fetchTasks()
+        fetchTasks(),
+        fetch('/api/agent/runs?limit=200')
       ])
 
       if (projectsRes.ok) {
@@ -66,6 +76,10 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
       if (tasksRes.ok) {
         const data = await tasksRes.json()
         if (data.success) setTasks(data.tasks)
+      }
+      if (runsRes.ok) {
+        const data = await runsRes.json()
+        if (data.success) setDevelopmentRuns((data.runs || []).filter((run: { runKind?: string }) => run.runKind === 'development'))
       }
     } catch (error) {
       console.error('Failed to load data:', error)
@@ -78,6 +92,46 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
   useEffect(() => {
     loadData()
   }, [loadData])
+
+  useEffect(() => {
+    if (!developmentRuns.some(run => run.status === 'pending' || run.status === 'running')) return
+    const timer = window.setInterval(() => {
+      fetch('/api/agent/runs?limit=200').then(response => response.json()).then(data => {
+        if (data.success) setDevelopmentRuns((data.runs || []).filter((run: { runKind?: string }) => run.runKind === 'development'))
+      }).catch(() => undefined)
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [developmentRuns])
+
+  useEffect(() => {
+    const refresh = () => {
+      fetch('/api/agent/runs?limit=200').then(response => response.json()).then(data => {
+        if (data.success) setDevelopmentRuns((data.runs || []).filter((run: { runKind?: string }) => run.runKind === 'development'))
+      }).catch(() => undefined)
+    }
+    window.addEventListener('development-run-changed', refresh)
+    return () => window.removeEventListener('development-run-changed', refresh)
+  }, [])
+
+  useEffect(() => {
+    const action = searchParams.get('action')
+    const teamId = searchParams.get('teamId') || undefined
+    if (action !== 'idea' && action !== 'develop') return
+    setLinkedTeamId(teamId)
+    if (action === 'idea') setShowIdeaForm(true)
+    else setDevelopmentRequested(true)
+    setLinkedProjectId(searchParams.get('projectId'))
+    const next = new URLSearchParams(searchParams)
+    next.delete('action'); next.delete('teamId'); next.delete('projectId')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
+
+  useEffect(() => {
+    if (!linkedProjectId || projects.length === 0) return
+    const project = projects.find(value => value.id === linkedProjectId)
+    if (project) setSelectedProject(project)
+    setLinkedProjectId(null)
+  }, [linkedProjectId, projects])
 
   // 统计数据 + 筛选项目
   const { stats, filteredProjects } = useSoftwareData(projects, filterStatus, searchQuery)
@@ -199,6 +253,12 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
             </div>
           )}
 
+          {developmentRequested && !selectedProject && (
+            <div className="mb-4 rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
+              请选择一个项目，随后在右侧“Agent 研发工作区”中启动团队。
+            </div>
+          )}
+
           {/* 统计 */}
           <div className="grid grid-cols-4 gap-4 mb-6">
             <Card>
@@ -311,6 +371,7 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
                   tasks={tasks}
                   isSelected={selectedProject?.id === project.id}
                   onSelect={setSelectedProject}
+                  activeDevelopment={developmentRuns.find(run => run.projectId === project.id)}
                 />
               ))}
             </div>
@@ -328,6 +389,8 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
               setShowCreateForm(true)
             }}
             onDelete={(project) => setDeletingProject(project)}
+            defaultDevelopmentTeamId={linkedTeamId}
+            autoOpenDevelopment={developmentRequested}
           />
         )}
       </div>
@@ -340,6 +403,7 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
           onClose={() => setShowIdeaForm(false)}
           onFormDataChange={setFormData}
           onShowCreateForm={setShowCreateForm}
+          defaultTeamId={linkedTeamId}
         />
       )}
 

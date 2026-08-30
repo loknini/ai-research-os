@@ -62,8 +62,14 @@ def simple_team(name: str = "测试团队") -> dict:
 async def database_and_dag_checks() -> None:
     builtins = agent_teams.list_builtin_teams()
     check({team["id"] for team in builtins} == {
-        "builtin-software-planning", "builtin-paper-review", "builtin-knowledge-synthesis"
-    }, "三支内置团队均可加载且通过 schemaVersion=1 校验")
+        "builtin-software-planning", "builtin-paper-review", "builtin-knowledge-synthesis",
+        "builtin-software-development",
+    }, "四支内置团队均可加载且通过 schemaVersion=1 校验")
+    development = next(team for team in builtins if team["id"] == "builtin-software-development")
+    check(development["workflowType"] == "development" and
+          [node["stage"] for node in development["nodes"]] ==
+          ["analysis", "implementation", "testing", "review"],
+          "软件研发团队使用固定四阶段流程")
     check(all(team["builtin"] for team in builtins), "内置团队标记为只读来源")
 
     team, warnings = agent_teams.validate_team(simple_team())
@@ -321,8 +327,8 @@ def api_checks() -> None:
                   "内置角色模板 API 保持只读")
             legacy = client.post("/api/agent/runs", headers=a, json={"requirement": "legacy", "roles": ["architect"]})
             team_run = client.post("/api/agent/runs", headers=a, json={
-                "teamId": "builtin-paper-review", "requirement": "review",
-                "context": {"kind": "papers", "entityIds": [], "variables": {}}})
+                "teamId": "builtin-software-planning", "requirement": "review",
+                "context": {"kind": "software_idea", "entityIds": [], "variables": {}}})
             check(legacy.status_code == 200, "旧 roles 运行请求保持兼容")
             check(team_run.status_code == 200, "teamId 优先的新运行请求可提交")
             check(client.get("/api/agent/tools", headers=a).json()["tools"][0].get("policy") is not None,

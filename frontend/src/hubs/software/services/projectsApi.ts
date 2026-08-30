@@ -70,3 +70,66 @@ export async function createDefaultTasks(projectId: string): Promise<void> {
 export async function deleteProjectApi(id: string): Promise<Response> {
   return fetch(`/api/projects/${id}`, { method: 'DELETE' })
 }
+
+export async function validateWorkspace(id: string): Promise<any> {
+  const response = await fetch(`/api/projects/${id}/workspace/validate`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message || '工作区校验失败')
+  return data.workspace
+}
+
+export async function fetchDevelopmentRuns(id: string): Promise<any[]> {
+  const response = await fetch(`/api/projects/${id}/development-runs`)
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message || '运行历史加载失败')
+  return data.runs || []
+}
+
+export async function createDevelopmentRun(id: string, payload: Record<string, unknown>): Promise<string> {
+  const response = await fetch(`/api/projects/${id}/development-runs`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message || '研发运行创建失败')
+  return data.runId
+}
+
+export async function fetchDevelopmentRun(id: string): Promise<any> {
+  const response = await fetch(`/api/development/runs/${id}`)
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message || '研发运行加载失败')
+  return data
+}
+
+export async function fetchDevelopmentDiff(id: string): Promise<any> {
+  const response = await fetch(`/api/development/runs/${id}/diff`)
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message || '差异加载失败')
+  return data
+}
+
+export async function cancelDevelopmentRun(id: string): Promise<void> {
+  const response = await fetch(`/api/development/runs/${id}/cancel`, { method: 'POST' })
+  if (!response.ok) throw new Error('取消失败')
+}
+
+export async function continueDevelopmentRun(id: string, feedback = ''): Promise<void> {
+  const response = await fetch(`/api/development/runs/${id}/continue`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ additionalIterations: 4, additionalMinutes: 30, feedback })
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message || '继续运行失败')
+}
+
+export async function applyDevelopmentRun(id: string, baseRevision: string, diffDigest: string): Promise<any> {
+  const response = await fetch(`/api/development/runs/${id}/apply`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ baseRevision, diffDigest })
+  })
+  const data = await response.json()
+  if (!response.ok) throw new Error(data.message || '应用失败')
+  return data
+}

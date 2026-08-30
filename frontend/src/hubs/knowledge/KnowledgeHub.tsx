@@ -40,8 +40,10 @@ import { NoteEditor } from './components/NoteEditor'
 import { VaultSelectorDialog } from './components/VaultSelectorDialog'
 import FormulaHub from '@/hubs/formula'
 import { TeamContextRunDialog } from '@/components/agent/team-context-run-dialog'
+import { useSearchParams } from 'react-router-dom'
 
 export default function KnowledgeHub() {
+  const [searchParams, setSearchParams] = useSearchParams()
   // 状态
   const [notes, setNotes] = useState<Note[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -81,6 +83,16 @@ export default function KnowledgeHub() {
   // 公式识别弹窗（笔记编辑器「插入公式」）
   const [formulaOpen, setFormulaOpen] = useState(false)
   const [showKnowledgeTeam, setShowKnowledgeTeam] = useState(false)
+  const [knowledgeTeamId, setKnowledgeTeamId] = useState('builtin-knowledge-synthesis')
+
+  useEffect(() => {
+    if (searchParams.get('action') !== 'knowledge-synthesis') return
+    setKnowledgeTeamId(searchParams.get('teamId') || 'builtin-knowledge-synthesis')
+    setShowKnowledgeTeam(true)
+    const next = new URLSearchParams(searchParams)
+    next.delete('action'); next.delete('teamId')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   // 派生数据
   const { stats, filteredNotes } = useKnowledgeData(notes, filterType, filterFavorite, searchQuery)
@@ -684,7 +696,7 @@ export default function KnowledgeHub() {
           kind="notes"
           entities={notes.map(note => ({ id: note.id, title: note.title }))}
           initialIds={selectedNote ? [selectedNote.id] : []}
-          defaultTeamId="builtin-knowledge-synthesis"
+          defaultTeamId={knowledgeTeamId}
           applyLabel="保存为新的 AI 笔记"
           onClose={() => setShowKnowledgeTeam(false)}
           onApply={async output => {

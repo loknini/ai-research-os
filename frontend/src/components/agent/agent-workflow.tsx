@@ -49,12 +49,13 @@ interface AgentWorkflowProps {
   requirement: string
   teamId?: string
   context?: {
-    kind: 'generic' | 'software_idea' | 'papers' | 'notes'
+    kind: 'generic' | 'software_idea' | 'software_project' | 'papers' | 'notes'
     entityIds?: string[]
     variables?: Record<string, unknown>
   }
   onComplete?: (result: Record<string, any>) => void
   onEvent?: (event: Record<string, any>) => void
+  disabled?: boolean
 }
 
 interface NodeRuntimeState {
@@ -106,7 +107,7 @@ const agentConfig = {
   }
 }
 
-export function AgentWorkflow({ projectId, requirement, teamId, context, onComplete, onEvent }: AgentWorkflowProps) {
+export function AgentWorkflow({ projectId, requirement, teamId, context, onComplete, onEvent, disabled = false }: AgentWorkflowProps) {
   const [isRunning, setIsRunning] = useState(false)
   const [messages, setMessages] = useState<AgentMessage[]>([])
   const [runId, setRunId] = useState<string | null>(null)
@@ -556,7 +557,7 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
           ) : (
             <Button
               onClick={runWorkflow}
-              disabled={!requirement.trim()}
+              disabled={!requirement.trim() || disabled}
               className="gap-2"
             >
               <Play className="w-4 h-4" />

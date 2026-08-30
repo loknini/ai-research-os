@@ -75,6 +75,7 @@ export function TeamContextRunDialog({
             </div>
             <AgentWorkflow requirement={requirement} teamId={teamId}
               context={{ kind, entityIds: ids, variables: {} }}
+              disabled={ids.length === 0 || ids.length > 20}
               onComplete={result => setOutput(result.primaryOutput)} />
           </div>
           {output !== null && <div className="rounded-lg border bg-muted/30 p-4"><div className="mb-2 font-medium">结果预览</div>

@@ -1,6 +1,6 @@
 # API 参考
 
-> 应用版本 **0.4.0**；路由以 FastAPI `/docs` 动态清单为准。核对日期：2026-08-27
+> 应用版本 **0.5.0**；路由以 FastAPI `/docs` 动态清单为准。核对日期：2026-08-28
 > 交互式文档：服务启动后访问 `http://localhost:8000/docs`（FastAPI 自动生成）
 
 ---
@@ -112,7 +112,24 @@ X-Space-Key: <你的空间口令>
 - `dangerous` 工具在非 strict 模式一律拒绝（fail-closed）；未提供审批通道的调用方同样拒绝。
 - 超时（`AGENT_APPROVAL_TIMEOUT`，默认 300s）按拒绝处理；取消运行会把待审批项标记为 `cancelled`。
 
-### 3.3 会话接口
+### 3.3 实际软件研发工作区
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/projects/{id}/workspace/validate` | 识别 Git / 普通目录 / 受管理项目，返回运行时和建议验证命令，不执行代码 |
+| PUT | `/api/projects/{id}/development-config` | 保存 Python/Node 验证命令参数数组与忽略路径 |
+| POST / GET | `/api/projects/{id}/development-runs` | 创建 / 列出项目研发运行；创建体含 goal、teamId、successCriteria 与双预算 |
+| GET | `/api/development/runs/{id}` | 返回运行、步骤、产物、审批和差异摘要 |
+| GET | `/api/development/runs/{id}/stream` | SSE 研发阶段与测试事件 |
+| POST | `/api/development/runs/{id}/cancel` | 取消运行并终止当前验证进程 |
+| POST | `/api/development/runs/{id}/continue` | 为预算耗尽的运行追加轮数/时间和可选反馈 |
+| GET | `/api/development/runs/{id}/diff` | 返回文件列表、受限 patch、baseRevision 与 diffDigest |
+| GET | `/api/development/runs/{id}/artifacts` | 返回计划、命令日志、测试和审查产物 |
+| POST | `/api/development/runs/{id}/apply` | 携带已审阅 baseRevision/diffDigest 显式应用；过期或冲突返回 409 |
+
+研发接口从项目和 space-key 解析工作区，拒绝客户端提交根目录或 shell 字符串。默认授权不包含联网、安装依赖、敏感文件或破坏性操作。
+
+### 3.4 会话接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -120,7 +137,7 @@ X-Space-Key: <你的空间口令>
 | GET | `/api/agent/sessions?projectId=` | session 列表 |
 | GET | `/api/agent/sessions/{session_id}/messages` | session 消息 |
 
-### 3.4 SSE 事件帧
+### 3.5 SSE 事件帧
 
 ```
 data: {"type":"run_start", ...}

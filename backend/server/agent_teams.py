@@ -13,8 +13,9 @@ from . import db, tool_registry
 
 BUILTIN_TEAMS_DIR = Path(__file__).resolve().parents[1] / "agent_teams"
 BUILTIN_ROLES_PATH = Path(__file__).resolve().parents[1] / "agent_role_templates.json"
-CONTEXT_KINDS = {"generic", "software_idea", "papers", "notes"}
+CONTEXT_KINDS = {"generic", "software_idea", "software_project", "papers", "notes"}
 APPROVAL_MODES = {"auto", "manual", "strict"}
+DEVELOPMENT_STAGES = ("analysis", "implementation", "testing", "review")
 
 
 class TeamValidationError(ValueError):
@@ -117,6 +118,10 @@ def validate_team(source: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
         raise TeamValidationError("schemaVersion must be 1")
     if not isinstance(team.get("name"), str) or not team["name"].strip():
         raise TeamValidationError("team name is required")
+    workflow_type = team.get("workflowType", "dag")
+    if workflow_type not in {"dag", "development"}:
+        raise TeamValidationError("workflowType must be dag or development")
+    team["workflowType"] = workflow_type
     contexts = team.get("acceptedContexts") or []
     if (not isinstance(contexts, list) or not contexts
             or any(not isinstance(kind, str) or kind not in CONTEXT_KINDS for kind in contexts)
@@ -237,6 +242,22 @@ def validate_team(source: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     if len(visited) != len(nodes):
         raise TeamValidationError("team graph must be acyclic")
 
+    if workflow_type == "development":
+        stages = [node.get("stage") for node in nodes]
+        if len(nodes) != len(DEVELOPMENT_STAGES) or sorted(stages) != sorted(DEVELOPMENT_STAGES):
+            raise TeamValidationError(
+                "development teams require exactly analysis, implementation, testing and review stages")
+        by_stage = {node["stage"]: node["id"] for node in nodes}
+        required_pairs = {
+            (by_stage[DEVELOPMENT_STAGES[index]], by_stage[DEVELOPMENT_STAGES[index + 1]])
+            for index in range(len(DEVELOPMENT_STAGES) - 1)
+        }
+        actual_pairs = {(edge["source"], edge["target"]) for edge in edges}
+        if actual_pairs != required_pairs or output_id != by_stage["review"]:
+            raise TeamValidationError("development team stage order is fixed: analysis -> implementation -> testing -> review")
+        if "software_project" not in contexts:
+            raise TeamValidationError("development teams must accept software_project context")
+
     memo: Dict[str, bool] = {}
     def reaches_output(node_id: str) -> bool:
         if node_id == output_id:
@@ -304,6 +325,10 @@ async def resolve_input_context(context: Optional[Dict[str, Any]], space_id: str
     entity_ids = context.get("entityIds") or []
     if not isinstance(entity_ids, list) or len(entity_ids) > 20:
         raise TeamValidationError("context accepts at most 20 entity ids")
+    if kind in {"papers", "notes"} and not entity_ids:
+        raise TeamValidationError(f"{kind} context requires 1 to 20 entity ids")
+    if kind == "software_project" and len(entity_ids) != 1:
+        raise TeamValidationError("software_project context requires exactly one project id")
     variables = context.get("variables") or {}
     if not isinstance(variables, dict):
         raise TeamValidationError("context variables must be an object")
@@ -323,7 +348,13 @@ async def resolve_input_context(context: Optional[Dict[str, Any]], space_id: str
             if note:
                 entities.append({key: note.get(key) for key in
                     ("id", "title", "content", "tags", "noteType", "aiGenerated")})
-    if kind in {"papers", "notes"} and len(entities) != len(entity_ids):
+    elif kind == "software_project":
+        project = await db.database.get_project_by_id(str(entity_ids[0]), space_id)
+        if project:
+            entities.append({key: project.get(key) for key in
+                             ("id", "name", "description", "ideaDescription", "techStack",
+                              "status", "architecture", "features", "milestones")})
+    if kind in {"papers", "notes", "software_project"} and len(entities) != len(entity_ids):
         raise TeamValidationError("one or more context entities do not exist in this space")
     return {"kind": kind, "entityIds": entity_ids, "variables": variables, "entities": entities}
 

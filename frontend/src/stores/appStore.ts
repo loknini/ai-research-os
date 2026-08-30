@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { devtools, persist } from 'zustand/middleware'
-import type { AppState, Paper, Experiment, SoftwareProject, Task, Skill, ChatMessage } from '@/types'
+import type { AppState, Paper, Experiment, SoftwareProject, Task, Skill } from '@/types'
 
 interface AppActions {
   // 连接管理（后端健康检测）
@@ -149,33 +149,5 @@ export const useAppStore = create<AppState & AppActions>()(
       }
     ),
     { name: 'AppStore' }
-  )
-)
-
-// Chat Store (单独管理，不持久化)
-interface ChatState {
-  messages: ChatMessage[]
-  isProcessing: boolean
-}
-
-interface ChatActions {
-  addMessage: (message: ChatMessage) => void
-  clearMessages: () => void
-  setProcessing: (processing: boolean) => void
-}
-
-export const useChatStore = create<ChatState & ChatActions>()(
-  devtools(
-    (set) => ({
-      messages: [],
-      isProcessing: false,
-      
-      addMessage: (message) => set((state) => ({
-        messages: [...state.messages, message],
-      })),
-      clearMessages: () => set({ messages: [] }),
-      setProcessing: (processing) => set({ isProcessing: processing }),
-    }),
-    { name: 'ChatStore' }
   )
 )

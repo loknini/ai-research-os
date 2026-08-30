@@ -20,6 +20,7 @@ from .tasks import router as tasks_router
 from .memory import router as memory_router
 from .versions import router as versions_router
 from .rag import router as rag_router
+from .development import router as development_router
 
 routers = [
     health_router,
@@ -43,6 +44,7 @@ routers = [
     obsidian_router,
     memory_router,
     rag_router,
+    development_router,
 ]
 
 __all__ = ["routers"]

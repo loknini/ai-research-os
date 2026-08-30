@@ -42,6 +42,13 @@ export interface SoftwareProject {
   features: ProjectFeature[]
   milestones: ProjectMilestone[]
   aiGeneratedCode: boolean
+  developmentConfig?: {
+    runtime?: string[]
+    packageManager?: string | null
+    testCommands?: string[][]
+    buildCommands?: string[][]
+    ignorePaths?: string[]
+  }
   createdAt: number
   updatedAt: number
 }
@@ -240,20 +247,6 @@ export interface HubConfig {
   path: string
   description: string
   enabled: boolean
-}
-
-// 消息类型
-
-export interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: number
-  metadata?: {
-    skillName?: string
-    toolCalls?: string[]
-    result?: any
-  }
 }
 
 // Cron 定时任务类型

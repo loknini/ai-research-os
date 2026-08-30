@@ -1,6 +1,14 @@
 # LLM、Agent 与 Skills
 
-## 0. 0.4.0 可配置专家团队
+## 0. 0.5.0 实际研发 Runner 与可配置专家团队
+
+`development_runner.py` 负责固定的分析、实现、测试、审查循环。模型输出结构化完整文件，`development_workspace.py` 在服务器绑定的隔离根目录下校验相对路径并原子写入；验证命令使用 `shell=False`，只接受 pytest/unittest 与 package.json scripts。运行、阶段、租约、检查点和证据都落 SQLite，服务重启后可安全重新领取。
+
+Git 项目在独立 worktree/分支中运行，普通目录复制到受控副本。Runner 通过测试且审查接受后只进入 `awaiting_apply`，不会自动修改原项目；应用端点再次校验 base revision 和差异摘要，冲突时不做部分写入。这是工作区隔离与命令白名单，不是容器级沙箱。
+
+右下角 AI 助手复用 Chat Hub 的 `chatGenerationManager`、会话数据库和 `/api/chat/completions/stream`，不再使用前端关键词匹配器。
+
+## 0.1 0.4.0 可配置专家团队
 
 `backend/server/agent_teams.py` 负责加载版本控制内的内置团队、校验用户团队、解析当前空间的论文/笔记上下文，并按边数组顺序拼装汇合输入。`agent_runner.py` 在旧顺序 `roles` 入口之外增加静态 DAG 拓扑调度：ready 节点在团队 `maxConcurrency`（1–4）内并行执行，节点状态和输出写入 `agent_run_nodes`。
 

@@ -26,6 +26,7 @@ interface IdeaFormDialogProps {
   onClose: () => void
   onFormDataChange: (data: Partial<SoftwareProject>) => void
   onShowCreateForm: (open: boolean) => void
+  defaultTeamId?: string
 }
 
 export function IdeaFormDialog({
@@ -33,10 +34,11 @@ export function IdeaFormDialog({
   onIdeaDescriptionChange,
   onClose,
   onFormDataChange,
-  onShowCreateForm
+  onShowCreateForm,
+  defaultTeamId = 'builtin-software-planning'
 }: IdeaFormDialogProps) {
   const [teams, setTeams] = useState<TeamOption[]>([])
-  const [teamId, setTeamId] = useState('builtin-software-planning')
+  const [teamId, setTeamId] = useState(defaultTeamId)
   const [draft, setDraft] = useState<ProjectDraft | null>(null)
 
   useEffect(() => {

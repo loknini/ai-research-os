@@ -687,8 +687,10 @@ export default function ChatHub() {
       setConversations((prev) => [created, ...prev])
       setCurrentConversationId(created.id)
       setCurrentConversation(created)
+      return created
     } else {
       showToast('创建对话失败', 'error')
+      return null
     }
   }, [showToast, setCurrentConversationId])
 
@@ -762,10 +764,21 @@ export default function ChatHub() {
     const text = input.trim()
     if ((!text && pendingImages.length === 0) || isGenerating) return
 
-    // 如果没有当前会话，创建一个新会话
-    if (!currentConversationId) {
-      await createNewConversation()
-      return
+    // 没有当前会话时，在同一次发送动作中创建并继续发送首条消息。
+    let targetId = currentConversationId
+    let targetConversation = currentConversation
+    if (!targetId) {
+      const created = await createNewConversation()
+      if (!created) return
+      targetId = created.id
+      targetConversation = created
+    }
+    if (!targetConversation || targetConversation.id !== targetId) {
+      targetConversation = await fetchConversationDetail(targetId)
+      if (!targetConversation) {
+        showToast('会话详情尚未加载，请重试', 'error')
+        return
+      }
     }
 
     // 构造多模态 content：有图片时组装 [text?, ...image_url]，无图时保持纯文本（向后兼容）
@@ -782,20 +795,20 @@ export default function ChatHub() {
     }
 
     // 保存用户消息到后端
-    await addMessageAPI(currentConversationId, userMessage)
+    await addMessageAPI(targetId, userMessage)
 
     // 更新本地状态
-    const updatedMessages = [...(currentConversation?.messages || []), userMessage]
-    setCurrentConversation((prev) => (prev ? { ...prev, messages: updatedMessages } : null))
+    const updatedMessages = [...(targetConversation?.messages || []), userMessage]
+    setCurrentConversation({ ...targetConversation, messages: updatedMessages })
 
     // 如果是第一条用户消息，更新标题
     const isFirstUserMessage = updatedMessages.filter((m) => m.role === 'user').length === 1
     if (isFirstUserMessage) {
       const titleBase = text || '图片消息'
       const newTitle = titleBase.slice(0, 20) + (titleBase.length > 20 ? '...' : '')
-      await updateConversationAPI(currentConversationId, { title: newTitle })
+      await updateConversationAPI(targetId, { title: newTitle })
       setConversations((prev) =>
-        prev.map((c) => (c.id === currentConversationId ? { ...c, title: newTitle } : c))
+        prev.map((c) => (c.id === targetId ? { ...c, title: newTitle } : c))
       )
     }
 
@@ -803,8 +816,10 @@ export default function ChatHub() {
     setPendingImages([])
 
     // 复用核心流式生成逻辑
-    await runGeneration(updatedMessages)
-  }, [input, pendingImages, isGenerating, currentConversationId, currentConversation?.messages, createNewConversation, runGeneration])
+    const rag = ragEnabled ? { enabled: true, sourceIds: ragSourceIds } : undefined
+    await chatGenerationManager.start(updatedMessages, targetId, rag)
+  }, [input, pendingImages, isGenerating, currentConversationId, currentConversation,
+    createNewConversation, ragEnabled, ragSourceIds, showToast])
 
   // 进入/退出某条消息的内联编辑态（仅用于「编辑最新提问」）
   const startEditMessage = useCallback((message: Message) => {

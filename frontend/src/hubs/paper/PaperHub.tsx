@@ -41,15 +41,16 @@ import {
   loadLocalPapers,
   fetchPapers,
   summarizePaper,
-  downloadPaperPDF,
   deletePaperApi
 } from './services/papersApi'
 import { usePaperData } from './hooks/usePaperData'
 import PaperFilters from './components/PaperFilters'
 import FetchPapersTab, { type FetchBatchResult } from './components/FetchPapersTab'
 import { TeamContextRunDialog } from '@/components/agent/team-context-run-dialog'
+import { useSearchParams } from 'react-router-dom'
 
 export default function PaperHub() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const { papers, setPapers, updatePaper, deletePaper, isLoadingPapers, setLoadingPapers, isConnected } = useAppStore()
   const { showToast, ToastContainer } = useToast()
   // 工具 Tab：论文管理 / 抓取论文 / 引用生成（后者收纳为论文中心子能力）
@@ -80,6 +81,16 @@ export default function PaperHub() {
   const [batchTagInput, setBatchTagInput] = useState('')
   const [showBatchTagInput, setShowBatchTagInput] = useState(false)
   const [showTeamRun, setShowTeamRun] = useState(false)
+  const [teamRunId, setTeamRunId] = useState('builtin-paper-review')
+
+  useEffect(() => {
+    if (searchParams.get('action') !== 'expert-review') return
+    setTeamRunId(searchParams.get('teamId') || 'builtin-paper-review')
+    setShowTeamRun(true)
+    const next = new URLSearchParams(searchParams)
+    next.delete('action'); next.delete('teamId')
+    setSearchParams(next, { replace: true })
+  }, [searchParams, setSearchParams])
 
   // 分页状态
   const [currentPage, setCurrentPage] = useState(1)
@@ -207,27 +218,6 @@ export default function PaperHub() {
         newSet.delete(paper.id)
         return newSet
       })
-    }
-  }
-
-  const handleDownloadPDF = async (arxivId: string, title: string) => {
-    try {
-      showToast(`正在下载 PDF: ${title.substring(0, 30)}...`, 'info')
-
-      const result = await downloadPaperPDF(arxivId)
-      if (result.success) {
-        showToast('PDF 下载完成', 'success')
-        // 更新论文的localPath
-        const paper = papers.find((p) => p.arxivId === arxivId)
-        if (paper) {
-          updatePaper(paper.id, { localPath: result.path })
-        }
-      } else {
-        showToast(`下载失败: ${result.message}`, 'error')
-      }
-    } catch (error) {
-      console.error('Download error:', error)
-      showToast('PDF 下载失败', 'error')
     }
   }
 
@@ -552,7 +542,6 @@ export default function PaperHub() {
                   onToggleRead={() => toggleRead(paper.id, paper.isRead)}
                   onToggleFavorite={() => toggleFavorite(paper.id, paper.isFavorite)}
                   onSummarize={() => handleSummarize(paper)}
-                  onDownloadPDF={() => handleDownloadPDF(paper.arxivId, paper.title)}
                   onPreviewPDF={() => {
                     // 后端 GET /api/papers/{arxivId}/pdf 支持懒下载：localPath 不存在
                     // 时直接打预览，后端会先 download_pdf 落盘并流式返回。原来这里
@@ -731,7 +720,7 @@ export default function PaperHub() {
           kind="papers"
           entities={papers.map(paper => ({ id: paper.id, title: paper.title }))}
           initialIds={Array.from(selectedPapers).slice(0, 20)}
-          defaultTeamId="builtin-paper-review"
+          defaultTeamId={teamRunId}
           applyLabel="保存为 AI 笔记"
           onClose={() => setShowTeamRun(false)}
           onApply={async (output, entityIds) => {

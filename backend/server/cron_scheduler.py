@@ -252,6 +252,8 @@ async def _exec_agent_run(job: Dict[str, Any], space_id: str) -> Tuple[str, str]
             return "error", str(exc)
         if resolved_context["kind"] not in team_snapshot["acceptedContexts"]:
             return "error", f"team does not accept {resolved_context['kind']} context"
+        if team_snapshot.get("workflowType") == "development":
+            return "error", "development teams must run from a project's development workspace"
     run_id = await agent_runner.submit_run(
         space_id, requirement, roles=roles,
         team_snapshot=team_snapshot, input_context=resolved_context)

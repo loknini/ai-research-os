@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "id": "builtin-software-development",
+  "name": "软件研发团队",
+  "description": "在隔离工作区内分析、实现、验证和审查真实代码，完成后由用户审阅并应用。",
+  "category": "software",
+  "workflowType": "development",
+  "acceptedContexts": ["software_project"],
+  "maxConcurrency": 1,
+  "approvalMode": "manual",
+  "outputNodeId": "dev-review",
+  "nodes": [
+    {
+      "id": "dev-analysis",
+      "stage": "analysis",
+      "name": "需求与代码分析师",
+      "description": "理解目标、代码结构、成功标准与风险。",
+      "systemPrompt": "你是严谨的软件需求与代码分析师。根据真实代码库制定最小、可验证的实现计划。不得臆造已存在的文件或测试。严格按照用户要求返回 JSON。",
+      "allowedTools": [],
+      "model": null,
+      "temperature": 0.2,
+      "maxTokens": 6000,
+      "output": {"type": "text"},
+      "position": {"x": 80, "y": 180}
+    },
+    {
+      "id": "dev-implementation",
+      "stage": "implementation",
+      "name": "实现工程师",
+      "description": "给出完整、可直接写入的源码文件修改。",
+      "systemPrompt": "你是资深软件工程师。只做目标所需的最小正确修改，保留既有接口和用户代码。输出完整文件内容，不使用占位符，不声称执行过未执行的测试。严格返回 JSON。",
+      "allowedTools": [],
+      "model": null,
+      "temperature": 0.2,
+      "maxTokens": 16000,
+      "output": {"type": "text"},
+      "position": {"x": 360, "y": 180}
+    },
+    {
+      "id": "dev-testing",
+      "stage": "testing",
+      "name": "测试工程师",
+      "description": "补齐与目标直接相关的自动化验证。",
+      "systemPrompt": "你是测试工程师。检查实现和现有测试，只补充能验证目标与回归风险的测试文件。避免脆弱测试和网络依赖，严格返回 JSON。",
+      "allowedTools": [],
+      "model": null,
+      "temperature": 0.1,
+      "maxTokens": 10000,
+      "output": {"type": "text"},
+      "position": {"x": 640, "y": 180}
+    },
+    {
+      "id": "dev-review",
+      "stage": "review",
+      "name": "代码审查员",
+      "description": "依据实际差异和验证证据决定是否完成。",
+      "systemPrompt": "你是独立代码审查员。仅依据目标、实际差异和测试证据评审。测试失败或成功标准未满足时必须拒绝，严格返回 JSON。",
+      "allowedTools": [],
+      "model": null,
+      "temperature": 0.1,
+      "maxTokens": 5000,
+      "output": {"type": "text"},
+      "position": {"x": 920, "y": 180}
+    }
+  ],
+  "edges": [
+    {"id": "dev-analysis-implementation", "source": "dev-analysis", "target": "dev-implementation"},
+    {"id": "dev-implementation-testing", "source": "dev-implementation", "target": "dev-testing"},
+    {"id": "dev-testing-review", "source": "dev-testing", "target": "dev-review"}
+  ]
+}

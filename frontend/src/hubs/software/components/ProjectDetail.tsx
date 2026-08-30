@@ -3,18 +3,22 @@ import { Button } from '@/components/ui/button'
 import { Edit2, Trash2, Cpu, Layout, Clock, CheckCircle2 } from 'lucide-react'
 import type { SoftwareProject, Task } from '@/types'
 import { STATUS_CONFIG } from '../config'
+import { DevelopmentWorkspace } from './DevelopmentWorkspace'
 
 interface ProjectDetailProps {
   project: SoftwareProject
   tasks: Task[]
   onEdit: (project: SoftwareProject) => void
   onDelete: (project: SoftwareProject) => void
+  defaultDevelopmentTeamId?: string
+  autoOpenDevelopment?: boolean
 }
 
 /** 项目详情侧边栏（对应原容器内 399–528 行） */
-export function ProjectDetail({ project, tasks, onEdit, onDelete }: ProjectDetailProps) {
+export function ProjectDetail({ project, tasks, onEdit, onDelete,
+  defaultDevelopmentTeamId, autoOpenDevelopment }: ProjectDetailProps) {
   return (
-    <div className="w-96 border-l bg-muted/30 overflow-y-auto">
+    <div className="w-[560px] max-w-[48vw] border-l bg-muted/30 overflow-y-auto">
       <div className="p-6">
         <div className="flex items-center justify-between mb-4">
           <Badge className={STATUS_CONFIG[project.status].color}>
@@ -115,6 +119,12 @@ export function ProjectDetail({ project, tasks, onEdit, onDelete }: ProjectDetai
             </div>
           </div>
         )}
+
+        {/* Agent 研发工作区 */}
+        <div className="mb-6">
+          <DevelopmentWorkspace project={project} defaultTeamId={defaultDevelopmentTeamId}
+            autoOpen={autoOpenDevelopment} />
+        </div>
 
         {/* 相关任务 */}
         <div>

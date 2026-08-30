@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/utils'
 import { toast } from '@/components/ui/toast'
+import { useNavigate } from 'react-router-dom'
 import {
   History,
   RefreshCw,
@@ -42,6 +43,10 @@ interface RunSummary {
   createdAt: number
   startedAt?: number
   completedAt?: number
+  runKind?: 'dag' | 'development'
+  phase?: string
+  iteration?: number
+  maxIterations?: number
 }
 
 interface RunNode {
@@ -121,6 +126,7 @@ function relTime(ms?: number) {
 }
 
 export default function AgentRunsHub() {
+  const navigate = useNavigate()
   const [runs, setRuns] = useState<RunSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -309,6 +315,9 @@ export default function AgentRunsHub() {
                         </div>
                         <p className="text-sm font-medium truncate">{run.requirement}</p>
                         {run.teamName && <div className="mt-1 text-xs font-medium text-primary">团队：{run.teamName}</div>}
+                        {run.runKind === 'development' && <div className="mt-1 text-xs text-muted-foreground">
+                          研发阶段：{run.phase || 'queued'} · 第 {run.iteration || 0}/{run.maxIterations || 12} 轮
+                        </div>}
                         <div className="flex flex-wrap gap-1 mt-1">
                           {run.roles.map((role) => {
                             const m = ROLE_META[role] || ROLE_META.user
@@ -323,6 +332,10 @@ export default function AgentRunsHub() {
                         </div>
                       </div>
                       <div className="flex items-center gap-2 shrink-0">
+                        {run.runKind === 'development' && run.projectId && <Button size="sm" variant="outline"
+                          onClick={(event) => { event.stopPropagation(); navigate(`/lab?tab=software&action=develop&projectId=${run.projectId}`) }}>
+                          返回研发工作区
+                        </Button>}
                         {(run.status === 'running' || run.status === 'pending') && (
                           <Button variant="ghost" size="sm" onClick={() => cancelRun(run.id)}>
                             <XCircle className="w-4 h-4 mr-1" />

@@ -68,20 +68,6 @@ export async function summarizePaper(
   }
 }
 
-/** 下载论文 PDF（POST /api/papers/:arxivId/download） */
-export async function downloadPaperPDF(
-  arxivId: string
-): Promise<{ success: boolean; path?: string; message?: string }> {
-  const response = await fetch(`/api/papers/${arxivId}/download`, { method: 'POST' })
-  const result = await response.json()
-  return {
-    success: response.ok && !!result.success,
-    // 后端返回 localPath（docs/API.md 契约），前端消费方读取 path
-    path: result.localPath,
-    message: result.message
-  }
-}
-
 /** 删除单篇论文（DELETE /api/papers/:id），返回是否成功。 */
 export async function deletePaperApi(id: string): Promise<boolean> {
   const response = await fetch(`/api/papers/${id}`, { method: 'DELETE' })

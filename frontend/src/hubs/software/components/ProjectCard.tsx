@@ -15,10 +15,17 @@ interface ProjectCardProps {
   tasks: Task[]
   isSelected: boolean
   onSelect: (project: SoftwareProject) => void
+  activeDevelopment?: {
+    status: string
+    phase?: string
+    iteration?: number
+    maxIterations?: number
+    requirement: string
+  }
 }
 
 /** 项目卡片（对应原容器内 renderProjectCard 207–271 行） */
-export function ProjectCard({ project, tasks, isSelected, onSelect }: ProjectCardProps) {
+export function ProjectCard({ project, tasks, isSelected, onSelect, activeDevelopment }: ProjectCardProps) {
   const statusConfig = STATUS_CONFIG[project.status]
   const projectTasks = tasks.filter((t) => t.projectId === project.id)
   const completedTasks = projectTasks.filter((t) => t.status === 'done').length
@@ -64,6 +71,13 @@ export function ProjectCard({ project, tasks, isSelected, onSelect }: ProjectCar
                 +{project.techStack.length - 4}
               </span>
             )}
+          </div>
+        )}
+
+        {activeDevelopment && (activeDevelopment.status === 'pending' || activeDevelopment.status === 'running') && (
+          <div className="mb-3 rounded-md border border-blue-500/30 bg-blue-500/5 p-2 text-xs">
+            <div className="font-medium text-blue-600">Agent 正在{activeDevelopment.phase || '排队'}</div>
+            <div className="mt-0.5 truncate text-muted-foreground">第 {activeDevelopment.iteration || 0}/{activeDevelopment.maxIterations || 12} 轮 · {activeDevelopment.requirement}</div>
           </div>
         )}
 

@@ -236,6 +236,10 @@ async def create_run(req: AgentRunRequest, space_id: str = Depends(get_space_id)
             raise APIError(
                 f"team does not accept {resolved_context['kind']} context",
                 code="INCOMPATIBLE_CONTEXT", status_code=400)
+        if team_snapshot.get("workflowType") == "development":
+            raise APIError(
+                "development teams must run from a software project's development workspace",
+                code="DEVELOPMENT_WORKSPACE_REQUIRED", status_code=400)
     run_id = await agent_runner.submit_run(
         space_id, requirement, req.projectId, req.roles,
         team_snapshot=team_snapshot, input_context=resolved_context)

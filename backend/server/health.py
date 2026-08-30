@@ -35,7 +35,7 @@ async def healthz() -> dict:
     return {
         "success": True,
         "status": "ok",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "db": {
             "path": str(config.DB_PATH),
             "exists": config.DB_PATH.exists(),

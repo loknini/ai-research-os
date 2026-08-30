@@ -1,7 +1,7 @@
 # 前端架构与设计系统
 
 > 目录：`frontend/src`（80 个 `.ts`/`.tsx`/`.css`，约 14,600 行）
-> 核对日期：2026-07-30
+> 核对日期：2026-08-28；当前版本 0.5.0
 
 ---
 
@@ -26,6 +26,12 @@
 | `tailwindcss-animate` | ^1.0 | 动画插件 |
 
 **刻意没有的东西**：完整 UI 组件库（shadcn 是手写复制进仓库的源码，不是依赖）、通用图表库（`@xyflow/react` 只用于专家团队 DAG）、数学公式渲染库（KaTeX/MathJax 未接入，公式 Hub 的 `LatexPreview` 目前是纯文本回显）。
+
+### 研发工作区与浮动助手
+
+- `DevelopmentWorkspace` 位于软件项目详情中，负责工作区检查、团队选择、运行轮询、步骤/命令日志、差异审阅、继续/取消和显式应用。
+- 团队卡片按 `acceptedContexts` 生成中文“去使用”深链；目标 Hub 消费 `action/teamId` 参数一次并预选团队。
+- 浮动 `ChatPanel` 与 Chat Hub 共享 AppStore 中的会话 ID 和模块级流式生成管理器；浮窗创建、发送和展开不会产生第二套聊天历史。
 
 ### 开发依赖
 

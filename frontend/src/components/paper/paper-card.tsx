@@ -15,7 +15,6 @@ import {
   ChevronDown,
   ChevronUp,
   Tag,
-  Download,
   CheckSquare,
   Square,
   Eye,
@@ -34,7 +33,6 @@ interface PaperCardProps {
   onToggleRead: () => void
   onToggleFavorite: () => void
   onSummarize: () => void
-  onDownloadPDF: () => void
   onPreviewPDF?: () => void
   onDelete: () => void
   onSelect?: () => void
@@ -52,7 +50,6 @@ export const PaperCard = memo(function PaperCard({
   onToggleRead,
   onToggleFavorite,
   onSummarize,
-  onDownloadPDF,
   onPreviewPDF,
   onDelete,
   onSelect,
@@ -280,10 +277,6 @@ export const PaperCard = memo(function PaperCard({
                 查看
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={onDownloadPDF}>
-              <Download className="w-4 h-4 mr-1" />
-              下载
-            </Button>
             <Button
               variant="ghost"
               size="sm"
