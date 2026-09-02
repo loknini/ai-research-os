@@ -1,7 +1,7 @@
 # 数据模型与空间隔离
 
-> 实现文件：`scripts/database.py`（约 3100 行，aiosqlite）；引导壳：`backend/server/db.py`
-> 对应应用版本 **0.5.0**；核对日期：2026-08-28
+> 实现文件：`scripts/database.py`；引导壳：`backend/server/db.py`。版本与数量以 `docs/_meta.json` 为准（当前 31 张表，30 张经 `SPACE_TABLES` 迁移）。
+> 核对日期：2026-09-02
 
 ---
 
@@ -12,8 +12,8 @@
 | 数据库 | SQLite 单文件，默认 `<项目根>/data/ai_research_os.db` |
 | 覆盖方式 | `DB_PATH`（优先） > `DATA_DIR`/ai_research_os.db > 默认 |
 | 驱动 | `aiosqlite`（异步）；`scripts/obsidian_service.py` 是唯一例外，仍用同步 `sqlite3` |
-| 表数量 | **29 张业务表**（全部含 `space_id`） |
-| 空间迁移 | 28 张在 `SPACE_TABLES` 中统一补列/建索引；`cron_run_history` 的 DDL 原生包含 `space_id` |
+| 表数量 | 见 `_meta.json`（全部含 `space_id`） |
+| 空间迁移 | `SPACE_TABLES` 统一补列/建索引；`cron_run_history` DDL 原生含 `space_id` |
 | 时间戳 | 毫秒级 Unix 时间戳 `int(time.time() * 1000)`；例外：`obsidian_vaults` 的 DDL 默认值是秒级 |
 | 文件产物 | `data/papers/<space_id>/pdfs/`、`data/memory/<space_id>.md`、`data/.swanlab/config.json`（全局） |
 
@@ -60,20 +60,18 @@ space_id = "lab-zhang"  →  每条 SQL 带 WHERE space_id = ?
 
 ### 2.2 隔离范围
 
-**由通用迁移维护的 28 张表**（`SPACE_TABLES`）：
+**由通用迁移维护的表**（`SPACE_TABLES`，见 `scripts/database.py:54`；含 `development_run_steps`/`development_artifacts`/`rag_*` 等，数量以 `_meta.json` 为准）：
 
 ```
-papers            cron_jobs         software_projects   tasks
-code_generations  notes             note_links          experiments
-experiment_runs   version_history   conversations       chat_messages
-agent_sessions    agent_messages    agent_generated_files
-formula_history   obsidian_vaults   obsidian_files
-agent_runs        agent_run_events  agent_tool_approvals
-agent_replay_messages agent_teams agent_role_templates agent_run_nodes rag_sources
-rag_documents     rag_chunks
+papers cron_jobs software_projects tasks code_generations notes note_links
+experiments experiment_runs version_history conversations chat_messages
+agent_sessions agent_messages agent_generated_files formula_history
+obsidian_vaults obsidian_files agent_runs agent_run_events agent_tool_approvals
+agent_replay_messages agent_teams agent_role_templates agent_run_nodes
+rag_sources rag_documents rag_chunks development_run_steps development_artifacts
 ```
 
-**DDL 原生隔离表**：`cron_run_history`。因此当前数据库总计 29 张业务表，全部包含 `space_id`。
+**DDL 原生隔离表**：`cron_run_history`。全部业务表均含 `space_id`。
 
 **不隔离（全局）**：LLM 配置、SwanLab 配置、CORS/服务参数、备份导出（整库）、Skills 目录。
 

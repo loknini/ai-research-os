@@ -1,7 +1,7 @@
 # 前端架构与设计系统
 
-> 目录：`frontend/src`（80 个 `.ts`/`.tsx`/`.css`，约 14,600 行）
-> 核对日期：2026-08-28；当前版本 0.5.0
+> 目录：`frontend/src`；数量与版本以 `docs/_meta.json` 为准（当前 Hubs=12，版本 0.5.0）。
+> 核对日期：2026-09-02
 
 ---
 
@@ -233,7 +233,7 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 值得注意的几个：
 
 - **`toast.tsx` 有两套 API 并存**：模块级发布订阅（全局 `toast({title, description, variant, action})` + `GlobalToastContainer`，3s 自动消失）与旧的局部 `useToast()`（返回 `{showToast, ToastContainer}`）。ChatHub / PaperHub / Formula / Citation 用后者，其余用前者。
-- **`pdf-viewer.tsx`**：翻页 / 缩放（0.2 步进，上限 3.0）/ 下载；**worker 走 cdnjs CDN，离线不可用**。
+- **`pdf-viewer.tsx`**：翻页 / 缩放（0.2 步进，上限 3.0）/ 下载；worker 已本地打包（`pdfjs-dist/build/pdf.worker.min.mjs?url`，见 `TECH-DEBT.md:T2`），不再依赖 CDN。
 - **`version-history.tsx`**：对接 `/api/versions/*`，支持 note / task / project，**目前仅 TaskHub 接入**。
 - **`tag-system.tsx`**：212 行完整实现，**当前零引用**（各 Hub 用自己的裸 input 标签逻辑）。
 
@@ -290,9 +290,9 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 
 `lg: var(--radius)` · `md: calc(var(--radius) - 2px)` · `sm: calc(var(--radius) - 4px)`，额外扩展 `xl: 1rem` · `2xl: 1.25rem` · `3xl: 1.5rem`。
 
-### ⚠️ 暗色模式：token 完备，但无切换机制
+### 暗色模式
 
-`.dark` 变量、`.dark .glass`、`.dark body` 渐变、18 处 `dark:` 工具类都已写好，但**全 src 无 `classList` 操作、无 ThemeProvider、无 theme store 字段、无切换按钮**。目前只有手动给 `<html>` 加 `dark` 类才生效，实际运行恒为浅色。属「已备未启用」。
+`.dark` token 已完备，通过 `stores/themeStore.ts` + `App.tsx:ThemeSync` + `components/layout/theme-toggle.tsx` 实现 `light/dark/system` 切换并持久化，`main.tsx` 首屏 `applyTheme` 防闪烁。详见 `TECH-DEBT.md:T4` 已解决记录。
 
 ---
 
@@ -315,11 +315,9 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 
 > **当前几乎无引用**（论文列表用的是自己的分页而非虚拟滚动），属储备工具箱。`debounce`/`throttle` 与 `utils/index.ts` 重复实现。
 
-### `services/aiAgent.ts`（408 行）
+### `services/aiAgent.ts`
 
-前端侧**规则式意图识别**：内置 9 个工具，`parseIntent()` 用中文关键词匹配 + 正则抽参给出 confidence；> 0.7 直接本地执行并拼中文回复，否则降级 `POST /api/agent/run`。
-
-> 这是与 ChatHub（后端 LLM + 后端工具 + 流式）**完全平行的旧路径**，只服务于悬浮 ChatPanel。两者能力不对等，见 [TECH-DEBT.md](./TECH-DEBT.md)。
+前端侧规则式意图识别（已于 2026-07-31 随旧 `POST /api/agent/run` 删除而改为本地分发+优雅降级，不再回退后端）。当前悬浮 `ChatPanel` 与 ChatHub 共用 `chatGenerationManager` 与同一会话，详见 `TECH-DEBT.md:T3/T6`。
 
 ---
 

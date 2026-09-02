@@ -1,6 +1,6 @@
 # 部署与运维
 
-> 环境配置、启动方式、多人协作、数据备份、故障排查。核对日期：2026-08-28；当前版本 0.5.0。
+> 版本以 `docs/_meta.json` 为准；核对日期：2026-09-02。
 
 ---
 
@@ -95,7 +95,9 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 | `LLM_MAX_TOKENS` | `4000` | |
 | `LLM_TIMEOUT` | `120` | 秒 |
 | `LLM_HTTP_PATH` | `/chat/completions` | 与 base 拼接成最终 endpoint |
-| `CONTEXT_TOKEN_LIMIT` | `16000` | Chat 上下文压缩阈值 |
+| `CONTEXT_TOKEN_LIMIT` | `16000` | Chat 上下文压缩阈值（`backend/server/context.py:24`） |
+| `AGENT_CONTEXT_TOKEN_LIMIT` | `24000` | Agent 角色内上下文阈值（`backend/server/agent_service.py:387`） |
+| `AGENT_CONTEXT_KEEP_LAST` | `6` | Agent 保留末尾消息数 |
 | `DB_PATH` | 无 | 直接指定 DB 文件，优先级高于 `DATA_DIR` |
 | `DATA_DIR` | `<项目根>/data` | 数据目录，脚本与文件归档均以此为根 |
 | `APP_HOST` | `0.0.0.0` | |

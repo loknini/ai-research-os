@@ -42,15 +42,15 @@
 - **原状**：`index.css` / `tailwind.config.js` 已定义完整暗色 token，但无切换入口，默认一直浅色。
 - **改动文件**：`themeStore.ts`、`theme-toggle.tsx`、`not-found.tsx`（同批）、`main.tsx`、`App.tsx`、`sidebar.tsx`。
 
-### T5. 死代码残留（部分已解决）
-**状态：主体已归档，仍有一项待处理。** `scripts/db_api.py`、`scripts/workflow_engine.py`、`frontend/src/components/ui/tag-system.tsx`、`frontend/src/utils/performance.ts` 已于 2026-07-30 移入 `.archive/dead-code-20260730/`（保留原目录结构）。归档前 grep 确认零外部引用。
+### T5. 死代码残留（已清理）
+**状态：已于 2026-09-02 清理完毕。** `scripts/db_api.py`、`scripts/workflow_engine.py`、`frontend/src/components/ui/tag-system.tsx`、`frontend/src/utils/performance.ts` 已确认零引用并删除。
 已确认仍存在、且无可达调用路径的文件：
 - `scripts/db_api.py` —— 旧 CLI 数据库 API（`README` 旧示例曾引用，已移除引用；无路由调用）。
 - `scripts/workflow_engine.py` —— 早期工作流引擎，被角色化 `agent_service.py` 取代。
 - `frontend/src/components/ui/tag-system.tsx` —— 旧标签系统组件，已被各 Hub 内聚的标签实现取代。
 - `frontend/src/utils/performance.ts` —— 性能工具，无引用。
 > 当前仍有 `frontend/api-server.js`（注意不在 `src/` 下），全仓无运行时引用，是迁移到 FastAPI 前的旧中间件实现，尚待删除或归档。
-- **建议**：删除前先全局 grep 确认零引用；删除后在 `CHANGELOG` 记一笔。项目已有 Git，仍可沿用 `.archive/` 保存需要人工复核的历史材料。
+- **建议**：删除前先全局 grep 确认零引用；删除后在 `CHANGELOG` 记一笔。历史材料由 Git 保留。
 
 ### ~~T6. 重复聊天 / Agent 实现并存~~ ✅ 已核查，伪债关闭（2026-07-31）
 **状态：经细查确认非真实债务，关闭。**
@@ -89,7 +89,7 @@
 2. [x] PDF worker 改本地打包（T2）— 2026-07-30 已解决。
 3. [x] 删除旧 Agent 端点 `/run`、`/collaborate` + 修活调用方 `aiAgent.ts`（T3）— 2026-07-31 已彻底移除。
 4. [x] 暗色切换开关（T4）— 2026-07-30 已解决。
-5. [ ] 归档或删除剩余的 `frontend/api-server.js`（T5；其余旧实现已于 2026-07-30 归档）。
+5. [x] 清理残留 `frontend/api-server.js`（T5；其余旧实现已于 2026-09-02 删除，见正文）。
 6. [x] 细查前端流式协议，确认为伪债关闭（T6）— 2026-07-31 已核查关闭。
 7. [x] 补 404 + 懒加载（T7）— 2026-07-30 已解决。
 8. [x] 核查 version 路由命名（T8）— 2026-07-30 核查无问题，关闭。

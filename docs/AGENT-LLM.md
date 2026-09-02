@@ -16,8 +16,7 @@ Git 项目在独立 worktree/分支中运行，普通目录复制到受控副本
 
 内置定义位于 `backend/agent_teams/*.json`，用户团队和角色模板按 space-key 入库。每次运行保存团队与输入上下文快照；旧 `backend/agent_roles.json` 和 `roles` 请求继续可用。
 
-> 覆盖 `backend/server/llm.py`、`backend/server/agent_service.py`、`backend/server/agent_runner.py`、`backend/server/skills_bridge.py`、`backend/server/memory.py`、`scripts/chat_agent_stream.py`
-> 核对日期：2026-08-27
+> 版本以 `docs/_meta.json` 为准；核对日期：2026-09-02
 
 ---
 
@@ -94,7 +93,7 @@ endpoint = LLM_BASE_URL.rstrip("/") + LLM_HTTP_PATH
 用户消息
  → 载入会话历史
  → 注入该空间持久记忆（data/memory/<space_id>.md）
- → 估算 token，超过 CONTEXT_TOKEN_LIMIT(默认 16000) 时调 LLM 压缩早期历史
+ → 估算 token，超过 Chat 的 CONTEXT_TOKEN_LIMIT=16000（Agent 另用 AGENT_CONTEXT_TOKEN_LIMIT=24000）时调 LLM 压缩早期历史
  → stream_llm(messages, tools=TOOLS)
     ├─ 文本 delta      → SSE data: {"type":"text"}
     └─ tool_calls      → {"type":"tool_start"} → execute_tool() → {"type":"tool_result"}
@@ -198,14 +197,13 @@ submit_run(space_id, requirement, project_id, roles)
 
 因为状态与事件都在共享 SQLite（WAL），**天然跨多 worker 可见**，这是能开 `--workers N` 的关键。
 
-### 4.5 两条并存通道
+### 4.5 通道（旧同步已删除）
 
 | 通道 | 端点 | 特点 |
 |---|---|---|
-| 同步 SSE（旧） | `POST /api/agent/run` · `/collaborate` | 直接迭代 workflow，**阻塞该 worker 协程**，保留兼容 |
-| 后台 run（推荐） | `POST /api/agent/runs` + 轮询 / SSE / cancel | 非阻塞、可取消、可离开页面、有历史记录 |
+| 后台 run（唯一） | `POST /api/agent/runs` + 轮询 / SSE / cancel | 非阻塞、可取消、可离开页面、有历史记录 |
 
-前端 `components/agent/agent-workflow.tsx` 已切到后台 run；`hubs/agent-runs/` 提供运行历史与事件时间线。
+旧 `POST /api/agent/run` / `/collaborate` 已于 2026-07-31 删除（见 `TECH-DEBT.md:T3`），前端已切后台 run；`hubs/agent-runs/` 提供运行历史与事件时间线。Chat 的切 Hub 不中断是前端 `chatGenerationManager` 单例实现，与此后台 runner 无关。
 
 ---
 

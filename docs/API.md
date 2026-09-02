@@ -1,7 +1,7 @@
 # API 参考
 
-> 应用版本 **0.5.0**；路由以 FastAPI `/docs` 动态清单为准。核对日期：2026-08-28
-> 交互式文档：服务启动后访问 `http://localhost:8000/docs`（FastAPI 自动生成）
+> 版本与路由数以 `docs/_meta.json` 为准（当前 22 个 Router，含 health）；运行时以 FastAPI `/docs` 为准。核对日期：2026-09-02
+> 交互式文档：`http://localhost:8000/docs`
 
 ---
 
@@ -177,10 +177,11 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 | `tool_result` | 工具执行结果 |
 | `context` | `{estimated_tokens, limit, compressed}`，前端据此显示上下文占用 |
 | `error` | 错误信息 |
+| `rag_sources` | 命中引用（仅 `rag_enabled` 且实际引用时） |
 
 流末尾输出 `data: [DONE]`。前端解析器同时兼容早期无 `data:` 前缀的历史格式。
 
-**特性**：多轮工具循环（ReAct）、超限时自动 LLM 压缩历史（阈值 `CONTEXT_TOKEN_LIMIT`，默认 16000）、注入该空间的持久记忆、`/skill` 命令短路直接调用技能。
+**特性**：多轮工具循环（ReAct）、超限时自动 LLM 压缩历史（阈值 `CONTEXT_TOKEN_LIMIT=16000` / Agent 另用 `AGENT_CONTEXT_TOKEN_LIMIT=24000`，`backend/server/context.py:24` / `agent_service.py:387`）、注入该空间的持久记忆、`/skill` 命令短路直接调用技能。切 Hub 不中断靠前端 `chatGenerationManager` 单例（前端级后台），非服务端后台。
 
 ---
 

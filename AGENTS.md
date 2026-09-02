@@ -1,6 +1,6 @@
 # AGENTS.md - AI-Research-OS 项目说明
 
-> 本文档面向 **AI 协作者 / 自动化 Agent**。架构、数据模型、API、Agent/LLM 设计与前端细节见 [`docs/`](./docs/README.md)，本文只给概览与开发规范。
+> 本文档面向 **AI 协作者 / 自动化 Agent**。架构、数据模型、API、Agent/LLM 设计与前端细节见 [`docs/`](./docs/README.md)，数字以 `docs/_meta.json` 为准，本文只给概览与开发规范。
 
 ## 项目概览
 
@@ -47,7 +47,6 @@ D:\project\ai-research-os/
 │   └── ...
 ├── data/                  # 数据存储（SQLite / PDF / 导出，已 gitignore）
 ├── docs/                  # 架构与设计文档（见 docs/README.md 索引）
-├── .archive/              # 已归档的旧/过时文档（gitignored）
 ├── AGENTS.md              # 本文
 ├── CHANGELOG.md           # 版本与里程碑变更
 ├── README.md              # 面向人类用户的项目说明
@@ -74,7 +73,7 @@ D:\project\ai-research-os/
 | | LLM 客户端 (llm.py) | OpenAI 兼容接口，urllib 实现，零新增依赖 |
 | | aiosqlite + SQLite (WAL) | 本地数据持久化，每请求独立连接 |
 | | SSE 流式 | Chat 与 Agent 均使用 SSE；前端分别按各自事件语义解析 |
-| **存储** | SQLite + 文件系统 | 本地数据；按 space-key 软隔离（29 张业务表均含 `space_id`） |
+| **存储** | SQLite + 文件系统 | 本地数据；按 space-key 软隔离（表/路由/Hub 数量以 `docs/_meta.json` 为准） |
 
 ---
 

@@ -511,7 +511,6 @@ ai-research-os/
 │   └── qa_verify_*.py         # 回归验证脚本（space/agent/rag/chat 等，见「贡献指南」）
 ├── data/                      # 数据目录（SQLite / PDF / 导出，已 gitignore）
 ├── docs/                      # 架构与设计文档（见 docs/README.md 索引）
-├── .archive/                  # 已归档的旧/过时文档（gitignored，确认无用后可整目录删）
 ├── AGENTS.md                  # 项目与开发规范（给 AI 协作者）
 ├── CHANGELOG.md               # 版本与里程碑变更记录
 ├── start.ps1 / start.sh       # 一键启动脚本（Windows / macOS / Linux）
@@ -686,9 +685,8 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
 
 除本文外，更深入的设计与实现文档集中在 [`docs/`](./docs/README.md)：
 
-- **SYSTEM-DESIGN.md** — 一页式综合设计（分层架构图、核心模块、四条核心数据流、关键决策）
-- **ARCHITECTURE.md** — 系统定位、进程模型、分层、请求生命周期、关键架构决策
-- **DATA-MODEL.md** — SQLite 数据模型、space-key 隔离、29 张业务表、更新语义
+- **ARCHITECTURE.md** — 系统定位、进程模型、分层、请求生命周期、关键架构决策（已合并原 SYSTEM-DESIGN）
+- **DATA-MODEL.md** — SQLite 数据模型、space-key 隔离、业务表（数量以 `docs/_meta.json` 为准）、更新语义
 - **API.md** — 全部 `/api/*` 路由、SSE 帧格式、curl 速查
 - **AGENT-LLM.md** — LLM 客户端、Chat ReAct 循环、角色化 Agent 管线、Skills 约定
 - **FRONTEND.md** — 前端技术栈、路由、状态管理、设计系统
@@ -703,4 +701,4 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
 
 ---
 
-**最后更新**：2026-08-26 · 基于代码实况（26 表 / 113 API 路由 / 正确性回归）同步 README
+**最后更新**：2026-09-02 · 数字以 `docs/_meta.json` 为准（`python scripts/gen_docs_meta.py` 生成）

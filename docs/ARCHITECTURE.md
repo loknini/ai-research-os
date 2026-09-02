@@ -1,212 +1,65 @@
 # 系统架构
 
-> 本文描述 AI-Research-OS **当前代码的真实形态**（核对日期：2026-08-26），不含未实现的规划。
-> 配套文档：[API 参考](./API.md) · [数据模型](./DATA-MODEL.md) · [前端架构](./FRONTEND.md) · [LLM 与 Agent](./AGENT-LLM.md) · [部署运维](./OPERATIONS.md) · [技术债](./TECH-DEBT.md)
+> 核对日期：2026-09-02；事实数字以 `docs/_meta.json` 为准（当前 `hubs=12 / routers=22 / tables=31`）。
+> 索引：[README](./README.md) · [DATA-MODEL](./DATA-MODEL.md) · [API](./API.md) · [AGENT-LLM](./AGENT-LLM.md) · [FRONTEND](./FRONTEND.md) · [OPERATIONS](./OPERATIONS.md)
 
----
+## 1. 定位与硬约束
 
-## 1. 系统定位
+本地优先科研工作台，LLM 可插拔（不配时 CRUD/检索照常）。
 
-面向研究生的本地优先（local-first）科研工作台。12 个功能中心（Hub）覆盖论文、任务、项目、笔记、实验、公式、引用、对话、专家团队与 Agent 运行，全部数据落在本机 SQLite + 文件系统，不依赖任何云服务。LLM 能力可插拔：不配置 LLM 时，所有 CRUD 与检索功能照常工作。
-
-三条硬约束贯穿整个设计：
-
-| 约束 | 体现 |
+| 约束 | 落地 |
 |---|---|
-| **本地优先** | 单文件 SQLite（WAL）+ `data/` 目录，可整体拷贝/同步盘/备份包迁移 |
-| **零重依赖** | 后端保持少量直接 pip 依赖，LLM 客户端用标准库 urllib 手写，前端 shadcn 组件源码内置 |
-| **不登录的多人可用** | space-key 软隔离：一个 HTTP 头分空间，无账号体系、无密码、无 session |
+| 本地优先 | SQLite WAL + `data/` 整体拷贝/备份包迁移 |
+| 零重依赖 | `urllib` 手写 LLM 客户端（禁 `openai` SDK），前端 shadcn 源码内置 |
+| 不登录多人可用 | `X-Space-Key` 软隔离，无账号/密码/session |
 
----
-
-## 2. 进程模型
+## 2. 进程与分层
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  浏览器                                                           │
-│  React 18 SPA  ──  fetch('/api/...')  +  X-Space-Key 头           │
-└───────────────┬──────────────────────────────────────────────────┘
-                │
-    开发态       │ :5173  Vite Dev Server（仅做静态服务 + /api 反向代理）
-    生产态       │ :8000  uvicorn 直接托管 frontend/dist（StaticFiles，html=True）
-                ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  uvicorn  --workers N      (N = min(CPU, 8)，无 --reload)          │
-│  ┌────────────────────────────────────────────────────────────┐  │
-│  │ FastAPI  backend.server.main:app                            │  │
-│  │  · CORSMiddleware（唯一中间件）                              │  │
-│  │  · 20 个 APIRouter，前缀写在各 router 内                     │  │
-│  │  · Depends(get_space_id) —— 处理器级空间解析，非中间件        │  │
-│  │  · 统一异常处理器 → {success,error,message}                  │  │
-│  └───────┬──────────────────────────┬──────────────┬───────────┘  │
-│          │ 进程内 import             │ subprocess   │ 守护线程     │
-│          ▼                          ▼              ▼              │
-│   scripts/database.py         scripts/*.py    agent_runner        │
-│   （aiosqlite 异步）        （外部集成 CLI）  （后台 Agent run）    │
-└──────────┬────────────────────────┬───────────────┬──────────────┘
-           ▼                        ▼               ▼
-   data/ai_research_os.db     外部 API          LLM 端点
-   （WAL，29 张表）        arXiv/Crossref/     （OpenAI 兼容）
-                          SwanLab/SimpleTex
+浏览器 React SPA --fetch /api + X-Space-Key--> Vite :5173 --proxy--> FastAPI :8000 --import--> scripts/database.py
+                                                              |-> subprocess: scripts/*.py
+                                                              |-> 守护线程: agent_runner / development_runner / cron_scheduler
+                                                              `-> SQLite WAL + 文件系统 / LLM / arXiv / Crossref / SwanLab
 ```
 
-**为什么无 `--reload`**：多 worker 与 reload 互斥；WAL 模式下多进程共享同一 DB 文件是安全的，Agent 运行状态也全部落库，因此多 worker 之间无需共享内存。
+- `backend/server/main.py`：CORS → 异常处理 → 挂载 `routers`（22个，见 `_meta.json`）→ `lifespan: init_db + start_scheduler + start_development_runner` → 生产态托管 `frontend/dist`。
+- `frontend/src/App.tsx`：12 个 Hub 全部 `React.lazy` 分割，`installApiMonitor()` 单点注入 `X-Space-Key`。
+- `scripts/`：同时是**被 import 的库**（`database/chat_agent_stream/fetch_arxiv`）和**被 subprocess 调的 CLI**（`swanlab/citation/formula/obsidian`），后者经 `SPACE_ID` 环境变量透传空间。
 
----
+**多 Worker**：`uvicorn --workers N` 无 `--reload`，状态全落库跨 Worker 可见，无共享内存。
 
-## 3. 分层结构
+## 3. 请求生命周期
 
-### 3.1 后端 `backend/`
+**CRUD**：`fetch /api/papers` → `apiMonitor` 注入头 → `Depends(get_space_id)`（<4 → 400）→ `get_db()` 独立 `aiosqlite` 连接（`busy_timeout=5000 → WAL → NORMAL → foreign_keys=ON`，有限重试）→ `WHERE space_id=?` → `*_to_dict` 转 `camelCase`。
 
-```
-backend/
-├── agent_roles.json          旧角色请求兼容配置
-├── agent_teams/              三支版本化内置专家团队定义
-├── requirements.txt          少量依赖，无 openai SDK
-├── scripts/                 顶层工具包（database / fetch_arxiv / chat_agent_stream / summarize_paper …）
-├── server/
-│   ├── __init__.py           包说明文档（已无 sys.path 注入 hack）
-│   ├── agent_service.py      角色化多 Agent 管线（与 server 同包，正规导入）
-│   ├── main.py               FastAPI 入口：lifespan / CORS / 挂载 router / SPA 托管
-│   ├── config.py             pydantic-settings 配置单例 + .env 加载 + DATA_DIR 副作用
-│   ├── deps.py               space-key 解析依赖（normalize_space_key / get_space_id）
-│   ├── db.py                 数据层引导壳，import scripts/database.py 并再导出
-│   ├── llm.py                OpenAI 兼容 LLM 客户端（urllib 手写，含 SSE 与 function calling）
-│   ├── agent_runner.py       后台非阻塞 Agent / DAG runner（线程 + 自建事件循环）
-│   ├── agent_teams.py        团队校验、内置定义、上下文可信解析
-│   ├── skills_bridge.py      SKILL.md 扫描与调用（Agent Skills 开放标准）
-│   ├── memory.py             按空间的持久记忆（data/memory/<space_id>.md）
-│   ├── helpers.py            run_script()：subprocess 调 scripts/*.py 并解析 stdout JSON
-│   ├── errors.py             统一错误体 + APIError + SSE 辅助
-│   ├── health.py             /api/healthz 与 /api/llm/status
-│   ├── schemas.py            跨 router 共享的 Pydantic 模型
-│   └── routers/              21 个 router（完整契约见 API.md）
-└── skills/                   目录式技能：<name>/SKILL.md (+ scripts/)
-```
+**Chat SSE**：`POST /api/chat/completions/stream` → 载入历史+记忆+RAG 预检索 → `context.compact_messages` 超限摘要 → `llm.stream_llm(tools)` ReAct 循环（`tool_start/tool_result/context/rag_sources`）→ `[DONE]`。前端 `chatGenerationManager` 单例保证切 Hub 不中断（前端级后台），`ChatPanel` 与 ChatHub 共享同一会话。
 
-### 3.2 脚本层 `scripts/`
+**Agent 后台**：`POST /api/agent/runs` → `submit_run` 落库+`threading.Event`+守护线程（`new_event_loop`）→ 按 DAG 拓扑/`maxConcurrency` 并发节点，`__approval_required/__replay` 内部事件，帧逐条落 `agent_run_events` → 前端 DB 轮询 SSE（`after_id` 游标，0.6s）→ 双层取消（内存 Event + DB `cancelled`）。
 
-同时承担两个角色：**被后端进程内 import 的库** 和 **被 subprocess 调用的 CLI**。
+**研发 Runner**：`development_runner` 固定 `analysis→implementation→testing→review` 循环，模型只返完整文件 JSON，服务端 `safe_path` 校验+原子写入，验证命令白名单（`pytest/unittest` / `npm run <script>`），产物与 `awaiting_apply` 需显式 `apply`（带 `baseRevision/diffDigest` 校验）。
 
-| 文件 | 调用方式 | 说明 |
+**Cron**：每 Worker 60s 扫描，单条 `UPDATE ... WHERE next_run=?` 原子领取（旧值作乐观锁），三类 `command/agent_run/arxiv_fetch` 共用 `dispatch_job`。
+
+## 4. 关键决策
+
+| 决策 | 理由 |
+|---|---|
+| `urllib` 而非 SDK | 零依赖、端点/鉴权/流式可控；`LLM_BASE_URL` 含 `/v1`，`LLM_HTTP_PATH=/chat/completions`，`{base}{path}` 拼接，`config.py` 自动去重 `/v1/v1` |
+| 状态全落 SQLite | 多 Worker 可见/可取消/重启不丢；`UPDATE rowcount` 即锁 |
+| 线程+自建 loop 跑 Agent | `run_role` 是同步生成器（同步 urllib），入协程会卡死事件循环 |
+| `send()` 暂停而非回调 | 审批语义清晰：`yield __approval_required → gen.send(bool)` |
+| 摘要而非截断 | 截断会切断 `assistant(tool_calls)→tool` 配对；`context.py` 选最近 `user` 边界切分 |
+| `@register_tool` 自动发现 | `tools/` 目录 `pkgutil` 发现，`safe/sensitive/dangerous × auto/manual/strict` 随注册声明 |
+
+## 5. 外部依赖（可插拔）
+
+| 服务 | 调用方 | 缺失时 |
 |---|---|---|
-| `database.py`（2137 行） | 进程内 import | 数据层核心，aiosqlite，20 表 DDL + 全部 CRUD |
-| `chat_agent_stream.py` | 进程内 import | 导出 `SYSTEM_PROMPT` / `TOOLS` / `execute_tool`，被 chat 与 skills 路由复用 |
-| `fetch_arxiv.py` | 进程内 import | arXiv 搜索与 PDF 下载 |
-| `summarize_paper.py` | 进程内 import | 总结 prompt 构造 + LLM 不可用时的降级摘要 |
-| `swanlab_api.py` / `swanlab_integration.py` | subprocess | SwanLab 实验数据拉取 |
-| `citation_service.py` | subprocess | Crossref 检索 + 6 种引用格式生成 |
-| `obsidian_service.py` | subprocess | Obsidian vault 扫描（**唯一仍用同步 sqlite3 的数据访问点**） |
-| `formula_service.py` | subprocess | SimpleTex 公式 OCR + 历史记录 |
-| `qa_verify_space.py` / `qa_verify_agent_runner.py` | 手动执行 | 独立 QA 验收脚本 |
+| LLM | `llm.py` | 总结降级 `fallback`，Chat/Agent 报错帧 |
+| arXiv | `fetch_arxiv` | 抓取失败不影响已有数据 |
+| Crossref/SwanLab/SimpleTex | subprocess | 对应 Hub 降级/只读缓存 |
 
-**进程内 vs subprocess 的分界**：核心数据链路走进程内 import（性能 + 事务一致性）；外部集成保留 subprocess（隔离第三方 SDK 风险、崩溃不拖垮主进程），空间上下文通过 `SPACE_ID` 环境变量传入。
+## 6. 研发/团队
 
-### 3.3 前端 `frontend/src/`
-
-12 个 Hub + 全局挂件，详见 [FRONTEND.md](./FRONTEND.md)。关键点：所有 `/api` 请求经 `services/apiMonitor.ts` 对 `window.fetch` 的单点 patch 注入 `X-Space-Key`，业务代码无需关心空间。
-
----
-
-## 4. 请求生命周期
-
-### 4.1 普通 CRUD
-
-```
-fetch('/api/papers')
-  → apiMonitor patch 注入 X-Space-Key: <归一化 key>
-  → (dev) Vite proxy → (prod) uvicorn
-  → FastAPI 路由匹配
-  → Depends(get_space_id)：trim + lower，长度 < 4 → 400 SPACE_REQUIRED
-  → router 调 database.get_all_papers(space_id=...)
-  → get_db() 新建一条 aiosqlite 连接（PRAGMA WAL/NORMAL/busy_timeout=5000/foreign_keys=ON）
-  → WHERE space_id = ? 过滤
-  → *_to_dict() 转 camelCase 并 json.loads JSON 列
-  → 关闭连接，返回 JSON
-```
-
-每个请求独立建连、用完即关，绝不跨协程共享连接——这是多 worker 下不出现 `database is locked` 的前提。
-
-### 4.2 Chat 流式对话（ReAct 循环）
-
-```
-POST /api/chat/completions/stream
-  → 载入历史 + 注入该空间的持久记忆 + 上下文超限时 LLM 压缩历史
-  → stream_llm(messages, tools=TOOLS)     ← 原生 function calling
-  → 边收边输出 SSE：data: {"type":"text"|"tool_start"|"tool_result"|"context"|"rag_sources"|"error"}
-  → 若模型返回 tool_calls：execute_tool() 执行 → 结果回填 messages → 再次进入循环
-  → 结束输出 [DONE]
-```
-
-这条链路当前是标准 **SSE**（`text/event-stream` + `data:` 帧）；前端仍用 `getReader()` 手工解析，以兼容历史无前缀格式并接入 AbortSignal。
-
-### 4.3 Agent 后台运行（非阻塞）
-
-```
-POST /api/agent/runs
-  → submit_run()：落库 agent_runs + 注册 threading.Event + 起守护线程 → 立即返回 runId
-  ↓（后台线程内 asyncio.new_event_loop()）
-  → 按 agent_roles.json 顺序逐角色执行，每一帧事件立刻写入 agent_run_events
-  ↓
-GET /api/agent/runs/{id}/stream
-  → 标准 SSE，但推送源是 DB 轮询（0.6s 游标增量），因此跨 worker 天然可见
-POST /api/agent/runs/{id}/cancel
-  → 内存 Event（同 worker 即时）+ DB status（跨 worker，每阶段前复查）双层取消
-```
-
-`run_full_workflow` 是同步阻塞生成器（内部 LLM 走同步 urllib），直接放进协程会卡死事件循环——这正是 runner 存在的理由。旧的 `POST /api/agent/run`（SSE 直跑）仍保留向后兼容，但会阻塞该 worker 的协程。
-
----
-
-## 5. 关键架构决策
-
-### 5.1 零 SDK 的 LLM 客户端
-
-`backend/server/llm.py` 全部用标准库 `urllib.request` 实现，包含手写 SSE 解析和 function-calling 分片累积（按 `index` 累积 `id`/`name`/`arguments`）。`requirements.txt` 里明确注释「不需要 openai SDK」。收益是依赖极轻、离线可装；代价是需要自己处理流式边界与重试。
-
-**URL 拼接采用 OpenAI SDK 风格**：Base URL 自带 `/v1`，`LLM_HTTP_PATH` 默认 `/chat/completions`，最终 endpoint = `{base}/chat/completions`。`config.py` 有一处兼容补丁：当 base 以 `/v1` 结尾且 path 以 `/v1/` 开头时自动剥掉重复前缀。
-
-### 5.2 space-key 软隔离
-
-- 身份 = 用户主动填写的稳定口令，`trim + lower` 后**直接作为 `space_id`，不做 hash**，最短 4 字符，允许中文。
-- 隔离手段是「每张表一个 `space_id` 列 + 单列索引 + `WHERE` 过滤」，**不做 JOIN**；子表反范式写入父空间。
-- `X-Space-Key` 是**处理器级依赖**而非中间件，因此可精确豁免系统级接口。
-- 豁免范围：`settings` / `healthz` / `llm/status` / `backup` / `skills` / `swanlab` / `citation`——这些是全局配置或全局能力。
-- 特例：`chat` 路由不强制，缺头时静默回落 `__default__`（不返回 400）。
-- 文件系统按 `data/<module>/<space_id>/` 归档。
-- 存量数据统一迁移到 `__default__`。
-
-### 5.3 Agent Skills 开放标准
-
-`backend/skills/<name>/SKILL.md`（frontmatter + 正文）即技能本体，与 Claude Code / Codex 生态目录约定兼容，可直接互换。分两类：`instruction`（纯提示词工作流）与 `tool`（声明 `command` 可执行）。安全边界：**命令只能来自受信任的 SKILL.md，模型只能提供参数，永远无法指定执行什么命令**。
-
-### 5.4 已废弃的历史路径
-
-- **OpenClaw**：早期 LLM 提供方，已于 2026-07-28 全量移除（代码 / 配置 / 文档）。现改为任意 OpenAI 兼容端点，界面可配。
-- **Vite 插件式后端**：早期在 `vite.config.ts` 的 `configureServer` 里 spawn Python（约 1150 行），已迁往独立 FastAPI。遗留物 `frontend/api-server.js`、`scripts/db_api.py`、`scripts/workflow_engine.py` 均为死代码，见 [TECH-DEBT.md](./TECH-DEBT.md)。
-
----
-
-## 6. 数据流与外部依赖
-
-| 外部服务 | 用途 | 调用方 | 缺失时的行为 |
-|---|---|---|---|
-| OpenAI 兼容 LLM | 对话 / 论文总结 / Agent / 记忆提炼 | `llm.py`（进程内） | CRUD 不受影响；总结降级为规则摘要；Chat/Agent 报错提示 |
-| arXiv Atom API | 论文抓取 | `fetch_arxiv.py`（进程内） | 抓取失败，已有数据可用 |
-| Crossref | 引用元数据检索 | `citation_service.py`（subprocess） | 引用生成不可用 |
-| SwanLab | 实验数据同步 | `swanlab_api.py`（subprocess） | 实验 Hub 只读本地缓存 |
-| SimpleTex | 公式 OCR | `formula_service.py`（subprocess） | 公式识别不可用 |
-| Google Fonts / cdnjs | 字体、PDF worker | 浏览器直连 | 字体回退系统字体；**PDF 预览失效**（内网环境需自托管） |
-
----
-
-## 7. 部署形态
-
-| 形态 | 命令 | 说明 |
-|---|---|---|
-| 开发（前后端分离） | `.\start.ps1` / `./start.sh` | 后端 :8000 + Vite :5173，`/api` 反代 |
-| 仅后端 | `.\start.ps1 -SkipFrontend` | 调试 API 用 |
-| 生产（单进程托管） | `npm run build` 后 `uvicorn backend.server.main:app --workers N` | uvicorn 同时提供 `/api` 与 SPA，无需 nginx |
-| 内网多人 | 同上 + `APP_HOST=0.0.0.0` + 各自填不同 space key | 详见 [OPERATIONS.md](./OPERATIONS.md) |
-
-详细参数、环境变量与排障见 [OPERATIONS.md](./OPERATIONS.md)。
+- 专家团队：`backend/agent_teams/*.json` 内置，`agent_teams.py` 校验 `schemaVersion=1` DAG（无环/可达/工具白名单），提交时快照 `teamSnapshot/inputContext`，`agent_run_nodes` 跟踪节点状态。
+- 研发团队：`LabHub` 合并原 `software/experiment`（`/software→/lab` 重定向），隔离工作区 `data/dev_workspaces/<space>/<run>/`。
