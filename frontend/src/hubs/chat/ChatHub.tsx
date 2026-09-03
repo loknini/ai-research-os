@@ -526,17 +526,27 @@ export default function ChatHub() {
     return () => document.removeEventListener('mousedown', handle)
   }, [ctxExpanded])
 
-  // 加载会话列表
+  // 加载会话列表 — 直达最近且活跃（60min内）的对话，否则停留四宫格（真发送才建库）
   const loadConversations = useCallback(async () => {
     setIsLoading(true)
     try {
       const list = await fetchConversations()
       setConversations(list)
+      const ACTIVE_TTL = 60 * 60 * 1000
       const savedId = useAppStore.getState().chatConversationId
       if (savedId && list.some((c) => c.id === savedId)) {
         setCurrentConversationIdState(savedId)
       } else if (savedId) {
         setAppStoreChatId(null)
+      }
+      // 无选中时，60min内有活跃会话则直达最近一条
+      const current = useAppStore.getState().chatConversationId
+      if (!current && list.length > 0) {
+        const recent = list[0]
+        if (Date.now() - (recent.updatedAt || 0) < ACTIVE_TTL) {
+          setCurrentConversationIdState(recent.id)
+          setDrawerOpen(false)
+        }
       }
     } catch (error) {
       console.error('Failed to load conversations:', error)
@@ -1200,11 +1210,6 @@ export default function ChatHub() {
           </div>
         </ScrollArea>
 
-        {/* 底部信息 */}
-        <div className="p-4 border-t text-xs text-muted-foreground">
-          <p>AI Research OS 助手</p>
-          <p className="mt-1">基于 FastAPI LLM 后端</p>
-        </div>
       </div>
 
       {/* 右键菜单兜底 */}
