@@ -773,18 +773,23 @@ export default function ChatHub() {
       setConversations((prev) => [created, ...prev])
       setCurrentConversationId(created.id)
       setCurrentConversation(created)
-      // 知识增强默认开启：若当前空间已有索引源，自动开启（否则保持关闭避免空提示）
-      fetch('/api/rag/sources')
-        .then((r) => r.json())
-        .then((data) => {
-          const hasSources = (data.sources || []).length > 0
-          if (hasSources) {
-            setRagEnabled(true)
-            // 持久化到新会话 metadata（兼容旧 rag 键）
-            updateConversationAPI(created.id, { metadata: { ...(created.metadata || {}), rag: { enabled: true, sourceIds: [] } } })
-          }
-        })
-        .catch(() => {})
+      // 知识增强默认开启：同步等待源列表，确保首条消息即带增强（否则四宫格首发无RAG）
+      try {
+        const res = await fetch('/api/rag/sources').then((r) => r.json())
+        const sources = res.sources || []
+        if (sources.length > 0) {
+          const allIds = sources.map((s: any) => s.id)
+          setRagEnabled(true)
+          setRagSourceIds(allIds)
+          const nextMeta = { ...(created.metadata || {}), rag: { enabled: true, sourceIds: allIds } }
+          // 同步更新本地与远端，保证 sendMessage 立即可读
+          created.metadata = nextMeta as any
+          setCurrentConversation({ ...created } as any)
+          await updateConversationAPI(created.id, { metadata: nextMeta as any })
+        }
+      } catch (_e) {
+        void _e
+      }
       return created
     } else {
       showToast('创建对话失败', 'error')
@@ -913,8 +918,14 @@ export default function ChatHub() {
     setInput('')
     setPendingImages([])
 
-    // 复用核心流式生成逻辑
-    const rag = ragEnabled ? { enabled: true, sourceIds: ragSourceIds } : undefined
+    // 复用核心流式生成逻辑；四宫格新建时优先用新建会话的 metadata（已同步全量源），避免首条无增强
+    let rag: { enabled: boolean; sourceIds: string[] } | undefined
+    const metaRag = (targetConversation as any)?.metadata?.rag
+    if (metaRag?.enabled) {
+      rag = { enabled: true, sourceIds: metaRag.sourceIds || [] }
+    } else if (ragEnabled) {
+      rag = { enabled: true, sourceIds: ragSourceIds }
+    }
     await chatGenerationManager.start(updatedMessages, targetId, rag)
   }, [input, pendingImages, isGenerating, currentConversationId, currentConversation,
     createNewConversation, ragEnabled, ragSourceIds, showToast])
