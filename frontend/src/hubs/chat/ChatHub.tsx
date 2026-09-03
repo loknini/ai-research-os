@@ -385,7 +385,7 @@ export default function ChatHub() {
 
   // 侧边栏折叠（移动端）
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [drawerOpen, setDrawerOpen] = useState(true)
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null)
 
   // 侧边栏可拖拽宽度（桌面端）：持久化到 localStorage，双击手柄复位
@@ -539,14 +539,18 @@ export default function ChatHub() {
       } else if (savedId) {
         setAppStoreChatId(null)
       }
-      // 无选中时，60min内有活跃会话则直达最近一条
+      // 无选中时，60min内有活跃会话则直达最近一条，否则停留四宫格且收抽屉
       const current = useAppStore.getState().chatConversationId
       if (!current && list.length > 0) {
         const recent = list[0]
         if (Date.now() - (recent.updatedAt || 0) < ACTIVE_TTL) {
           setCurrentConversationIdState(recent.id)
           setDrawerOpen(false)
+        } else {
+          setDrawerOpen(false)
         }
+      } else if (!current && list.length === 0) {
+        setDrawerOpen(false)
       }
     } catch (error) {
       console.error('Failed to load conversations:', error)
