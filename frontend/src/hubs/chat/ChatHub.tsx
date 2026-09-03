@@ -1163,10 +1163,10 @@ export default function ChatHub() {
                             setActiveMenuId(null)
                             startEditTitle(conv)
                           }}
-                          className="w-full px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-accent text-left"
+                          className="w-full px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-accent text-left text-black dark:text-white"
                         >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          重命名
+                          <Edit3 className="w-3.5 h-3.5 text-black dark:text-white" />
+                          <span className="text-black dark:text-white">重命名</span>
                         </button>
                         <button
                           role="menuitem"
@@ -1219,10 +1219,10 @@ export default function ChatHub() {
               startEditTitle(contextMenu.conv)
               setContextMenu(null)
             }}
-            className="w-full px-3 py-2 text-sm flex items-center gap-2 transition-colors text-left text-foreground hover:bg-accent focus-visible:bg-accent"
+            className="w-full px-3 py-2 text-sm flex items-center gap-2 transition-colors text-left text-black dark:text-white hover:bg-accent focus-visible:bg-accent"
           >
-            <Edit3 className="w-3.5 h-3.5 flex-shrink-0" />
-            <span>重命名</span>
+            <Edit3 className="w-3.5 h-3.5 flex-shrink-0 text-black dark:text-white" />
+            <span className="text-black dark:text-white">重命名</span>
           </button>
           <button
             onClick={() => {
