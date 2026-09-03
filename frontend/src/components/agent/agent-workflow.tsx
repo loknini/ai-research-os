@@ -107,6 +107,25 @@ const agentConfig = {
   }
 }
 
+const dagNameMap: Record<string, string> = {
+  method: '方法分析师',
+  evidence: '证据审查员',
+  novelty: '创新性分析师',
+  editor: '综述编辑',
+  organizer: '资料整理员',
+  connector: '关联分析师',
+  critic: '批判性审查员',
+  architect: '架构师',
+  risk: '风险分析师',
+  planner: '规划师',
+  reviewer: '评审者',
+  integrator: '项目方案整合者',
+  'dev-analysis': '需求与代码分析师',
+  'dev-implementation': '实现工程师',
+  'dev-testing': '测试工程师',
+  'dev-review': '代码审查员',
+}
+
 export function AgentWorkflow({ projectId, requirement, teamId, context, onComplete, onEvent, disabled = false }: AgentWorkflowProps) {
   const [isRunning, setIsRunning] = useState(false)
   const [messages, setMessages] = useState<AgentMessage[]>([])
@@ -438,8 +457,8 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
 
   // 渲染消息
   const renderMessage = (message: AgentMessage, index: number) => {
-    // DAG 节点 id（如 method/evidence/dev-analysis）不在内置 agentConfig 中，优先用 nodeStates 的真名
-    const nodeName = (nodeStates as any)[message.agentRole]?.name
+    // DAG 节点 id（如 method/evidence/dev-analysis）不在内置 agentConfig 中，优先用 nodeStates/静态映射的真名
+    const nodeName = (nodeStates as any)[message.agentRole]?.name || (dagNameMap as any)[message.agentRole]
     const isDagNode = !!nodeName && nodeName !== '用户'
     const configKey = (agentConfig as any)[message.agentRole] ? message.agentRole : (isDagNode ? 'developer' : 'user')
     const config = (agentConfig as any)[configKey] || agentConfig.user
@@ -554,6 +573,9 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
               <p className="text-sm text-muted-foreground">
                 {phaseText[currentPhase] || '专家团队正在运行…'}
               </p>
+              {isRunning && (
+                <p className="text-xs text-muted-foreground mt-1">后台运行，切走不中断 · 完成后右下角提醒</p>
+              )}
             </div>
           </div>
           {isRunning ? (

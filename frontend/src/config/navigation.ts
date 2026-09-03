@@ -100,6 +100,14 @@ export const navGroups: NavGroup[] = [
         description: '软件开发 · 实验追踪',
         keywords: ['software', 'experiment', '项目', 'swanlab', '开发'],
       },
+      {
+        id: 'agent-runs',
+        name: '运行历史',
+        icon: History,
+        path: '/agent-runs',
+        description: '后台 Agent 运行记录',
+        keywords: ['run', 'history', '后台', '记录'],
+      },
     ],
   },
   {
@@ -143,14 +151,6 @@ export const toolCommands: NavItem[] = [
     path: '/task',
     description: '待办事项',
     keywords: ['todo', '待办', '任务'],
-  },
-  {
-    id: 'agent-runs',
-    name: '运行历史',
-    icon: History,
-    path: '/agent-runs',
-    description: '后台 Agent 运行记录',
-    keywords: ['run', 'history', '后台', '记录'],
   },
   {
     id: 'cron',
