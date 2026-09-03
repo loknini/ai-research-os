@@ -39,6 +39,7 @@ import {
 } from './services/chatApi'
 import { chatGenerationManager } from './services/chatGenerationManager'
 import MessageContent from './components/MessageContent'
+import { ContextRing } from './components/ContextRing'
 import { useAppStore } from '@/stores/appStore'
 
 // 本地 token 估算（与 backend/server/context.py:28 同款 CJK=1 / 其它非空=0.25）
@@ -456,6 +457,7 @@ export default function ChatHub() {
     limit: number
     compressed: boolean
   } | null>(null)
+  const [ctxExpanded, setCtxExpanded] = useState(false)
 
   // 思考过程步骤（用于「思考过程」可折叠面板）
   const [reasoningSteps, setReasoningSteps] = useState<ReasoningStep[]>([])
@@ -508,6 +510,17 @@ export default function ChatHub() {
     document.addEventListener('mousedown', handle)
     return () => document.removeEventListener('mousedown', handle)
   }, [ragPickerOpen])
+
+  // 上下文圆环展开：点击外部关闭
+  useEffect(() => {
+    if (!ctxExpanded) return
+    const handle = (e: MouseEvent) => {
+      const el = document.getElementById('context-ring')
+      if (el && !el.contains(e.target as Node)) setCtxExpanded(false)
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [ctxExpanded])
 
   // 加载会话列表
   const loadConversations = useCallback(async () => {
@@ -1223,6 +1236,15 @@ export default function ChatHub() {
             <h2 className="font-semibold">
               {currentConversation?.title || 'AI 助手'}
             </h2>
+            {contextInfo && (
+              <ContextRing
+                value={contextInfo.estimated_tokens}
+                limit={contextInfo.limit}
+                compressed={contextInfo.compressed}
+                expanded={ctxExpanded}
+                onToggle={() => setCtxExpanded((v) => !v)}
+              />
+            )}
             {branchTip && (
               <span
                 className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
@@ -1603,26 +1625,7 @@ export default function ChatHub() {
         {/* 输入区域 */}
         <div className="border-t p-4">
           <div className="max-w-3xl mx-auto">
-            {contextInfo && (
-              <div className="flex items-center gap-2 mb-2 text-xs text-muted-foreground">
-                <span
-                  className={cn(
-                    'inline-flex items-center gap-1 rounded-full px-2 py-0.5',
-                    contextInfo.estimated_tokens > contextInfo.limit * 0.8
-                      ? 'bg-amber-500/10 text-amber-600'
-                      : 'bg-muted'
-                  )}
-                  title="本次对话估算的上下文 token 用量"
-                >
-                  上下文 ≈ {contextInfo.estimated_tokens.toLocaleString()} / {contextInfo.limit.toLocaleString()} tokens
-                </span>
-                {contextInfo.compressed && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-500/10 px-2 py-0.5 text-blue-600">
-                    已自动压缩历史
-                  </span>
-                )}
-              </div>
-            )}
+            {/* 旧胶囊已移至顶部圆环 */}
             {pendingImages.length > 0 && (
               <div className="flex flex-wrap gap-2 px-1 pb-1">
                 {pendingImages.map((img, i) => (
