@@ -1,6 +1,6 @@
 {
   "version": "0.5.0",
-  "tables": 31,
+  "tables": 32,
   "tableList": [
     "papers",
     "cron_jobs",
@@ -32,7 +32,8 @@
     "obsidian_files",
     "rag_sources",
     "rag_documents",
-    "rag_chunks"
+    "rag_chunks",
+    "global_config"
   ],
   "spaceTables": 30,
   "routers": 22,

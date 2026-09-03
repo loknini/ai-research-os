@@ -101,19 +101,19 @@ def _upsert_env(updates: dict[str, str]) -> None:
 
 @router.get("/llm")
 async def get_llm_settings():
-    s = config.settings
+    eff = config.get_effective_llm_settings()
     return {
         "success": True,
         "config": {
-            "baseUrl": s.llm_base_url,
-            "apiKeyMasked": mask_key(s.llm_api_key),
-            "apiKeyConfigured": bool((s.llm_api_key or "").strip()),
-            "model": s.llm_model,
-            "embedModel": s.llm_embed_model,
-            "temperature": s.llm_temperature,
-            "maxTokens": s.llm_max_tokens,
-            "timeout": s.llm_timeout,
-            "httpPath": s.llm_http_path,
+            "baseUrl": eff["baseUrl"],
+            "apiKeyMasked": mask_key(eff["apiKey"]),
+            "apiKeyConfigured": bool((eff["apiKey"] or "").strip()),
+            "model": eff["model"],
+            "embedModel": eff["embedModel"],
+            "temperature": eff["temperature"],
+            "maxTokens": eff["maxTokens"],
+            "timeout": eff["timeout"],
+            "httpPath": eff["httpPath"],
             "envPath": str(ENV_PATH),
         },
     }
@@ -122,30 +122,22 @@ async def get_llm_settings():
 @router.post("/llm")
 async def save_llm_settings(req: LLMSettingsIn):
     s = config.settings
+    # 读取当前生效值（DB 优先）用于“留空沿用”
+    eff = config.get_effective_llm_settings()
 
     base_url = req.baseUrl.strip().rstrip("/")
     model = req.model.strip()
     if not base_url or not model:
         return {"success": False, "message": "Base URL 和模型名称不能为空"}
 
-    api_key = req.apiKey.strip() or s.llm_api_key  # 留空则沿用已保存的 key
-    temperature = req.temperature if req.temperature is not None else s.llm_temperature
-    max_tokens = req.maxTokens if req.maxTokens is not None else s.llm_max_tokens
-    timeout = req.timeout if req.timeout is not None else s.llm_timeout
-    http_path = (req.httpPath or s.llm_http_path).strip() or "/chat/completions"
-    embed_model = (req.embedModel or "").strip() or s.llm_embed_model  # 留空则沿用已保存
+    api_key = req.apiKey.strip() or eff["apiKey"] or s.llm_api_key
+    temperature = req.temperature if req.temperature is not None else eff["temperature"]
+    max_tokens = req.maxTokens if req.maxTokens is not None else eff["maxTokens"]
+    timeout = req.timeout if req.timeout is not None else eff["timeout"]
+    http_path = (req.httpPath or eff["httpPath"] or s.llm_http_path).strip() or "/chat/completions"
+    embed_model = (req.embedModel or "").strip() or eff["embedModel"] or s.llm_embed_model
 
-    # 1) 热生效：后端 LLMClient 每次请求都读该单例，改完立即可用。
-    s.llm_base_url = base_url
-    s.llm_api_key = api_key
-    s.llm_model = model
-    s.llm_temperature = temperature
-    s.llm_max_tokens = max_tokens
-    s.llm_timeout = timeout
-    s.llm_http_path = http_path
-    s.llm_embed_model = embed_model
-
-    # 2) 同步 os.environ：agent 等子进程继承环境变量时保持一致。
+    # 1) 热生效：写 DB（多 worker 可见，TTL 5s）+ 本 worker 内存/环境变量立即可见
     env_updates = {
         "LLM_BASE_URL": base_url,
         "LLM_API_KEY": api_key,
@@ -156,20 +148,36 @@ async def save_llm_settings(req: LLMSettingsIn):
         "LLM_HTTP_PATH": http_path,
         "LLM_EMBED_MODEL": embed_model,
     }
+    # DB 为准（多 worker 可见）
+    try:
+        from .. import db as _db
+        await _db.database.set_global_configs(env_updates)
+    except Exception:
+        pass
+    # 本 worker 内存立即可见
+    s.llm_base_url = base_url
+    s.llm_api_key = api_key
+    s.llm_model = model
+    s.llm_temperature = temperature
+    s.llm_max_tokens = max_tokens
+    s.llm_timeout = timeout
+    s.llm_http_path = http_path
+    s.llm_embed_model = embed_model
     os.environ.update(env_updates)
+    config.invalidate_llm_cache()
 
-    # 3) 持久化到项目根 .env，重启后仍然生效。
+    # 2) 持久化到项目根 .env，冷备（DB 为主，.env 为辅）
     try:
         _upsert_env(env_updates)
     except OSError as exc:
         return {
             "success": False,
-            "message": f"配置已在本次运行中生效，但写入 .env 失败：{exc}",
+            "message": f"配置已保存并多 worker 可见（DB），但写入 .env 失败：{exc}",
         }
 
     return {
         "success": True,
-        "message": "配置已保存并立即生效（已写入 .env，重启后仍有效）",
+        "message": "配置已保存并多 worker 热更新（DB TTL 5s 内全量可见，已写入 .env 冷备）",
     }
 
 

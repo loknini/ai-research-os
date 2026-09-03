@@ -303,7 +303,7 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 | GET | `/api/settings/llm/models?baseUrl=&apiKey=` | 拉取模型列表，兼容 OpenAI `data[].id` 与 Ollama `models[].name`，去重保序 |
 | POST | `/api/settings/llm/test` | 发一条 `max_tokens=1` 的 ping，报告延迟；对 401/403/404/429 给出中文诊断 |
 
-> 全局配置：多 worker 下仅当前 worker 热生效，其余靠 `.env` 重启后对齐；内网场景下任何空间均可修改。保存后**当前进程立即生效**。
+> 全局配置：`global_config` 表为准，多 worker 5s 内热可见（TTL 缓存+DB），已写 `.env` 冷备；内网中任何空间均可修改，无需重启。
 
 ---
 

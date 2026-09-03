@@ -821,6 +821,15 @@ async def init_db() -> None:
         # 一次性迁移：存量 cron_jobs.json -> DB（仅当表为空时，避免多 worker 重复导入）
         await _maybe_migrate_cron_json(conn)
 
+        # ==================== 全局配置表（热更新，跨 worker 可见） ====================
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS global_config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        ''')
+
         # ==================== chat 消息分叉树迁移 ====================
         # 老库只有扁平线性消息，需补 parent_id / current_leaf_id 并回填。
         await _maybe_migrate_chat_branching(conn)
@@ -3862,6 +3871,43 @@ async def get_rag_stats(space_id: str = DEFAULT_SPACE) -> Dict[str, int]:
             "chunkCount": chunks["n"] if chunks else 0,
             "vectorCount": vecs["n"] if vecs else 0,
         }
+
+
+# ==================== 全局配置（热更新） ====================
+async def get_global_config(key: str) -> Optional[str]:
+    async with get_db() as conn:
+        row = await _fetchone(conn, 'SELECT value FROM global_config WHERE key = ?', (key,))
+        return row["value"] if row else None
+
+
+async def get_all_global_configs() -> Dict[str, str]:
+    async with get_db() as conn:
+        rows = await _fetchall(conn, 'SELECT key, value FROM global_config')
+        return {r["key"]: r["value"] for r in rows}
+
+
+async def set_global_config(key: str, value: str) -> bool:
+    async with get_db() as conn:
+        now = int(time.time() * 1000)
+        await conn.execute(
+            'INSERT INTO global_config (key, value, updated_at) VALUES (?, ?, ?) '
+            'ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at',
+            (key, value, now),
+        )
+        return True
+
+
+async def set_global_configs(mapping: Dict[str, str]) -> None:
+    if not mapping:
+        return
+    async with get_db() as conn:
+        now = int(time.time() * 1000)
+        for k, v in mapping.items():
+            await conn.execute(
+                'INSERT INTO global_config (key, value, updated_at) VALUES (?, ?, ?) '
+                'ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at',
+                (k, v, now),
+            )
 
 
 async def _main() -> None:

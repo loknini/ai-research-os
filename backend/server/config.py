@@ -109,6 +109,92 @@ def get_cors_origins() -> List[str]:
     return [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 
 
+# ---- 热更新：DB 为准的 LLM 配置（多 worker 可见） ----
+import sqlite3 as _sqlite3
+import time as _time
+
+_LLM_CACHE: dict = {}
+_LLM_CACHE_EXPIRES: float = 0
+_LLM_CACHE_TTL: int = 5  # 秒，多 worker 最多 5s 延迟可见
+
+
+def _read_global_config_sync(key: str) -> Optional[str]:
+    try:
+        db_path = str(DB_PATH)
+        if not Path(db_path).exists():
+            return None
+        conn = _sqlite3.connect(db_path, timeout=2)
+        try:
+            cur = conn.execute("SELECT value FROM global_config WHERE key = ?", (key,))
+            row = cur.fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _read_all_global_configs_sync() -> dict:
+    try:
+        db_path = str(DB_PATH)
+        if not Path(db_path).exists():
+            return {}
+        conn = _sqlite3.connect(db_path, timeout=2)
+        try:
+            cur = conn.execute("SELECT key, value FROM global_config")
+            return {r[0]: r[1] for r in cur.fetchall()}
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
+def get_effective_llm_settings() -> dict:
+    """返回当前生效的 LLM 配置（DB 优先，TTL 缓存，多 worker 可见）。"""
+    global _LLM_CACHE, _LLM_CACHE_EXPIRES
+    now = _time.monotonic()
+    if now < _LLM_CACHE_EXPIRES and _LLM_CACHE:
+        return _LLM_CACHE
+    db_vals = _read_all_global_configs_sync()
+    # DB 为准，未写入时回落到 env/单例
+    def _pick(key: str, attr: str) -> str:
+        if key in db_vals:
+            return db_vals[key]
+        return getattr(settings, attr) or ""
+
+    cfg = {
+        "baseUrl": _pick("LLM_BASE_URL", "llm_base_url"),
+        "apiKey": _pick("LLM_API_KEY", "llm_api_key"),
+        "model": _pick("LLM_MODEL", "llm_model"),
+        "temperature": db_vals.get("LLM_TEMPERATURE", str(settings.llm_temperature)),
+        "maxTokens": db_vals.get("LLM_MAX_TOKENS", str(settings.llm_max_tokens)),
+        "timeout": db_vals.get("LLM_TIMEOUT", str(settings.llm_timeout)),
+        "httpPath": _pick("LLM_HTTP_PATH", "llm_http_path"),
+        "embedModel": _pick("LLM_EMBED_MODEL", "llm_embed_model"),
+    }
+    # 类型归一
+    try:
+        cfg["temperature"] = float(cfg["temperature"])
+    except Exception:
+        cfg["temperature"] = settings.llm_temperature
+    try:
+        cfg["maxTokens"] = int(float(cfg["maxTokens"]))
+    except Exception:
+        cfg["maxTokens"] = settings.llm_max_tokens
+    try:
+        cfg["timeout"] = int(float(cfg["timeout"]))
+    except Exception:
+        cfg["timeout"] = settings.llm_timeout
+    _LLM_CACHE = cfg
+    _LLM_CACHE_EXPIRES = now + _LLM_CACHE_TTL
+    return cfg
+
+
+def invalidate_llm_cache() -> None:
+    global _LLM_CACHE_EXPIRES
+    _LLM_CACHE_EXPIRES = 0
+
+
 __all__ = [
     "settings",
     "DATA_DIR",
@@ -116,4 +202,6 @@ __all__ = [
     "SCRIPTS_DIR",
     "PROJECT_ROOT",
     "get_cors_origins",
+    "get_effective_llm_settings",
+    "invalidate_llm_cache",
 ]

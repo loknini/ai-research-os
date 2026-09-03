@@ -39,29 +39,48 @@ class LLMClient:
     def __init__(self, settings: Any = None) -> None:
         self.settings = settings or config.settings
 
+    def _eff(self) -> Dict[str, Any]:
+        """当前生效配置（DB TTL 缓存，多 worker 可见）。"""
+        try:
+            return config.get_effective_llm_settings()
+        except Exception:
+            return {
+                "baseUrl": self.settings.llm_base_url,
+                "apiKey": self.settings.llm_api_key,
+                "model": self.settings.llm_model,
+                "temperature": self.settings.llm_temperature,
+                "maxTokens": self.settings.llm_max_tokens,
+                "timeout": self.settings.llm_timeout,
+                "httpPath": self.settings.llm_http_path,
+                "embedModel": self.settings.llm_embed_model,
+            }
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
     @property
     def configured(self) -> bool:
         """Whether an API key + base URL are present."""
-        key = (self.settings.llm_api_key or "").strip()
-        base = (self.settings.llm_base_url or "").strip()
+        eff = self._eff()
+        key = (eff.get("apiKey") or "").strip()
+        base = (eff.get("baseUrl") or "").strip()
         return bool(key) and bool(base)
 
     @property
     def endpoint(self) -> str:
-        base = (self.settings.llm_base_url or "").rstrip("/")
-        path = self.settings.llm_http_path or "/chat/completions"
+        eff = self._eff()
+        base = (eff.get("baseUrl") or "").rstrip("/")
+        path = eff.get("httpPath") or "/chat/completions"
         return f"{base}{path}"
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
     def _headers(self) -> Dict[str, str]:
+        eff = self._eff()
         return {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.settings.llm_api_key or ''}",
+            "Authorization": f"Bearer {eff.get('apiKey') or ''}",
         }
 
     def _build_payload(
@@ -73,11 +92,12 @@ class LLMClient:
         max_tokens: Optional[int],
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
+        eff = self._eff()
         payload: Dict[str, Any] = {
-            "model": model or self.settings.llm_model,
+            "model": model or eff.get("model"),
             "messages": messages,
-            "temperature": temperature if temperature is not None else self.settings.llm_temperature,
-            "max_tokens": max_tokens if max_tokens is not None else self.settings.llm_max_tokens,
+            "temperature": temperature if temperature is not None else eff.get("temperature"),
+            "max_tokens": max_tokens if max_tokens is not None else eff.get("maxTokens"),
             "stream": stream,
         }
         if tools:
@@ -98,9 +118,10 @@ class LLMClient:
         timeout: Optional[int] = None,
     ) -> Optional[str]:
         """Non-streaming call. Returns the text, or ``None`` on any failure."""
+        eff = self._eff()
         payload = self._build_payload(messages, stream=False, model=model,
-                                      temperature=temperature, max_tokens=max_tokens)
-        timeout = timeout or self.settings.llm_timeout
+                                       temperature=temperature, max_tokens=max_tokens)
+        timeout = timeout or eff.get("timeout")
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             self.endpoint, data=data, headers=self._headers(), method="POST"
@@ -138,10 +159,11 @@ class LLMClient:
         When ``tools`` is falsy the behaviour is unchanged from before
         (text deltas only).
         """
+        eff = self._eff()
         payload = self._build_payload(messages, stream=True, model=model,
-                                      temperature=temperature, max_tokens=max_tokens,
-                                      tools=tools)
-        timeout = timeout or self.settings.llm_timeout
+                                       temperature=temperature, max_tokens=max_tokens,
+                                       tools=tools)
+        timeout = timeout or eff.get("timeout")
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
             self.endpoint, data=data, headers=self._headers(), method="POST"
@@ -206,13 +228,15 @@ class LLMClient:
     @property
     def embedding_endpoint(self) -> str:
         """Embeddings endpoint: ``{base}/embeddings`` (base already has /v1)."""
-        base = (self.settings.llm_base_url or "").rstrip("/")
+        eff = self._eff()
+        base = (eff.get("baseUrl") or "").rstrip("/")
         return f"{base}/embeddings"
 
     @property
     def embedding_model(self) -> str:
         """Embedding model name; falls back to the chat model when unset."""
-        return (self.settings.llm_embed_model or "").strip() or (self.settings.llm_model or "")
+        eff = self._eff()
+        return (eff.get("embedModel") or "").strip() or (eff.get("model") or "")
 
     def embed(
         self,
@@ -229,11 +253,12 @@ class LLMClient:
         """
         if not texts:
             return []
+        eff = self._eff()
         model = model or self.embedding_model
         if not self.configured or not model:
             return None
         payload = json.dumps({"model": model, "input": texts}).encode("utf-8")
-        timeout = timeout or self.settings.llm_timeout
+        timeout = timeout or eff.get("timeout")
         req = urllib.request.Request(
             self.embedding_endpoint, data=payload, headers=self._headers(), method="POST"
         )
@@ -258,7 +283,8 @@ class LLMClient:
         from urllib.parse import urlparse
 
         try:
-            parsed = urlparse(self.settings.llm_base_url)
+            eff = self._eff()
+            parsed = urlparse(eff.get("baseUrl") or "")
             host = parsed.hostname
             if not host:
                 return False
@@ -270,12 +296,13 @@ class LLMClient:
 
     def status(self) -> Dict[str, Any]:
         """Structured status used by ``/api/llm/status`` and ``/api/healthz``."""
+        eff = self._eff()
         return {
             "configured": self.configured,
             "reachable": self._reachable(),
-            "baseUrl": self.settings.llm_base_url,
-            "model": self.settings.llm_model,
-            "apiKeyMasked": mask_key(self.settings.llm_api_key),
+            "baseUrl": eff.get("baseUrl") or "",
+            "model": eff.get("model") or "",
+            "apiKeyMasked": mask_key(eff.get("apiKey") or ""),
         }
 
 # Singleton used across the app.
