@@ -486,9 +486,12 @@ export default function ChatHub() {
     fetch('/api/rag/sources')
       .then((res) => res.json())
       .then((data) => {
-        setRagSourcesList(
-          (data.sources || []).map((s: any) => ({ id: s.id, name: s.name }))
-        )
+        const list = (data.sources || []).map((s: any) => ({ id: s.id, name: s.name }))
+        setRagSourcesList(list)
+        // 迁移旧数据：空数组曾表示“全选”，新逻辑空=零选，自动转为全选显式列表
+        if (list.length > 0) {
+          setRagSourceIds((prev) => (prev.length === 0 ? list.map((s: any) => s.id) : prev))
+        }
       })
       .catch(() => {
         /* 拉取失败不阻断开启 */
@@ -1250,7 +1253,7 @@ export default function ChatHub() {
                       onClick={() => setRagPickerOpen((v) => !v)}
                       title="选择要检索的文档源（默认全部）"
                     >
-                      来源 {ragSourceIds.length === 0 ? '全部' : ragSourceIds.length}
+                      来源 {ragSourceIds.length === ragSourcesList.length && ragSourcesList.length > 0 ? '全部' : `${ragSourceIds.length}/${ragSourcesList.length || 0}`}
                       <ChevronDown className="w-3.5 h-3.5 ml-1" />
                     </Button>
                     {ragPickerOpen && (
@@ -1267,14 +1270,19 @@ export default function ChatHub() {
                             <label className="flex items-center gap-2 px-1.5 py-1.5 rounded hover:bg-accent cursor-pointer text-sm font-medium border-b border-border/40 mb-1">
                               <input
                                 type="checkbox"
-                                checked={ragSourceIds.length === 0}
-                                onChange={() => setRagSourceIds((prev) => (prev.length === 0 ? ragSourcesList.map((s) => s.id) : []))}
+                                checked={ragSourceIds.length === ragSourcesList.length && ragSourcesList.length > 0}
+                                ref={(el) => {
+                                  if (el) el.indeterminate = ragSourceIds.length > 0 && ragSourceIds.length < ragSourcesList.length
+                                }}
+                                onChange={() => {
+                                  if (ragSourceIds.length === ragSourcesList.length) setRagSourceIds([])
+                                  else setRagSourceIds(ragSourcesList.map((s) => s.id))
+                                }}
                               />
-                              <span>全部来源 {ragSourceIds.length === 0 ? '(已选全部)' : `(已选 ${ragSourceIds.length}/${ragSourcesList.length})`}</span>
+                              <span>全部来源 {ragSourceIds.length === ragSourcesList.length ? '(已选全部)' : ` (已选 ${ragSourceIds.length}/${ragSourcesList.length})`}</span>
                             </label>
                             {ragSourcesList.map((s) => {
-                              const checked = ragSourceIds.length === 0 || ragSourceIds.includes(s.id)
-                              // 空数组=全选，展示为勾选态，取消单个即转为显式列表
+                              const checked = ragSourceIds.includes(s.id)
                               return (
                                 <label
                                   key={s.id}
@@ -1284,19 +1292,14 @@ export default function ChatHub() {
                                     type="checkbox"
                                     checked={checked}
                                     onChange={() => {
-                                      if (ragSourceIds.length === 0) {
-                                        // 从全选态取消一个：转为排除该项的显式列表
-                                        setRagSourceIds(ragSourcesList.filter((x) => x.id !== s.id).map((x) => x.id))
-                                      } else {
-                                        setRagSourceIds((prev) =>
-                                          checked ? prev.filter((id) => id !== s.id) : [...prev, s.id]
-                                        )
-                                        // 若全部勾选则回归空数组（全选语义）
-                                        // 延迟判断：若新长度等于总数则归空
-                                        setTimeout(() => {
-                                          setRagSourceIds((cur) => (cur.length === ragSourcesList.length ? [] : cur))
-                                        }, 0)
-                                      }
+                                      setRagSourceIds((prev) => {
+                                        const next = checked ? prev.filter((id) => id !== s.id) : [...prev, s.id]
+                                        if (next.length === 0) {
+                                          showToast('至少保留一个信源，或关闭知识增强', 'error')
+                                          return prev
+                                        }
+                                        return next
+                                      })
                                     }}
                                   />
                                   <span className="truncate">{s.name}</span>
