@@ -248,10 +248,15 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
           node_queued: 'queued', node_start: 'running', node_complete: 'completed',
           node_failed: 'failed', node_skipped: 'skipped'
         }
-        setNodeStates(previous => ({
-          ...previous,
-          [update.nodeId]: { name: update.name || update.nodeId, status: statusByType[update.type] }
-        }))
+        setNodeStates(previous => {
+          const prevName = previous[update.nodeId]?.name
+          const rawName = (update.name || update.nodeId || '').trim()
+          const effectiveName = rawName && rawName !== '用户' ? rawName : (prevName && prevName !== '用户' ? prevName : update.nodeId)
+          return {
+            ...previous,
+            [update.nodeId]: { name: effectiveName, status: statusByType[update.type] }
+          }
+        })
         if (update.type === 'node_failed' || update.type === 'node_skipped') {
           addMessage({
             agentRole: 'user',
@@ -433,7 +438,13 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
 
   // 渲染消息
   const renderMessage = (message: AgentMessage, index: number) => {
-    const config = agentConfig[message.agentRole] || agentConfig.user
+    // DAG 节点 id（如 method/evidence/dev-analysis）不在内置 agentConfig 中，优先用 nodeStates 的真名
+    const nodeName = (nodeStates as any)[message.agentRole]?.name
+    const isDagNode = !!nodeName && nodeName !== '用户'
+    const configKey = (agentConfig as any)[message.agentRole] ? message.agentRole : (isDagNode ? 'developer' : 'user')
+    const config = (agentConfig as any)[configKey] || agentConfig.user
+    const displayNameRaw = isDagNode ? nodeName : config.name
+    const displayName = displayNameRaw === '用户' && message.content === '阶段产出完成' ? '系统' : displayNameRaw
     const Icon = config.icon
 
     return (
@@ -451,7 +462,7 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <span className={cn('font-medium text-sm', config.color)}>{config.name}</span>
+            <span className={cn('font-medium text-sm', config.color)}>{displayName}</span>
             {message.stepName && (
               <Badge variant="outline" className="text-xs">
                 {message.stepName}

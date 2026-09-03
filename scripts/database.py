@@ -821,6 +821,12 @@ async def init_db() -> None:
         # 一次性迁移：存量 cron_jobs.json -> DB（仅当表为空时，避免多 worker 重复导入）
         await _maybe_migrate_cron_json(conn)
 
+        # 迁移：修正历史“用户”占位节点名（回落为 node_id，前端再映射真名）
+        try:
+            await conn.execute("UPDATE agent_run_nodes SET node_name = node_id WHERE node_name = '用户'")
+        except Exception:
+            pass
+
         # ==================== 全局配置表（热更新，跨 worker 可见） ====================
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS global_config (

@@ -69,6 +69,8 @@ def validate_role_template(source: Dict[str, Any]) -> Dict[str, Any]:
     if (not isinstance(role.get("name"), str) or not role["name"].strip()
             or not isinstance(role.get("systemPrompt"), str) or not role["systemPrompt"].strip()):
         raise TeamValidationError("name and systemPrompt are required")
+    if role["name"].strip() == "用户":
+        raise TeamValidationError("role name '用户' is reserved, please rename")
     tools = role.get("allowedTools", [])
     if (not isinstance(tools, list) or any(not isinstance(name, str) or not name for name in tools)
             or len(tools) != len(set(tools))):
@@ -154,6 +156,8 @@ def validate_team(source: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
                 or not isinstance(node.get("systemPrompt"), str)
                 or not node["systemPrompt"].strip()):
             raise TeamValidationError(f"node {node_id} requires name and systemPrompt")
+        if node["name"].strip() == "用户":
+            raise TeamValidationError(f"node {node_id} name '用户' is reserved, please rename")
         tools = node.get("allowedTools", [])
         if (not isinstance(tools, list)
                 or any(not isinstance(name, str) or not name for name in tools)
