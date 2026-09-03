@@ -743,12 +743,12 @@ export default function ChatHub() {
     scrollToBottom()
   }, [currentConversationId, scrollToBottom])
 
-  // 自动聚焦输入框
+  // 自动聚焦输入框（四宫格空状态也可直接输入）
   useEffect(() => {
-    if (currentConversationId && inputRef.current) {
+    if (inputRef.current && !isGenerating) {
       inputRef.current.focus()
     }
-  }, [currentConversationId])
+  }, [currentConversationId, isGenerating])
 
   // 创建新会话
   const createNewConversation = useCallback(async () => {
@@ -1698,9 +1698,9 @@ export default function ChatHub() {
                 placeholder={
                   currentConversation
                     ? '输入消息... (Shift+Enter 换行)'
-                    : '先创建一个对话吧'
+                    : '输入消息直接创建对话… (Shift+Enter 换行)'
                 }
-                disabled={!currentConversation || isGenerating}
+                disabled={isGenerating}
                 rows={1}
                 className={cn(
                   'flex-1 resize-none bg-transparent px-0 py-0',
@@ -1717,7 +1717,7 @@ export default function ChatHub() {
               />
               <Button
                 onClick={sendMessage}
-                disabled={(!input.trim() && pendingImages.length === 0) || !currentConversation || isGenerating}
+                disabled={(!input.trim() && pendingImages.length === 0) || isGenerating}
                 size="icon"
                 className="h-8 w-8 flex-shrink-0"
               >
