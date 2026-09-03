@@ -26,6 +26,8 @@ import {
   BookOpen,
   ChevronDown,
   Image,
+  MoreHorizontal,
+  PanelLeft,
 } from 'lucide-react'
 import { Conversation, Message, ReasoningStep, RagSource, ChatContentPart } from './types'
 import {
@@ -383,6 +385,8 @@ export default function ChatHub() {
 
   // 侧边栏折叠（移动端）
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(true)
+  const [activeMenuId, setActiveMenuId] = useState<string | null>(null)
 
   // 侧边栏可拖拽宽度（桌面端）：持久化到 localStorage，双击手柄复位
   const SIDEBAR_MIN_WIDTH = 220
@@ -581,6 +585,24 @@ export default function ChatHub() {
       document.removeEventListener('keydown', handleKey)
     }
   }, [contextMenu])
+
+  // 三点菜单：点击外部关闭
+  useEffect(() => {
+    if (!activeMenuId) return
+    const handle = (e: MouseEvent) => {
+      const el = document.getElementById(`conv-menu-${activeMenuId}`)
+      if (el && !el.contains(e.target as Node)) setActiveMenuId(null)
+    }
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setActiveMenuId(null)
+    }
+    document.addEventListener('mousedown', handle)
+    document.addEventListener('keydown', handleKey)
+    return () => {
+      document.removeEventListener('mousedown', handle)
+      document.removeEventListener('keydown', handleKey)
+    }
+  }, [activeMenuId])
   
   // 当切换会话时，加载会话详情；并接管该会话可能正在后台跑的生成
   useEffect(() => {
@@ -1016,15 +1038,25 @@ export default function ChatHub() {
   }, [currentConversation?.messages])
 
   return (
-    <div className="flex h-full bg-background">
-      {/* 左侧会话列表（宽度可拖拽调整） */}
+    <div className="flex h-full bg-background relative">
+      {/* 抽屉遮罩 */}
+      {drawerOpen && (
+        <div
+          className="fixed inset-0 z-30 bg-black/20 backdrop-blur-[1px]"
+          onClick={() => setDrawerOpen(false)}
+          aria-hidden
+        />
+      )}
+      {/* 左侧会话列表 — 悬浮抽屉，可拖拽调宽 */}
       <div
+        id="chat-drawer"
         className={cn(
-          'relative border-r bg-card flex flex-col flex-shrink-0',
-          !isResizingSidebar && 'transition-all duration-300',
-          sidebarCollapsed && 'w-0 overflow-hidden border-r-0'
+          'fixed inset-y-0 left-0 z-40 flex flex-col bg-card border-r shadow-xl',
+          'transition-transform duration-200 ease-out',
+          drawerOpen ? 'translate-x-0' : '-translate-x-full',
+          isResizingSidebar && 'transition-none'
         )}
-        style={sidebarCollapsed ? undefined : { width: sidebarWidth }}
+        style={{ width: sidebarWidth }}
       >
         {/* 拖拽调宽手柄：右缘竖条，双击复位 */}
         {!sidebarCollapsed && (
@@ -1060,7 +1092,10 @@ export default function ChatHub() {
             {conversations.map((conv) => (
               <div
                 key={conv.id}
-                onClick={() => setCurrentConversationId(conv.id)}
+                onClick={() => {
+                  setActiveMenuId(null)
+                  setCurrentConversationId(conv.id)
+                }}
                 onContextMenu={(e) => {
                   e.preventDefault()
                   setContextMenu({ x: e.clientX, y: e.clientY, conv })
@@ -1099,34 +1134,53 @@ export default function ChatHub() {
                   )}
                 </div>
                 {editingId !== conv.id && (
-                  <div
-                    className="flex-shrink-0 flex items-center gap-0.5 p-0.5 rounded-lg bg-muted/80 border border-border/60 shadow-sm"
-                    onClick={(e) => e.stopPropagation()}
-                  >
+                  <div className="relative flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                     <button
-                      onClick={() => startEditTitle(conv)}
+                      onClick={() => setActiveMenuId(activeMenuId === conv.id ? null : conv.id)}
                       className={cn(
-                        'p-1.5 rounded-md transition-colors',
+                        'h-7 w-7 inline-flex items-center justify-center rounded-md transition-colors',
+                        'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+                        activeMenuId === conv.id && 'opacity-100',
                         currentConversationId === conv.id
-                          ? 'bg-primary/10 text-primary-foreground hover:bg-primary/20'
-                          : 'bg-background text-foreground hover:bg-accent'
+                          ? 'hover:bg-primary/20 text-primary-foreground'
+                          : 'hover:bg-accent text-foreground'
                       )}
-                      aria-label={`重命名 "${conv.title}"`}
+                      aria-label={`更多操作 ${conv.title}`}
+                      aria-haspopup="menu"
+                      aria-expanded={activeMenuId === conv.id}
                     >
-                      <Edit3 className="w-4 h-4" />
+                      <MoreHorizontal className="w-4 h-4" />
                     </button>
-                    <button
-                      onClick={() => deleteConversation(conv.id)}
-                      className={cn(
-                        'p-1.5 rounded-md transition-colors',
-                        currentConversationId === conv.id
-                          ? 'bg-primary/10 text-destructive-foreground hover:bg-red-500/30'
-                          : 'bg-background text-destructive hover:bg-destructive/10'
-                      )}
-                      aria-label={`删除 "${conv.title}"`}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                    {activeMenuId === conv.id && (
+                      <div
+                        id={`conv-menu-${conv.id}`}
+                        role="menu"
+                        className="absolute right-0 top-full mt-1 z-20 w-36 rounded-lg border border-border/60 bg-popover shadow-lg overflow-hidden py-1"
+                      >
+                        <button
+                          role="menuitem"
+                          onClick={() => {
+                            setActiveMenuId(null)
+                            startEditTitle(conv)
+                          }}
+                          className="w-full px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-accent text-left"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          重命名
+                        </button>
+                        <button
+                          role="menuitem"
+                          onClick={() => {
+                            setActiveMenuId(null)
+                            deleteConversation(conv.id)
+                          }}
+                          className="w-full px-3 py-1.5 text-sm flex items-center gap-2 hover:bg-accent text-left text-destructive"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          删除
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1188,6 +1242,16 @@ export default function ChatHub() {
         {/* 顶部栏 */}
         <div className="h-14 border-b flex items-center justify-between px-4">
           <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => setDrawerOpen((v) => !v)}
+              aria-label={drawerOpen ? '收起对话列表' : '展开对话列表'}
+              title={drawerOpen ? '收起对话列表' : '展开对话列表'}
+            >
+              <PanelLeft className="w-4 h-4" />
+            </Button>
             <Button
               variant="ghost"
               size="sm"
