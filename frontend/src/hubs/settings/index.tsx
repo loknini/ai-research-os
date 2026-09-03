@@ -101,6 +101,7 @@ export default function SettingsHub() {
   const [llmModels, setLlmModels] = useState<string[]>([])
   const [llmModelsLoading, setLlmModelsLoading] = useState(false)
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null)
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
 
   // 设置分类标签（支持 hash 驱动：#/rag → rag tab）
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
@@ -605,12 +606,33 @@ export default function SettingsHub() {
                   模型名称
                 </label>
                 <div className="flex gap-2">
-                  <Input
-                    list="llm-model-list"
-                    placeholder="点击右侧「获取模型」拉取，或手动输入模型名"
-                    value={llmModel}
-                    onChange={(e) => setLlmModel(e.target.value)}
-                  />
+                  <div className="relative flex-1">
+                    <Input
+                      placeholder="点击右侧「获取模型」拉取，或手动输入模型名"
+                      value={llmModel}
+                      onChange={(e) => setLlmModel(e.target.value)}
+                      onFocus={() => llmModels.length > 0 && setModelPickerOpen(true)}
+                      onBlur={() => setTimeout(() => setModelPickerOpen(false), 150)}
+                    />
+                    {modelPickerOpen && llmModels.length > 0 && (
+                      <div className="absolute z-10 mt-1 w-full rounded-md border bg-popover shadow-lg max-h-60 overflow-auto">
+                        {llmModels.map((m) => (
+                          <button
+                            key={m}
+                            type="button"
+                            onMouseDown={(e) => {
+                              e.preventDefault()
+                              setLlmModel(m)
+                              setModelPickerOpen(false)
+                            }}
+                            className="w-full text-left px-3 py-1.5 text-sm hover:bg-accent"
+                          >
+                            {m}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <Button
                     variant="outline"
                     onClick={handleFetchModels}
@@ -629,17 +651,12 @@ export default function SettingsHub() {
                     )}
                   </Button>
                 </div>
-                <datalist id="llm-model-list">
-                  {llmModels.map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
                 {llmModelsError && (
                   <p className="text-xs text-red-600">{llmModelsError}</p>
                 )}
                 {llmModels.length > 0 && !llmModelsError && (
                   <p className="text-xs text-muted-foreground">
-                    已从接口读取 {llmModels.length} 个模型，点击输入框可下拉选择；也可直接输入其它模型名。
+                    已从接口读取 {llmModels.length} 个模型，点击输入框可查看全量 {llmModels.length} 个（扁平展示，不分组）；也可直接输入其它模型名。
                   </p>
                 )}
               </div>
