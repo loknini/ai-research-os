@@ -19,14 +19,14 @@ import os
 import re
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ..deps import get_space_id
 from ..errors import SSE_DONE, sse_error
 from ..llm import LLMUnavailableError, llm_client
-from ..schemas import ChatRequest
-from ..deps import normalize_space_key, DEFAULT_SPACE
 from ..memory import memory_prompt
+from ..schemas import ChatRequest
 from .. import rag_service
 from scripts.chat_agent_stream import SYSTEM_PROMPT, execute_tool, is_skill_tool, TOOLS
 
@@ -109,11 +109,6 @@ def _parse_tool_arguments(raw: Any) -> dict:
     return raw if isinstance(raw, dict) else {}
 
 
-def _space_from_request(request: Request) -> str:
-    """从 ``X-Space-Key`` 头解析空间；缺失则回落默认空间。"""
-    return normalize_space_key(request.headers.get("X-Space-Key")) or DEFAULT_SPACE
-
-
 def _extract_text_from_content(content) -> str:
     """从多模态 content（str 或 list of parts）提取纯文本，用于 RAG 检索等。
     图片 part 直接忽略（只取 text part），避免把 base64 噪声或占位符送进检索查询。"""
@@ -162,8 +157,7 @@ def _filter_cited_sources(answer_text: str, sources: List[dict]) -> List[dict]:
 # --------------------------------------------------------------------------- #
 @router.post("/completions")
 @router.post("/completions/stream")
-async def chat_completions(req: ChatRequest, request: Request):
-    space_id = _space_from_request(request)
+async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_id)):
 
     messages: List[dict] = list(req.messages or [])
     if req.message and not messages:

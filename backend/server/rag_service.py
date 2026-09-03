@@ -414,13 +414,16 @@ def _keyword_score(query_tokens: List[str], content: str) -> float:
     return score
 
 
+_MAX_RETRIEVAL_CHUNKS = 3000  # 单次检索扫描上限，防 OOM（分页思想：DB LIMIT + 内存分批打分）
+
 async def retrieve(space_id: str, question: str, top_k: int = 5,
                    source_ids: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], str, bool]:
     """检索最相关切片，返回 (hits, mode, embed_available)。
 
     mode: 'vector'（向量语义）| 'keyword'（关键词）| 'empty'（无内容）。
+    向量可用时走余弦，否则自动降级关键词（词频）检索；超量时 DB 侧 LIMIT 分页。
     """
-    chunks = await db.database.get_rag_chunks_for_retrieval(space_id, source_ids)
+    chunks = await db.database.get_rag_chunks_for_retrieval(space_id, source_ids, limit=_MAX_RETRIEVAL_CHUNKS)
     if not chunks:
         return [], "empty", False
 
@@ -439,6 +442,7 @@ async def retrieve(space_id: str, question: str, top_k: int = 5,
     any_vec = any(c["embedding"] for c in chunks)
     use_vector = embed_available and q_emb is not None and any_vec
 
+    # 分批打分，避免单次大循环阻塞事件循环
     scored: List[Tuple[float, Dict[str, Any]]] = []
     for c in chunks:
         if use_vector and c["embedding"]:

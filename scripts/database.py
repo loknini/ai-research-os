@@ -330,6 +330,9 @@ async def init_db() -> None:
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON tasks(deadline)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)')
+        # Composite space-aware indexes (space_id first) for hot filtered queries
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_space_project ON tasks(space_id, project_id)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_space_status ON tasks(space_id, status)')
 
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_projects_status ON software_projects(status)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_code_gen_project ON code_generations(project_id)')
@@ -339,6 +342,8 @@ async def init_db() -> None:
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_parent ON notes(parent_note_id)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_space_updated ON notes(space_id, updated_at DESC)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_version_space_entity ON version_history(space_id, entity_type, entity_id)')
 
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_experiments_project ON experiments(project_id)')
@@ -393,8 +398,11 @@ async def init_db() -> None:
         ''')
 
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_conversations_space_updated ON conversations(space_id, updated_at DESC)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_timestamp ON chat_messages(timestamp)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_space_conv ON chat_messages(space_id, conversation_id)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_conv_parent ON chat_messages(conversation_id, parent_id)')
 
         # ---------------- Agent 会话表 ----------------
         await conn.execute('''
@@ -3789,11 +3797,12 @@ async def insert_rag_chunks(chunks: List[Dict[str, Any]], space_id: str = DEFAUL
 
 
 async def get_rag_chunks_for_retrieval(space_id: str = DEFAULT_SPACE,
-                                       source_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """取某空间（可限定来源）的全部切片 + 文档元数据，供检索排序。
+                                       source_ids: Optional[List[str]] = None,
+                                       limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """取某空间（可限定来源）的切片 + 文档元数据，供检索排序。
 
     返回 list[dict]: id, sourceId, docId, content, embedding(list|None),
-    pageStart, pageEnd, fileName, filePath, fileType。
+    pageStart, pageEnd, fileName, filePath, fileType。`limit` 用于分页防 OOM。
     """
     async with get_db() as conn:
         if source_ids:
@@ -3813,6 +3822,9 @@ async def get_rag_chunks_for_retrieval(space_id: str = DEFAULT_SPACE,
                 "WHERE c.space_id = ?"
             )
             params = [space_id]
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
         rows = await _fetchall(conn, query, params)
         out: List[Dict[str, Any]] = []
         for r in rows:

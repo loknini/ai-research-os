@@ -294,7 +294,7 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 ---
 
-## 13. 设置 `settings.py` — prefix `/api/settings` · 全局
+## 13. 设置 `settings.py` — prefix `/api/settings` · 全局（无 `X-Space-Key`，任意空间可读写，影响全局）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -303,18 +303,18 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 | GET | `/api/settings/llm/models?baseUrl=&apiKey=` | 拉取模型列表，兼容 OpenAI `data[].id` 与 Ollama `models[].name`，去重保序 |
 | POST | `/api/settings/llm/test` | 发一条 `max_tokens=1` 的 ping，报告延迟；对 401/403/404/429 给出中文诊断 |
 
-> 保存后**当前进程立即生效**，无需重启；但多 worker 模式下只有处理该请求的 worker 会热更新，其余 worker 靠 `.env` 在下次重启后对齐。**多 worker 下改配置建议重启服务。**
+> 全局配置：多 worker 下仅当前 worker 热生效，其余靠 `.env` 重启后对齐；内网场景下任何空间均可修改。保存后**当前进程立即生效**。
 
 ---
 
-## 14. 技能 `skills.py` — prefix `/api/skills` · 全局
+## 14. 技能 `skills.py` — prefix `/api/skills` · 混合（列表/启停为全局，`run` 按空间）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/api/skills` | 列出全部技能（含已禁用），带 `type`/`enabled`/`hasScript`/`path` |
-| POST | `/api/skills/reload` | 重扫技能目录，返回生效数量 |
-| POST | `/api/skills/{name}/enabled` | 启停（改写 SKILL.md frontmatter 的 `enabled` 行） |
-| POST | `/api/skills/{name}/run` | 直接调用技能 |
+| GET | `/api/skills` | 列出全部技能（含已禁用），带 `type`/`enabled`/`hasScript`/`path`（全局） |
+| POST | `/api/skills/reload` | 重扫技能目录，返回生效数量（全局） |
+| POST | `/api/skills/{name}/enabled` | 启停（改写 SKILL.md，**全局生效**） |
+| POST | `/api/skills/{name}/run` | 直接调用技能（按 `X-Space-Key` 空间） |
 
 ---
 
@@ -336,14 +336,14 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 ---
 
-## 16. 备份 `backup.py` — prefix `/api/backup` · 全局
+## 16. 备份 `backup.py` — prefix `/api/backup` · 全局（无 `X-Space-Key`，导出即全租户数据）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/backup/export` | 整个 `DATA_DIR` 打包为 zip 流式返回，含 `manifest.json`；DB 先复制到临时文件再入包；排除 `.git`/`.swanlab`/`.cache`/`__pycache__` |
 | POST | `/api/backup/import` | 上传 zip（字段名 `file`，≤500MB，仅 `.zip`）：校验 manifest `app == ai-research-os` → Zip Slip 防护 → `testzip()` → 先 `copytree` 到 `.backup-<时间戳>` → 再覆盖 |
 
-> 导入是**整库覆盖**，会替换所有空间的数据。DB 被占用时通过响应里的 `note` 字段报告，不抛错。
+> 全局操作：**整库覆盖**替换所有空间数据，仅适用于可信内网；内网中任何空间均可触发导出，需注意数据外泄风险。DB 被占用时通过 `note` 字段报告。
 
 ---
 

@@ -54,40 +54,14 @@ except Exception:  # pragma: no cover - 独立 CLI 回退
 
 def call_llm(messages: List[Dict[str, str]], temperature: float = 0.7,
              model: Optional[str] = None, max_tokens: Optional[int] = None) -> str:
-    """调用 LLM；优先走可配置的 llm.py，失败回退到本地 urllib 实现。"""
-    if llm_client is not None:
-        try:
-            text = llm_client.call_llm(
-                messages, temperature=temperature, model=model, max_tokens=max_tokens)
-            if text is None:
-                raise LLMUnavailableError("LLM 返回空响应（服务不可用）")
-            return text
-        except LLMUnavailableError:
-            raise
-    return _legacy_call_llm(messages, temperature)
-
-
-def _legacy_call_llm(messages: List[Dict[str, str]], temperature: float = 0.7) -> str:
-    """旧的 LLM urllib 实现（独立 CLI 运行时使用）。"""
-    try:
-        url = f"{os.environ.get('LLM_BASE_URL', 'http://localhost:11434/v1')}/chat/completions"
-        data = {
-            "model": os.environ.get('LLM_MODEL', 'deepseek-chat'),
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": 4000,
-            "stream": False,
-        }
-        req = urllib.request.Request(
-            url, data=json.dumps(data).encode('utf-8'),
-            headers={'Content-Type': 'application/json'}, method='POST'
-        )
-        if os.environ.get('LLM_API_KEY'):
-            req.add_header('Authorization', f'Bearer {os.environ["LLM_API_KEY"]}')
-        with urllib.request.urlopen(req, timeout=120) as response:
-            return json.loads(response.read().decode('utf-8'))['choices'][0]['message']['content']
-    except Exception as e:
-        return f"Error: {str(e)}"
+    """调用 LLM（唯一走 ``backend.server.llm``，无本地重复实现）。"""
+    if llm_client is None:
+        raise LLMUnavailableError("LLM 客户端不可用")
+    text = llm_client.call_llm(
+        messages, temperature=temperature, model=model, max_tokens=max_tokens)
+    if text is None:
+        raise LLMUnavailableError("LLM 返回空响应（服务不可用）")
+    return text
 
 
 # --------------------------------------------------------------------------- #

@@ -191,8 +191,7 @@ STATIC_TOOLS = [
 TOOLS = _registry_tools() if _HAS_REGISTRY else STATIC_TOOLS + get_skill_tools()
 
 
-# 导入数据库操作
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 数据库操作通过正规包导入（scripts 为正规包，无 sys.path hack）
 
 # 延迟导入数据库模块（已迁移到 aiosqlite 异步）
 def _run_db(coro):
@@ -329,78 +328,12 @@ def _safe_json(arguments) -> dict:
 
 
 def _legacy_stream(messages: list, tools=None):
-    """独立 CLI 回退：stdlib urllib 实现，产出与 ``LLMClient.stream_llm`` 相同的 item 契约。
-
-    契约：逐块 yield ``str`` 文本增量；流结束后若模型请求工具调用，再 yield 至多一个
-    ``{"tool_calls": [...]}`` 字典。失败时抛出 ``LLMUnavailableError``。
-    """
-    url = f"{HTTP_URL}/v1/chat/completions"
-    payload = {
-        "model": os.environ.get('LLM_MODEL', 'deepseek-chat'),
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 4000,
-        "stream": True,
-    }
-    if tools:
-        payload["tools"] = tools
-        payload["tool_choice"] = "auto"
-
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
-        method='POST',
-    )
-    if GATEWAY_TOKEN:
-        req.add_header('Authorization', f'Bearer {GATEWAY_TOKEN}')
-
-    tool_acc: dict = {}
+    """独立 CLI 回退：委托唯一 LLM 客户端（避免与 llm.py 重复）。"""
     try:
-        with urllib.request.urlopen(req, timeout=120) as response:
-            for line in response:
-                line = line.decode('utf-8').strip()
-
-                if not line or line.startswith(':') or not line.startswith('data:'):
-                    continue
-
-                chunk = line[5:].strip()
-                if chunk == '[DONE]':
-                    break
-
-                try:
-                    obj = json.loads(chunk)
-                except json.JSONDecodeError:
-                    continue
-
-                delta = obj.get('choices', [{}])[0].get('delta', {})
-                content = delta.get('content')
-                if content:
-                    yield content
-
-                for tc in (delta.get('tool_calls') or []):
-                    idx = tc.get('index', 0)
-                    slot = tool_acc.setdefault(idx, {"id": "", "name": "", "arguments": ""})
-                    if tc.get('id'):
-                        slot['id'] = tc['id']
-                    fn = tc.get('function') or {}
-                    if fn.get('name'):
-                        slot['name'] += fn['name']
-                    if fn.get('arguments'):
-                        slot['arguments'] += fn['arguments']
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, ConnectionError) as exc:
-        raise LLMUnavailableError(str(exc)) from exc
-
-    if tool_acc:
-        calls = []
-        for idx in sorted(tool_acc.keys()):
-            slot = tool_acc[idx]
-            try:
-                parsed_args = json.loads(slot['arguments']) if slot['arguments'] else {}
-            except json.JSONDecodeError:
-                parsed_args = slot['arguments']
-            calls.append({"id": slot['id'], "name": slot['name'], "arguments": parsed_args})
-        yield {"tool_calls": calls}
+        from backend.server.llm import llm_client as _client
+    except Exception as exc:
+        raise LLMUnavailableError(f"LLM 客户端不可用: {exc}") from exc
+    yield from _client.stream_llm(messages, tools=tools)
 
 
 def _run_stream(formatted_messages: list, streamer) -> None:

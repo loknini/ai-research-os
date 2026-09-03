@@ -90,28 +90,26 @@ function App() {
         <div className="flex h-screen">
           <Sidebar />
           <main className="flex-1 overflow-hidden">
-            <ErrorBoundary>
-              <Suspense fallback={<RouteFallback />}>
-                <Routes>
-                  <Route path="/" element={<Dashboard />} />
-                  <Route path="/chat" element={<ChatHub />} />
-                  <Route path="/paper" element={<PaperHub />} />
-                  <Route path="/teams" element={<TeamsHub />} />
-                  <Route path="/lab" element={<LabHub />} />
-                  {/* 旧路由保留可直达：研发实验已合并进 /lab */}
-                  <Route path="/software" element={<Navigate to="/lab" replace />} />
-                  <Route path="/experiment" element={<Navigate to="/lab?tab=experiment" replace />} />
-                  <Route path="/knowledge" element={<KnowledgeHub />} />
-                  <Route path="/task" element={<TaskHub />} />
-                  <Route path="/formula" element={<FormulaHub />} />
-                  <Route path="/citation" element={<CitationHub />} />
-                  <Route path="/agent-runs" element={<AgentRunsHub />} />
-                  <Route path="/cron" element={<CronHub />} />
-                  <Route path="/settings" element={<SettingsHub />} />
-                  <Route path="*" element={<NotFound />} />
-                </Routes>
-              </Suspense>
-            </ErrorBoundary>
+            <Suspense fallback={<RouteFallback />}>
+              <Routes>
+                <Route path="/" element={<ErrorBoundary><Dashboard /></ErrorBoundary>} />
+                <Route path="/chat" element={<ErrorBoundary><ChatHub /></ErrorBoundary>} />
+                <Route path="/paper" element={<ErrorBoundary><PaperHub /></ErrorBoundary>} />
+                <Route path="/teams" element={<ErrorBoundary><TeamsHub /></ErrorBoundary>} />
+                <Route path="/lab" element={<ErrorBoundary><LabHub /></ErrorBoundary>} />
+                {/* 旧路由保留可直达：研发实验已合并进 /lab */}
+                <Route path="/software" element={<Navigate to="/lab" replace />} />
+                <Route path="/experiment" element={<Navigate to="/lab?tab=experiment" replace />} />
+                <Route path="/knowledge" element={<ErrorBoundary><KnowledgeHub /></ErrorBoundary>} />
+                <Route path="/task" element={<ErrorBoundary><TaskHub /></ErrorBoundary>} />
+                <Route path="/formula" element={<ErrorBoundary><FormulaHub /></ErrorBoundary>} />
+                <Route path="/citation" element={<ErrorBoundary><CitationHub /></ErrorBoundary>} />
+                <Route path="/agent-runs" element={<ErrorBoundary><AgentRunsHub /></ErrorBoundary>} />
+                <Route path="/cron" element={<ErrorBoundary><CronHub /></ErrorBoundary>} />
+                <Route path="/settings" element={<ErrorBoundary><SettingsHub /></ErrorBoundary>} />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Suspense>
           </main>
           <GlobalToastContainer />
           <ChatPanel />
