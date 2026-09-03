@@ -49,9 +49,6 @@ export function ContextRing({ value, limit, compressed, expanded, onToggle }: Pr
         </svg>
         <span className="absolute text-[8px] font-semibold tabular-nums leading-none">{pctLabel}</span>
       </button>
-      <span className="text-xs tabular-nums text-muted-foreground">
-        {value.toLocaleString()}/{limit.toLocaleString()}
-      </span>
       {expanded && (
         <div className="absolute right-0 top-full mt-1 z-20 w-64 rounded-lg border border-border/60 bg-popover p-3 shadow-lg text-xs space-y-1.5">
           <div className="flex items-center justify-between">

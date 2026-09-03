@@ -998,41 +998,6 @@ export default function ChatHub() {
     [showToast]
   )
 
-  // 清空当前会话（删除并创建新会话）
-  const clearCurrentConversation = useCallback(async () => {
-    if (!currentConversationId) return
-    
-    const oldId = currentConversationId
-    const title = currentConversation?.title || '新对话'
-    
-    // 删除旧会话
-    await deleteConversationAPI(oldId)
-    
-    // 创建新会话
-    const newConversation: Conversation = {
-      id: generateId(),
-      title,
-      messages: [
-        {
-          id: generateId(),
-          role: 'system',
-          content: '你是 AI Research OS 的 AI 助手，专门帮助研究人员管理论文、任务、项目和实验。',
-          timestamp: Date.now(),
-        },
-      ],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }
-    
-    await createConversationAPI(newConversation)
-    
-    // 更新本地状态
-    setConversations((prev) => [newConversation, ...prev.filter(c => c.id !== oldId)])
-    setCurrentConversationId(newConversation.id)
-    setCurrentConversation(newConversation)
-    showToast('会话已清空', 'success')
-  }, [currentConversationId, currentConversation?.title, showToast, setCurrentConversationId])
-
   // 派生：当前对话最新分支点的版本提示（用于顶部栏显示"第 X / N 个版本"）
   const branchTip = useMemo(() => {
     const msgs = currentConversation?.messages || []
@@ -1236,15 +1201,6 @@ export default function ChatHub() {
             <h2 className="font-semibold">
               {currentConversation?.title || 'AI 助手'}
             </h2>
-            {contextInfo && (
-              <ContextRing
-                value={contextInfo.estimated_tokens}
-                limit={contextInfo.limit}
-                compressed={contextInfo.compressed}
-                expanded={ctxExpanded}
-                onToggle={() => setCtxExpanded((v) => !v)}
-              />
-            )}
             {branchTip && (
               <span
                 className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
@@ -1256,6 +1212,15 @@ export default function ChatHub() {
           </div>
           {currentConversation && (
             <div className="flex items-center gap-2">
+              {contextInfo && (
+                <ContextRing
+                  value={contextInfo.estimated_tokens}
+                  limit={contextInfo.limit}
+                  compressed={contextInfo.compressed}
+                  expanded={ctxExpanded}
+                  onToggle={() => setCtxExpanded((v) => !v)}
+                />
+              )}
               {/* 知识增强开关 + 来源筛选 */}
               <div className="flex items-center gap-1.5">
                 <Button
@@ -1328,15 +1293,6 @@ export default function ChatHub() {
                   </div>
                 )}
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={clearCurrentConversation}
-                disabled={currentConversation.messages.length <= 1}
-              >
-                <Trash2 className="w-4 h-4 mr-1" />
-                清空
-              </Button>
             </div>
           )}
         </div>
