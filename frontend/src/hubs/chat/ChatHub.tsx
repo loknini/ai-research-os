@@ -1292,14 +1292,7 @@ export default function ChatHub() {
                                     type="checkbox"
                                     checked={checked}
                                     onChange={() => {
-                                      setRagSourceIds((prev) => {
-                                        const next = checked ? prev.filter((id) => id !== s.id) : [...prev, s.id]
-                                        if (next.length === 0) {
-                                          showToast('至少保留一个信源，或关闭知识增强', 'error')
-                                          return prev
-                                        }
-                                        return next
-                                      })
+                                      setRagSourceIds((prev) => (checked ? prev.filter((id) => id !== s.id) : [...prev, s.id]))
                                     }}
                                   />
                                   <span className="truncate">{s.name}</span>

@@ -418,11 +418,14 @@ _MAX_RETRIEVAL_CHUNKS = 3000  # 单次检索扫描上限，防 OOM（分页思�
 
 async def retrieve(space_id: str, question: str, top_k: int = 5,
                    source_ids: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], str, bool]:
-    """检索最相关切片，返回 (hits, mode, embed_available)。
+    """检索最相关切片，返回 (hits, mode, embed_available).
 
     mode: 'vector'（向量语义）| 'keyword'（关键词）| 'empty'（无内容）。
     向量可用时走余弦，否则自动降级关键词（词频）检索；超量时 DB 侧 LIMIT 分页。
+    source_ids=[] 显式表示不检索任何源（用于前端取消全部勾选），此时直接返回 empty。
     """
+    if source_ids is not None and len(source_ids) == 0:
+        return [], "empty", False
     chunks = await db.database.get_rag_chunks_for_retrieval(space_id, source_ids, limit=_MAX_RETRIEVAL_CHUNKS)
     if not chunks:
         return [], "empty", False

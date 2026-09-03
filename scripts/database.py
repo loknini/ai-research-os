@@ -3814,7 +3814,9 @@ async def get_rag_chunks_for_retrieval(space_id: str = DEFAULT_SPACE,
     pageStart, pageEnd, fileName, filePath, fileType。`limit` 用于分页防 OOM。
     """
     async with get_db() as conn:
-        if source_ids:
+        if source_ids is not None and len(source_ids) == 0:
+            return []
+        if source_ids is not None and len(source_ids) > 0:
             placeholders = ",".join("?" for _ in source_ids)
             query = (
                 "SELECT c.id, c.source_id, c.doc_id, c.content, c.embedding, c.page_start, "

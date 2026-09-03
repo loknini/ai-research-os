@@ -41,7 +41,7 @@ const streamChatCompletion = async (
       body: JSON.stringify({
         messages: apiMessages,
         rag_enabled: rag?.enabled ?? false,
-        rag_source_ids: rag?.sourceIds && rag.sourceIds.length > 0 ? rag.sourceIds : null,
+        rag_source_ids: rag?.sourceIds ?? null,
       }),
       signal,
     })
