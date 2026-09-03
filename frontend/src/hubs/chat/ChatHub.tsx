@@ -41,6 +41,19 @@ import { chatGenerationManager } from './services/chatGenerationManager'
 import MessageContent from './components/MessageContent'
 import { useAppStore } from '@/stores/appStore'
 
+// 本地 token 估算（与 backend/server/context.py:28 同款 CJK=1 / 其它非空=0.25）
+function estimateTokensLocal(messages: any[]): number {
+  let total = 0
+  for (const m of messages || []) {
+    const c = typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')
+    for (const ch of c) {
+      if (ch >= '一' && ch <= '鿿' || ch >= '぀' && ch <= 'ヿ' || ch >= '가' && ch <= '힯') total += 1
+      else if (!/\s/.test(ch)) total += 0.25
+    }
+  }
+  return Math.floor(total)
+}
+
 // 从多模态 content（str 或 parts[]）提取纯文本，用于标题 / 编辑 / 复制等场景。
 function extractTextFromContent(content: string | ChatContentPart[]): string {
   if (typeof content === 'string') return content
@@ -452,19 +465,19 @@ export default function ChatHub() {
   // 流式生成期间已返回的 RAG 来源（用于实时在正文中渲染引用角标）
   const [streamingRagSources, setStreamingRagSources] = useState<RagSource[]>([])
 
-  // RAG 文档检索接地：按会话持久化（存 conversation.metadata.rag）
+  // 知识增强（原 RAG 文档检索）：按会话持久化（存 conversation.metadata.rag 兼容旧键，显示为“知识增强”）
   const [ragEnabled, setRagEnabled] = useState(false)
   const [ragSourceIds, setRagSourceIds] = useState<string[]>([])
   const [ragSourcesList, setRagSourcesList] = useState<{ id: string; name: string }[]>([])
   const [ragPickerOpen, setRagPickerOpen] = useState(false)
 
-  // 切换 RAG 开关（持久化由 persist effect 自动处理）
+  // 切换知识增强开关（持久化由 persist effect 自动处理）
   const toggleRag = useCallback((next: boolean) => {
     setRagEnabled(next)
     if (!next) setRagPickerOpen(false)
   }, [])
 
-  // RAG 开启时拉取当前空间已索引源列表（无论由用户 toggle 还是会话同步触发）
+  // 知识增强开启时拉取当前空间已索引源列表（无论由用户 toggle 还是会话同步触发）
   useEffect(() => {
     if (!ragEnabled) {
       setRagPickerOpen(false)
@@ -607,16 +620,25 @@ export default function ChatHub() {
     return unsub
   }, [currentConversationId, loadConversationDetail])
 
-  // 切换会话时，从会话 metadata 恢复 RAG 设置
+  // 切换会话时，从会话 metadata 恢复 RAG/上下文设置；本地即时估算兜底
   useEffect(() => {
     if (!currentConversation) {
       lastRagSyncId.current = null
+      setContextInfo(null)
       return
     }
     const ragMeta = currentConversation.metadata?.rag
     lastRagSyncId.current = currentConversation.id
     setRagEnabled(ragMeta?.enabled ?? false)
     setRagSourceIds(ragMeta?.sourceIds ?? [])
+    const ctxMeta = (currentConversation.metadata as any)?.context
+    if (ctxMeta?.estimated_tokens) {
+      setContextInfo(ctxMeta)
+    } else {
+      const est = estimateTokensLocal(currentConversation.messages as any)
+      if (est > 0) setContextInfo({ estimated_tokens: est, limit: 16000, compressed: false })
+      else setContextInfo(null)
+    }
   }, [currentConversation])
 
   // RAG 设置变更时持久化到会话 metadata（跳过同步触发的变更以避免循环）
@@ -637,6 +659,18 @@ export default function ChatHub() {
       },
     })
   }, [ragEnabled, ragSourceIds])
+
+  // 上下文估算持久化：每次流式 context 事件更新后写回 metadata，绑定对话
+  useEffect(() => {
+    const convId = currentConvIdRef.current
+    if (!convId || !contextInfo) return
+    const existingMeta = currentConvRef.current?.metadata || {}
+    const prevCtx = (existingMeta as any)?.context
+    if (prevCtx?.estimated_tokens === contextInfo.estimated_tokens && prevCtx?.compressed === contextInfo.compressed) return
+    updateConversationAPI(convId, {
+      metadata: { ...existingMeta, context: contextInfo } as any,
+    })
+  }, [contextInfo])
 
   // 自动滚动到底部
   const scrollToBottom = useCallback(() => {
@@ -687,6 +721,18 @@ export default function ChatHub() {
       setConversations((prev) => [created, ...prev])
       setCurrentConversationId(created.id)
       setCurrentConversation(created)
+      // 知识增强默认开启：若当前空间已有索引源，自动开启（否则保持关闭避免空提示）
+      fetch('/api/rag/sources')
+        .then((r) => r.json())
+        .then((data) => {
+          const hasSources = (data.sources || []).length > 0
+          if (hasSources) {
+            setRagEnabled(true)
+            // 持久化到新会话 metadata（兼容旧 rag 键）
+            updateConversationAPI(created.id, { metadata: { ...(created.metadata || {}), rag: { enabled: true, sourceIds: [] } } })
+          }
+        })
+        .catch(() => {})
       return created
     } else {
       showToast('创建对话失败', 'error')
@@ -1185,16 +1231,16 @@ export default function ChatHub() {
           </div>
           {currentConversation && (
             <div className="flex items-center gap-2">
-              {/* RAG 文档检索接地开关 + 来源筛选 */}
+              {/* 知识增强开关 + 来源筛选 */}
               <div className="flex items-center gap-1.5">
                 <Button
                   variant={ragEnabled ? 'default' : 'ghost'}
                   size="sm"
                   onClick={() => toggleRag(!ragEnabled)}
-                  title="启用文档检索（RAG）：基于已索引文档回答并标注引用出处"
+                  title="启用知识增强（RAG）：基于已索引文档回答并标注引用出处"
                 >
                   <BookOpen className="w-4 h-4 mr-1" />
-                  {ragEnabled ? '文档检索·开' : '文档检索'}
+                  {ragEnabled ? '知识增强·开' : '知识增强'}
                 </Button>
                 {ragEnabled && (
                   <div className="relative" id="rag-source-picker-anchor">
@@ -1217,28 +1263,47 @@ export default function ChatHub() {
                             暂无已索引文档
                           </p>
                         ) : (
-                          ragSourcesList.map((s) => {
-                            const checked = ragSourceIds.includes(s.id)
-                            return (
-                              <label
-                                key={s.id}
-                                className="flex items-center gap-2 px-1.5 py-1.5 rounded hover:bg-accent cursor-pointer text-sm"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={() =>
-                                    setRagSourceIds((prev) =>
-                                      checked
-                                        ? prev.filter((id) => id !== s.id)
-                                        : [...prev, s.id]
-                                    )
-                                  }
-                                />
-                                <span className="truncate">{s.name}</span>
-                              </label>
-                            )
-                          })
+                          <>
+                            <label className="flex items-center gap-2 px-1.5 py-1.5 rounded hover:bg-accent cursor-pointer text-sm font-medium border-b border-border/40 mb-1">
+                              <input
+                                type="checkbox"
+                                checked={ragSourceIds.length === 0}
+                                onChange={() => setRagSourceIds((prev) => (prev.length === 0 ? ragSourcesList.map((s) => s.id) : []))}
+                              />
+                              <span>全部来源 {ragSourceIds.length === 0 ? '(已选全部)' : `(已选 ${ragSourceIds.length}/${ragSourcesList.length})`}</span>
+                            </label>
+                            {ragSourcesList.map((s) => {
+                              const checked = ragSourceIds.length === 0 || ragSourceIds.includes(s.id)
+                              // 空数组=全选，展示为勾选态，取消单个即转为显式列表
+                              return (
+                                <label
+                                  key={s.id}
+                                  className="flex items-center gap-2 px-1.5 py-1.5 rounded hover:bg-accent cursor-pointer text-sm"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => {
+                                      if (ragSourceIds.length === 0) {
+                                        // 从全选态取消一个：转为排除该项的显式列表
+                                        setRagSourceIds(ragSourcesList.filter((x) => x.id !== s.id).map((x) => x.id))
+                                      } else {
+                                        setRagSourceIds((prev) =>
+                                          checked ? prev.filter((id) => id !== s.id) : [...prev, s.id]
+                                        )
+                                        // 若全部勾选则回归空数组（全选语义）
+                                        // 延迟判断：若新长度等于总数则归空
+                                        setTimeout(() => {
+                                          setRagSourceIds((cur) => (cur.length === ragSourcesList.length ? [] : cur))
+                                        }, 0)
+                                      }
+                                    }}
+                                  />
+                                  <span className="truncate">{s.name}</span>
+                                </label>
+                              )
+                            })}
+                          </>
                         )}
                       </div>
                     )}
@@ -1258,12 +1323,12 @@ export default function ChatHub() {
           )}
         </div>
 
-        {/* RAG 已开启但无已索引源时的提示条 */}
+        {/* 知识增强已开启但无已索引源时的提示条 */}
         {ragEnabled && ragSourcesList.length === 0 && (
           <div className="flex items-center gap-2 px-4 py-2 bg-amber-500/5 border-b border-amber-500/20 text-sm">
             <BookOpen className="w-4 h-4 text-amber-600 flex-shrink-0" />
             <span className="text-amber-700">
-              当前空间还没有已索引的文档，RAG 接地将无法生效。
+              当前空间还没有已索引的文档，知识增强将无法生效。
             </span>
             <button
               onClick={() => navigate('/settings#rag')}

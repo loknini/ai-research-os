@@ -61,13 +61,13 @@ except Exception:  # pragma: no cover - 独立 CLI 回退
 SYSTEM_PROMPT = """你是 AI Research OS 的智能助手，专门帮助研究人员管理论文、任务、项目和实验。
 
 你可以使用以下工具来帮助用户：
-1. **fetch_papers** - 从 arXiv 抓取论文（参数：keywords 关键词，max_results 最大数量）
-2. **create_task** - 创建新任务（参数：title 标题，description 描述，priority 优先级）
-3. **create_project** - 创建软件项目（参数：name 名称，description 描述）
-4. **create_note** - 创建知识笔记（参数：title 标题，content 内容）
-5. **get_stats** - 获取系统统计数据（无参数）
+1. **create_task** - 创建新任务（参数：title 标题，description 描述，priority 优先级）
+2. **create_project** - 创建软件项目（参数：name 名称，description 描述）
+3. **create_note** - 创建知识笔记（参数：title 标题，content 内容）
+4. **get_stats** - 获取系统统计数据（无参数）
+如需联网搜索或 arXiv 论文，请调用技能工具 `web_search` / `arxiv_reader`。
 
-当用户请求你执行上述操作时，请通过工具（tools）接口调用对应的工具，由系统负责执行并反馈结果；不要自行拼装工具调用文本。只有在需要直接向用户解释或回答问题时才输出自然语言文本。
+当任务涉及创建/保存/查论文/联网搜索时，请通过工具（tools）接口调用对应工具，由系统执行并反馈结果；普通问答、解释、闲聊请直接用自然语言回答，无需调用工具。不要自行拼装工具调用文本。
 
 **绝对铁律（回复前必须自检）**：
 1. 任何关于"创建""保存""生成""记录"的陈述，必须基于本回合确实发生了对应的工具调用（function_call）。如果本回合没有调用 `create_note` / `create_task` / `create_project` 等写入工具，你就**禁止**说"已为你创建""已为你保存""已生成笔记《xxx》""已创建任务""已记录"等任何暗示数据已写入系统的措辞。
@@ -82,30 +82,8 @@ SYSTEM_PROMPT = """你是 AI Research OS 的智能助手，专门帮助研究人
 请用中文回答，保持专业、友好且简洁。"""
 
 
-# OpenAI 函数调用格式的工具描述（静态 5 个）
+# OpenAI 函数调用格式的工具描述（静态 4 个，已移除 fetch_papers）
 STATIC_TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_papers",
-            "description": "从 arXiv 抓取与关键词相关的论文列表",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "keywords": {
-                        "type": "string",
-                        "description": "搜索关键词，例如 'transformer' 或 'large language model'",
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "最大返回数量",
-                        "default": 10,
-                    },
-                },
-                "required": ["keywords"],
-            },
-        },
-    },
     {
         "type": "function",
         "function": {
@@ -187,7 +165,7 @@ STATIC_TOOLS = [
     },
 ]
 
-# 工具清单：后端可达时来自注册表（内置工具 + 技能工具），否则静态 5 个 + 技能。
+# 工具清单：后端可达时来自注册表（内置工具 + 技能工具），否则静态 4 个 + 技能。
 TOOLS = _registry_tools() if _HAS_REGISTRY else STATIC_TOOLS + get_skill_tools()
 
 

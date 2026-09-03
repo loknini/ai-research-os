@@ -44,31 +44,6 @@ def _resolve_space(space_id: Optional[str]) -> str:
 
 
 @register_tool(
-    "fetch_papers",
-    description="从 arXiv 抓取与关键词相关的论文列表",
-    parameters={
-        "type": "object",
-        "properties": {
-            "keywords": {"type": "string", "description": "搜索关键词，例如 'transformer'"},
-            "max_results": {"type": "integer", "description": "最大返回数量", "default": 10},
-        },
-        "required": ["keywords"],
-    },
-    policy=POLICY_SAFE,
-)
-def fetch_papers(params: Dict[str, Any], space_id: Optional[str] = None) -> Dict[str, Any]:
-    """获取论文列表：引导模型使用专用技能（web_search / arxiv_reader）获取实时数据。"""
-    keywords = params.get("keywords", "")
-    return {
-        "success": False,
-        "message": (
-            f"fetch_papers 已停用直接抓取，请改用技能工具 `web_search`（联网搜索）"
-            f"或 `arxiv_reader`（读取 arXiv 论文）获取关键词「{keywords}」的论文信息。"
-        ),
-    }
-
-
-@register_tool(
     "create_task",
     description="创建一个新的任务",
     parameters={

@@ -23,7 +23,7 @@ import database
 from database import DEFAULT_SPACE
 
 # Constants
-ARXIV_API_URL = "http://export.arxiv.org/api/query"
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
 DEFAULT_DATA_DIR = Path(__file__).parent.parent / "data"
 MAX_RESULTS = 50
 
