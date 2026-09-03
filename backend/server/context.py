@@ -20,8 +20,16 @@ from typing import Dict, List, Optional, Tuple
 
 from .llm import llm_client
 
-# 默认上下文预算（token 估算）与保留条数。
-CONTEXT_TOKEN_LIMIT = int(os.environ.get("CONTEXT_TOKEN_LIMIT", "16000"))
+# 默认上下文预算（随模型动态，默认 512K 回落，未命中 MODEL_CONTEXT 时512K）。
+def _default_context_limit() -> int:
+    try:
+        from .config import get_effective_llm_settings
+
+        return int(get_effective_llm_settings().get("contextWindow", 512_000))
+    except Exception:
+        return int(os.environ.get("CONTEXT_TOKEN_LIMIT", "512000"))
+
+CONTEXT_TOKEN_LIMIT = _default_context_limit()
 KEEP_LAST_MESSAGES = int(os.environ.get("CONTEXT_KEEP_LAST_MESSAGES", "6"))
 
 

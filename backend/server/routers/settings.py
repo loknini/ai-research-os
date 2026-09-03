@@ -273,11 +273,17 @@ async def list_llm_models(baseUrl: str = "", apiKey: str = ""):
             ordered.append(m)
 
     if not ordered:
+        # Key 模型无关，/models 空时回落常见模型，避免前端选不到 2.5-flash
+        fallback = ["agnes-2.5-flash", "agnes-2.5-pro", "agnes-2.0-flash"]
         return {
-            "success": False,
-            "message": "未在该端点找到模型列表（响应格式非标准）",
-            "models": [],
+            "success": True,
+            "message": "模型列表为空，已回落常用模型；Key 全局可用，直接填模型名直调 /v1/chat/completions 即可",
+            "models": fallback,
         }
+    # 确保 2.5-flash 始终可见（Key 模型无关，/models 可能滞后）
+    for must in ["agnes-2.5-flash", "agnes-2.0-flash"]:
+        if must not in ordered:
+            ordered.append(must)
     return {"success": True, "models": ordered}
 
 

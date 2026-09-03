@@ -149,6 +149,17 @@ def _read_all_global_configs_sync() -> dict:
         return {}
 
 
+MODEL_CONTEXT = {
+    "agnes-2.5-flash": 512_000,
+    "agnes-2.0-flash": 256_000,
+    "agnes-1.5-flash": 256_000,
+}
+
+
+def _context_for_model(model: str) -> int:
+    return MODEL_CONTEXT.get((model or "").strip(), 512_000)
+
+
 def get_effective_llm_settings() -> dict:
     """返回当前生效的 LLM 配置（DB 优先，TTL 缓存，多 worker 可见）。"""
     global _LLM_CACHE, _LLM_CACHE_EXPIRES
@@ -162,15 +173,17 @@ def get_effective_llm_settings() -> dict:
             return db_vals[key]
         return getattr(settings, attr) or ""
 
+    model = _pick("LLM_MODEL", "llm_model")
     cfg = {
         "baseUrl": _pick("LLM_BASE_URL", "llm_base_url"),
         "apiKey": _pick("LLM_API_KEY", "llm_api_key"),
-        "model": _pick("LLM_MODEL", "llm_model"),
+        "model": model,
         "temperature": db_vals.get("LLM_TEMPERATURE", str(settings.llm_temperature)),
         "maxTokens": db_vals.get("LLM_MAX_TOKENS", str(settings.llm_max_tokens)),
         "timeout": db_vals.get("LLM_TIMEOUT", str(settings.llm_timeout)),
         "httpPath": _pick("LLM_HTTP_PATH", "llm_http_path"),
         "embedModel": _pick("LLM_EMBED_MODEL", "llm_embed_model"),
+        "contextWindow": _context_for_model(model),
     }
     # 类型归一
     try:
