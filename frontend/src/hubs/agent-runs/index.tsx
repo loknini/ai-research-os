@@ -7,6 +7,8 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { cn } from '@/utils'
 import { toast } from '@/components/ui/toast'
 import { useNavigate } from 'react-router-dom'
+import { RunGraph } from './components/RunGraph'
+import { DAG_NAME_MAP } from '@/utils/agentNodes'
 import {
   History,
   RefreshCw,
@@ -47,6 +49,11 @@ interface RunSummary {
   phase?: string
   iteration?: number
   maxIterations?: number
+  teamSnapshot?: {
+    nodes?: Array<{ id: string; name?: string; position?: { x: number; y: number } }>
+    edges?: Array<{ id?: string; source: string; target: string }>
+    outputNodeId?: string
+  } | null
 }
 
 interface RunNode {
@@ -138,6 +145,7 @@ export default function AgentRunsHub() {
   const [replay, setReplay] = useState<ReplayMessage[]>([])
   const [replayLoading, setReplayLoading] = useState(false)
   const [replayLoaded, setReplayLoaded] = useState(false)
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
 
   const hasRunning = runs.some((r) => r.status === 'running' || r.status === 'pending')
 
@@ -188,6 +196,7 @@ export default function AgentRunsHub() {
     setDetailTab('events')
     setReplayLoaded(false)
     setReplay([])
+    setSelectedNodeId(null)
     try {
       const ok = await fetchDetail(id)
       if (!ok) toast({ title: '加载运行详情失败', variant: 'error' })
@@ -393,22 +402,72 @@ export default function AgentRunsHub() {
                   </div>
                   <p className="text-sm">{detail.run.requirement}</p>
                   {detail.run.teamName && <p className="text-xs font-medium text-primary">团队：{detail.run.teamName}</p>}
-                  {detail.nodes.length > 0 && (
-                    <div className="flex flex-wrap gap-2 pt-2">
-                      {detail.nodes.map(node => (
-                        <span key={node.nodeId} title={node.errorMessage || node.textOutput}
-                          className={cn('rounded border px-2 py-1 text-xs',
-                            node.status === 'completed' && 'border-green-400 bg-green-500/10 text-green-700',
-                            node.status === 'running' && 'border-blue-400 bg-blue-500/10 text-blue-700',
-                            (node.status === 'failed' || node.status === 'skipped') && 'border-red-400 bg-red-500/10 text-red-700')}>
-                          {node.name} · {node.status}
-                        </span>
-                      ))}
+                  {detail.primaryOutput != null ? (
+                    <div className="rounded-lg border bg-muted/30 p-3">
+                      <p className="text-xs font-medium mb-1">主输出成果</p>
+                      <pre className="text-xs whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
+                        {typeof detail.primaryOutput === 'string'
+                          ? detail.primaryOutput.slice(0, 2000)
+                          : JSON.stringify(detail.primaryOutput, null, 2).slice(0, 2000)}
+                      </pre>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+                      <p className="text-amber-700">主输出未完成，去节点详情看分产物</p>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-2"
+                        onClick={() => document.getElementById('run-nodes-block')?.scrollIntoView({ behavior: 'smooth' })}
+                      >
+                        查看节点分产物
+                      </Button>
                     </div>
                   )}
+                  {detail.nodes.length > 0 && (
+                    <div id="run-nodes-block" className="flex flex-wrap gap-2 pt-2">
+                      {detail.nodes.map(node => {
+                        const displayName = node.name && node.name !== '用户'
+                          ? node.name
+                          : (DAG_NAME_MAP[node.nodeId] || node.nodeId)
+                        return (
+                          <button
+                            key={node.nodeId}
+                            onClick={() => setSelectedNodeId(selectedNodeId === node.nodeId ? null : node.nodeId)}
+                            title="点击看分产物"
+                            className={cn('rounded border px-2 py-1 text-xs text-left',
+                              node.status === 'completed' && 'border-green-400 bg-green-500/10 text-green-700',
+                              node.status === 'running' && 'border-blue-400 bg-blue-500/10 text-blue-700',
+                              (node.status === 'failed' || node.status === 'skipped') && 'border-red-400 bg-red-500/10 text-red-700',
+                              selectedNodeId === node.nodeId && 'ring-2 ring-primary/40')}>
+                            {displayName} · {node.status}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                  {selectedNodeId && (() => {
+                    const n = detail.nodes.find(x => x.nodeId === selectedNodeId)
+                    if (!n) return null
+                    return (
+                      <div className="rounded-lg border p-3 text-xs space-y-1">
+                        <p className="font-medium">节点分产物 · {n.name !== '用户' ? n.name : (DAG_NAME_MAP[n.nodeId] || n.nodeId)}</p>
+                        {n.errorMessage && <p className="text-red-600">错误：{n.errorMessage}</p>}
+                        {n.textOutput && <pre className="whitespace-pre-wrap break-words max-h-40 overflow-y-auto bg-background p-2 rounded border">{n.textOutput.slice(0, 3000)}</pre>}
+                        {n.structuredOutput != null && <pre className="whitespace-pre-wrap break-words max-h-40 overflow-y-auto bg-background p-2 rounded border">{JSON.stringify(n.structuredOutput, null, 2).slice(0, 3000)}</pre>}
+                      </div>
+                    )
+                  })()}
                   {detail.run.errorMessage && (
                     <p className="text-xs text-red-600">错误：{detail.run.errorMessage}</p>
                   )}
+                  <RunGraph
+                    teamSnapshot={detail.run.teamSnapshot}
+                    nodes={detail.nodes}
+                    events={detail.events}
+                    selectedNodeId={selectedNodeId}
+                    onSelect={(id) => setSelectedNodeId(selectedNodeId === id ? null : id)}
+                  />
                 </div>
 
                 {/* Tab 切换 */}
@@ -450,7 +509,17 @@ export default function AgentRunsHub() {
                       {detail.events.length === 0 ? (
                         <p className="text-sm text-muted-foreground">暂无事件</p>
                       ) : (
-                        detail.events.map((ev) => <EventRow key={ev.id} ev={ev} />)
+                        detail.events.map((ev) => (
+                          <EventRow
+                            key={ev.id}
+                            ev={ev}
+                            nodesMap={Object.fromEntries(
+                              detail.nodes
+                                .filter((n) => n.name && n.name !== '用户')
+                                .map((n) => [n.nodeId, n.name]),
+                            )}
+                          />
+                        ))
                       )}
                     </div>
                   </ScrollArea>
@@ -511,9 +580,14 @@ export default function AgentRunsHub() {
   )
 }
 
-function EventRow({ ev }: { ev: RunEvent }) {
+function EventRow({ ev, nodesMap }: { ev: RunEvent; nodesMap?: Record<string, string> }) {
   const d = ev.data || {}
-  const role = d.agent || d.phase || ''
+  const role = (d.agent || d.phase || d.nodeId || '') as string
+  const resolvedName =
+    (nodesMap?.[role] && nodesMap[role] !== '用户' ? nodesMap[role] : null) ||
+    (DAG_NAME_MAP[role] && DAG_NAME_MAP[role] !== '用户' ? DAG_NAME_MAP[role] : null) ||
+    ROLE_META[role]?.name ||
+    (role && role !== 'user' ? role : '系统')
   const m = ROLE_META[role] || ROLE_META.user
   const Icon = m.icon
   let text = ''
@@ -521,16 +595,16 @@ function EventRow({ ev }: { ev: RunEvent }) {
 
   switch (ev.type) {
     case 'phase_start':
-      text = `阶段开始 · ${m.name}${d.message ? `：${d.message}` : ''}`
+      text = `阶段开始 · ${resolvedName}${d.message ? `：${d.message}` : ''}`
       break
     case 'start':
-      text = `${m.name} 启动${d.message ? `：${d.message}` : ''}`
+      text = `${resolvedName} 启动${d.message ? `：${d.message}` : ''}`
       break
     case 'progress':
-      text = `${m.name} · ${d.step || ''}${typeof d.progress === 'number' ? `（${d.progress}%）` : ''}`
+      text = `${resolvedName} · ${d.step || ''}${typeof d.progress === 'number' ? `（${d.progress}%）` : ''}`
       break
     case 'complete':
-      text = `${m.name} 阶段产出完成`
+      text = `${resolvedName} 阶段产出完成`
       break
     case 'run_complete':
       text = '全部阶段完成 ✅'
@@ -660,13 +734,14 @@ function ReplayPanel({ messages }: { messages: ReplayMessage[] }) {
         const [phase, round] = key.split('__')
         const meta = ROLE_META[phase] || ROLE_META.user
         const PhaseIcon = meta.icon
+        const phaseName = DAG_NAME_MAP[phase] || (phase === 'user' ? '用户' : meta.name === '用户' && phase !== 'user' ? phase : meta.name)
         return (
           <div key={key} className="space-y-2">
             <div className="flex items-center gap-2 sticky top-0 bg-background/95 backdrop-blur py-1">
               <div className={cn('w-6 h-6 rounded-full flex items-center justify-center', meta.bg)}>
                 <PhaseIcon className={cn('w-3.5 h-3.5', meta.color)} />
               </div>
-              <span className={cn('text-xs font-medium', meta.color)}>{meta.name}</span>
+              <span className={cn('text-xs font-medium', meta.color)}>{phaseName}</span>
               <span className="text-xs text-muted-foreground">第 {round} 轮</span>
               <span className="text-[10px] text-muted-foreground/60">· {msgs.length} 条消息</span>
             </div>

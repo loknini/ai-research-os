@@ -161,15 +161,20 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
 
   const handleAgentUpdate = useCallback((update: any) => {
     switch (update.type) {
-      case 'phase_start':
+      case 'phase_start': {
         setCurrentPhase(update.phase)
+        const phaseName =
+          dagNameMap[update.phase as string] ||
+          agentConfig[update.phase as keyof typeof agentConfig]?.name ||
+          update.phase
         addMessage({
           agentRole: update.phase,
           messageType: 'action',
-          content: update.message || `开始${agentConfig[update.phase as keyof typeof agentConfig]?.name || update.phase}`,
-          stepName: '开始'
+          content: update.message || `开始${phaseName}`,
+          stepName: '开始',
         })
         break
+      }
 
       case 'tool_approval': {
         const info: ApprovalInfo = {
