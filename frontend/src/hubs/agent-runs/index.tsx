@@ -4,6 +4,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { MarkdownPreview } from '@/components/ui/markdown-editor'
 import { cn } from '@/utils'
 import { toast } from '@/components/ui/toast'
 import { useNavigate } from 'react-router-dom'
@@ -122,6 +123,32 @@ const STATUS_META: Record<RunSummary['status'], { label: string; className: stri
   cancelled: { label: '已取消', className: 'bg-amber-500/10 text-amber-600', icon: XCircle },
 }
 
+function parsePrimaryOutput(output: unknown): { title?: string; markdown: string; tags: string[]; raw: string } {
+  const raw = typeof output === 'string' ? output : JSON.stringify(output, null, 2)
+  let obj: any = null
+  if (typeof output === 'string') {
+    try {
+      const parsed = JSON.parse(output)
+      if (parsed && typeof parsed === 'object') obj = parsed
+    } catch { /* 纯文本，按 markdown 直接渲染 */ }
+  } else if (output && typeof output === 'object') {
+    obj = output as any
+  }
+  if (obj) {
+    const markdown =
+      (typeof obj.markdown === 'string' && obj.markdown) ||
+      (typeof obj.content === 'string' && obj.content) ||
+      raw
+    return {
+      title: typeof obj.title === 'string' ? obj.title : undefined,
+      markdown,
+      tags: Array.isArray(obj.tags) ? obj.tags.filter((t: unknown): t is string => typeof t === 'string') : [],
+      raw,
+    }
+  }
+  return { markdown: raw, tags: [], raw }
+}
+
 function relTime(ms?: number) {
   if (!ms) return '—'
   const diff = Date.now() - ms
@@ -146,6 +173,7 @@ export default function AgentRunsHub() {
   const [replayLoading, setReplayLoading] = useState(false)
   const [replayLoaded, setReplayLoaded] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+  const [savingNote, setSavingNote] = useState(false)
 
   const hasRunning = runs.some((r) => r.status === 'running' || r.status === 'pending')
 
@@ -278,6 +306,33 @@ export default function AgentRunsHub() {
     }
   }, [loadRuns])
 
+  // 保存主输出为 AI 笔记（仅 markdown 本体，tags 固定 Agent运行）
+  const saveOutputAsNote = useCallback(async () => {
+    if (detail?.primaryOutput == null || savingNote) return
+    setSavingNote(true)
+    try {
+      const parsed = parsePrimaryOutput(detail.primaryOutput)
+      const resp = await fetch('/api/notes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: parsed.title || detail.run.requirement.slice(0, 20) || 'Agent 运行成果',
+          content: parsed.markdown,
+          type: 'summary',
+          tags: ['Agent运行'],
+          aiGenerated: true,
+        }),
+      })
+      const data = await resp.json()
+      if (resp.ok && data.success) toast({ title: '已保存为 AI 笔记', variant: 'success' })
+      else toast({ title: data.message || '保存笔记失败', variant: 'error' })
+    } catch {
+      toast({ title: '保存笔记失败', variant: 'error' })
+    } finally {
+      setSavingNote(false)
+    }
+  }, [detail, savingNote])
+
   return (
     <div className="flex flex-col h-screen">
       <Header title="运行历史" />
@@ -365,11 +420,11 @@ export default function AgentRunsHub() {
         </div>
       </div>
 
-      {/* 详情弹窗（A2 全屏居中 90vh） */}
+      {/* 详情弹窗（A2 全屏居中 92vh，小屏 95vw） */}
       {selectedId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setSelectedId(null)} />
-          <div className="relative w-full max-w-6xl h-[90vh] glass rounded-2xl border border-border/50 shadow-2xl flex flex-col overflow-hidden">
+          <div className="relative w-[95vw] max-w-6xl h-[92vh] glass rounded-2xl border border-border/50 shadow-2xl flex flex-col overflow-hidden min-h-0">
             <div className="flex items-center justify-between p-4 border-b">
               <div className="min-w-0">
                 <h3 className="font-medium truncate">运行详情</h3>
@@ -386,8 +441,8 @@ export default function AgentRunsHub() {
               </div>
             ) : detail ? (
               <>
-                <div className="grid gap-4 p-4 overflow-y-auto lg:grid-cols-[1.3fr_1fr] lg:overflow-hidden lg:flex-1 lg:min-h-0">
-                  <div className="space-y-2 lg:overflow-y-auto lg:pr-1 min-h-[420px]">
+                <div className="grid gap-4 p-4 overflow-y-auto lg:grid-cols-[1.3fr_1fr] lg:overflow-hidden lg:flex-none lg:max-h-[54%] lg:min-h-0 min-h-0">
+                  <div className="space-y-2 lg:overflow-y-auto lg:pr-1 lg:min-h-0 min-h-[280px]">
                   <div className="flex items-center gap-2">
                     {(() => {
                       const st = STATUS_META[detail.run.status]
@@ -439,8 +494,8 @@ export default function AgentRunsHub() {
                       <div className="rounded-lg border p-3 text-xs space-y-1">
                         <p className="font-medium">节点分产物 · {n.name !== '用户' ? n.name : (DAG_NAME_MAP[n.nodeId] || n.nodeId)}</p>
                         {n.errorMessage && <p className="text-red-600">错误：{n.errorMessage}</p>}
-                        {n.textOutput && <pre className="whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto bg-background p-2 rounded border">{n.textOutput.slice(0, 3000)}</pre>}
-                        {n.structuredOutput != null && <pre className="whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto bg-background p-2 rounded border">{JSON.stringify(n.structuredOutput, null, 2).slice(0, 3000)}</pre>}
+                        {n.textOutput && <pre className="whitespace-pre-wrap break-words max-h-[22vh] overflow-y-auto bg-background p-2 rounded border">{n.textOutput.slice(0, 3000)}</pre>}
+                        {n.structuredOutput != null && <pre className="whitespace-pre-wrap break-words max-h-[22vh] overflow-y-auto bg-background p-2 rounded border">{JSON.stringify(n.structuredOutput, null, 2).slice(0, 3000)}</pre>}
                       </div>
                     )
                   })()}
@@ -448,15 +503,40 @@ export default function AgentRunsHub() {
                     <p className="text-xs text-red-600">错误：{detail.run.errorMessage}</p>
                   )}
                   </div>
-                  <div className="space-y-2 lg:overflow-y-auto lg:pl-1">
+                  <div className="space-y-2 lg:overflow-y-auto lg:pl-1 lg:min-h-0">
                     {detail.primaryOutput != null ? (
                       <div className="rounded-lg border bg-muted/30 p-3">
-                        <p className="text-xs font-medium mb-1">主输出成果</p>
-                        <pre className="text-xs whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto">
-                          {typeof detail.primaryOutput === 'string'
-                            ? detail.primaryOutput.slice(0, 2000)
-                            : JSON.stringify(detail.primaryOutput, null, 2).slice(0, 2000)}
-                        </pre>
+                        {(() => {
+                          const parsed = parsePrimaryOutput(detail.primaryOutput)
+                          return (
+                            <>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <p className="text-xs font-medium">主输出成果{parsed.title ? ` · ${parsed.title}` : ''}</p>
+                                <Button size="sm" variant="outline" onClick={saveOutputAsNote} disabled={savingNote}>
+                                  {savingNote ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null}
+                                  保存为 AI 笔记
+                                </Button>
+                              </div>
+                              {parsed.title && <p className="text-sm font-semibold mb-2">{parsed.title}</p>}
+                              <div className="max-h-[50vh] overflow-y-auto">
+                                <MarkdownPreview content={parsed.markdown.slice(0, 8000)} />
+                              </div>
+                              {parsed.tags.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-2">
+                                  {parsed.tags.map((t) => (
+                                    <Badge key={t} variant="secondary" className="text-[10px]">{t}</Badge>
+                                  ))}
+                                </div>
+                              )}
+                              <details className="mt-2">
+                                <summary className="text-xs text-muted-foreground cursor-pointer">查看原始输出</summary>
+                                <pre className="text-xs whitespace-pre-wrap break-words max-h-40 overflow-y-auto mt-1">
+                                  {parsed.raw.slice(0, 2000)}
+                                </pre>
+                              </details>
+                            </>
+                          )
+                        })()}
                       </div>
                     ) : (
                       <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
@@ -508,7 +588,7 @@ export default function AgentRunsHub() {
                 </div>
 
                 {detailTab === 'events' && (
-                  <ScrollArea className="flex-1 p-4">
+                  <ScrollArea className="flex-1 min-h-0 p-4" style={{ minHeight: 160 }}>
                     <div className="space-y-3">
                       {detail.events.length === 0 ? (
                         <p className="text-sm text-muted-foreground">暂无事件</p>
@@ -530,7 +610,7 @@ export default function AgentRunsHub() {
                 )}
 
                 {detailTab === 'approvals' && (
-                  <ScrollArea className="flex-1 p-4">
+                  <ScrollArea className="flex-1 min-h-0 p-4" style={{ minHeight: 160 }}>
                     {approvalsLoading && approvals.length === 0 ? (
                       <div className="flex items-center justify-center py-10 text-muted-foreground">
                         <Loader2 className="w-5 h-5 animate-spin mr-2" />
@@ -556,7 +636,7 @@ export default function AgentRunsHub() {
                 )}
 
                 {detailTab === 'replay' && (
-                  <ScrollArea className="flex-1 p-4">
+                  <ScrollArea className="flex-1 min-h-0 p-4" style={{ minHeight: 160 }}>
                     {replayLoading ? (
                       <div className="flex items-center justify-center py-10 text-muted-foreground">
                         <Loader2 className="w-5 h-5 animate-spin mr-2" />

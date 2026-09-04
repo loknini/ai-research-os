@@ -127,14 +127,14 @@ export function RunGraph({
             </div>
           ),
         },
-        style: {
-          border: STATUS_STYLE[status] || STATUS_STYLE.pending,
-          borderRadius: 12,
-          background: 'hsl(var(--card))',
-          color: 'hsl(var(--card-foreground))',
-          minWidth: 170,
-          boxShadow: status === 'running' ? '0 0 0 3px rgba(59,130,246,.15)' : undefined,
-        },
+          style: {
+            border: STATUS_STYLE[status] || STATUS_STYLE.pending,
+            borderRadius: 12,
+            background: 'hsl(var(--card))',
+            color: 'hsl(var(--card-foreground))',
+            minWidth: 150,
+            boxShadow: status === 'running' ? '0 0 0 3px rgba(59,130,246,.15)' : undefined,
+          },
       }
     })
   }, [teamSnapshot, nodes, statusMap, nameMap, iterationMap, selectedNodeId])
@@ -148,6 +148,7 @@ export function RunGraph({
           id: e.id || `${e.source}->${e.target}-${i}`,
           source: e.source,
           target: e.target,
+          type: 'bezier',
           animated,
           style: { strokeWidth: animated ? 2.5 : 1.5 },
         }
@@ -170,18 +171,22 @@ export function RunGraph({
       <div className="px-3 py-2 border-b text-xs text-muted-foreground">
         DAG 运行过程（左图右文双显，点击节点看分产物）
       </div>
-      <div style={{ height: 440 }}>
+      <div style={{ height: 'clamp(280px, 38vh, 440px)' }}>
         <ReactFlow
           nodes={flowNodes}
           edges={flowEdges}
           onNodeClick={(_, node) => onSelect?.(node.id)}
           fitView
-          fitViewOptions={{ padding: 0.2 }}
+          fitViewOptions={{ padding: 0.25 }}
+          minZoom={0.4}
+          maxZoom={1.5}
           proOptions={{ hideAttribution: true }}
         >
           <Background />
-          <MiniMap pannable zoomable />
-          <Controls showInteractive={false} />
+          <div className="hidden md:block">
+            <MiniMap pannable zoomable />
+          </div>
+          <Controls showInteractive={false} position="bottom-right" />
         </ReactFlow>
       </div>
     </div>
