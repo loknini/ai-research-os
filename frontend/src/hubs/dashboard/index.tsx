@@ -1,6 +1,5 @@
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
-import { useAppStore } from '@/stores/appStore'
 import { Header } from '@/components/layout/header'
 import { CommandPalette } from '@/components/search/command-palette'
 import { Badge } from '@/components/ui/badge'
@@ -25,6 +24,7 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { formatDate, formatRelativeTime } from '@/utils'
+import { usePapers } from '@/hooks/usePapers'
 
 /** 交错进场延迟（尊重 prefers-reduced-motion，见 index.css） */
 const fade = (i: number): CSSProperties => ({ animationDelay: `${i * 70}ms` })
@@ -76,7 +76,7 @@ const RUN_STATUS_META: Record<AgentRunSummary['status'], { label: string; dot: s
 }
 
 export default function Dashboard() {
-  const { papers } = useAppStore()
+  const { papers, ensureLoaded } = usePapers()
 
   const [tasks, setTasks] = useState<Task[]>([])
   const [projects, setProjects] = useState<SoftwareProject[]>([])
@@ -123,16 +123,18 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadData()
+    void ensureLoaded()
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         loadData()
+        void ensureLoaded()
       }
     }
 
     document.addEventListener('visibilitychange', handleVisibilityChange)
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [loadData])
+  }, [loadData, ensureLoaded])
 
   const paperStats = useMemo(() => {
     const total = papers.length

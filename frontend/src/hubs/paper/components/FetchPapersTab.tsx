@@ -18,8 +18,10 @@ import type { Paper } from '@/types'
 export interface FetchBatchResult {
   papers: Paper[]
   total: number
-  /** 本次新增数量（=后端 inserted） */
+  /** 本次新增数量（=后端 inserted；预览模式下为已导入数） */
   inserted: number
+  /** 本空间已存在的 arxivId 列表（后端 dry_run 返回，导入后前端合并） */
+  alreadyInLibrary?: string[]
   /** 抓取时刻（用于在 Tab 内分组显示） */
   fetchedAt: number
   /** 抓取时用的关键词（回显） */
@@ -32,11 +34,15 @@ interface FetchPapersTabProps {
   lastResult: FetchBatchResult | null
   isFetching: boolean
   onFetch: (params: { keywords: string; maxResults: number }) => void
+  /** 导入预览中勾选的论文 */
+  onImport: (selected: Paper[]) => Promise<void> | void
 }
 
-export default function FetchPapersTab({ lastResult, isFetching, onFetch }: FetchPapersTabProps) {
+export default function FetchPapersTab({ lastResult, isFetching, onFetch, onImport }: FetchPapersTabProps) {
   const [keywords, setKeywords] = useState('')
   const [maxResults, setMaxResults] = useState(10)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [isImporting, setIsImporting] = useState(false)
   const resultsRef = useRef<HTMLDivElement | null>(null)
 
   // 抓取成功后把结果区滚到视口里（实时感）
@@ -46,13 +52,37 @@ export default function FetchPapersTab({ lastResult, isFetching, onFetch }: Fetc
     }
   }, [lastResult])
 
+  // 新一批预览默认全选未入库项（导入后合并也同步刷新勾选）
+  useEffect(() => {
+    if (!lastResult) {
+      setSelectedIds(new Set())
+      return
+    }
+    const inLibrary = new Set(lastResult.alreadyInLibrary || [])
+    setSelectedIds(new Set(lastResult.papers.filter((p) => !inLibrary.has(p.arxivId)).map((p) => p.arxivId)))
+  }, [lastResult])
+
   const handleSubmit = () => {
     if (isFetching) return
     onFetch({ keywords, maxResults })
   }
 
+  const handleImport = async () => {
+    if (!lastResult || isImporting) return
+    const selected = lastResult.papers.filter((p) => selectedIds.has(p.arxivId))
+    if (selected.length === 0) return
+    setIsImporting(true)
+    try {
+      await onImport(selected)
+    } finally {
+      setIsImporting(false)
+    }
+  }
+
   const trimmed = keywords.trim()
-  const duplicates = lastResult ? lastResult.papers.length - lastResult.inserted : 0
+  const inLibrary = new Set(lastResult?.alreadyInLibrary || [])
+  const duplicates = lastResult ? lastResult.papers.filter((p) => inLibrary.has(p.arxivId)).length : 0
+  const selectable = lastResult ? lastResult.papers.filter((p) => !inLibrary.has(p.arxivId)) : []
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
@@ -65,7 +95,7 @@ export default function FetchPapersTab({ lastResult, isFetching, onFetch }: Fetc
               抓取论文
             </CardTitle>
             <CardDescription>
-              从 arXiv 检索并入库。逗号分隔多个关键词；留空抓取最新 CV 论文。
+              从 arXiv 检索预览，勾选后导入库。逗号分隔多个关键词；留空抓取最新 CV 论文。
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -132,9 +162,9 @@ export default function FetchPapersTab({ lastResult, isFetching, onFetch }: Fetc
                 <CardTitle className="flex items-center gap-2">
                   本次抓取结果
                   <Badge variant="secondary">{lastResult.papers.length}</Badge>
-                  {lastResult.inserted > 0 && (
-                    <Badge className="bg-green-100 text-green-700 hover:bg-green-100">
-                      新增 {lastResult.inserted}
+                  {selectable.length > 0 && (
+                    <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100">
+                      待导入 {selectable.length}
                     </Badge>
                   )}
                   {duplicates > 0 && (
@@ -144,6 +174,43 @@ export default function FetchPapersTab({ lastResult, isFetching, onFetch }: Fetc
                 <CardDescription>
                   关键词：{lastResult.keywords || '（默认 cat:cs.CV）'} · 抓取 {lastResult.maxResults} 篇
                 </CardDescription>
+                {selectable.length > 0 && (
+                  <div className="flex items-center gap-2 pt-2">
+                    <Button
+                      size="sm"
+                      onClick={handleImport}
+                      disabled={isImporting || selectedIds.size === 0}
+                    >
+                      {isImporting ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                          导入中...
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="w-4 h-4 mr-2" />
+                          导入选中 {selectedIds.size} 篇
+                        </>
+                      )}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setSelectedIds(new Set(selectable.map((p) => p.arxivId)))}
+                      disabled={isImporting}
+                    >
+                      全选
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSelectedIds(new Set())}
+                      disabled={isImporting}
+                    >
+                      清空
+                    </Button>
+                  </div>
+                )}
               </CardHeader>
               <CardContent>
                 {lastResult.papers.length === 0 ? (
@@ -152,18 +219,32 @@ export default function FetchPapersTab({ lastResult, isFetching, onFetch }: Fetc
                   </p>
                 ) : (
                   <div className="divide-y">
-                    {lastResult.papers.map((p, idx) => {
-                      // 本次是否新增：用 fetchedAt + 在 papers 数组中的索引（后端顺序与返回顺序一致）
-                      // 用论文的 id 简单做"是否本次新增"：需要外部传入 insertedIds 更准，
-                      // 这里用 lastResult.inserted 数 + 顺序做近似。
-                      const isNew = idx < lastResult.inserted
+                    {lastResult.papers.map((p) => {
+                      const isNew = !inLibrary.has(p.arxivId)
+                      const checked = selectedIds.has(p.arxivId)
                       return (
                         <div key={p.id || p.arxivId} className="py-3 flex items-start gap-3">
+                          {isNew && (
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => {
+                                setSelectedIds((prev) => {
+                                  const next = new Set(prev)
+                                  if (checked) next.delete(p.arxivId)
+                                  else next.add(p.arxivId)
+                                  return next
+                                })
+                              }}
+                              className="mt-1 rounded border-gray-300"
+                              aria-label={`选择 ${p.title}`}
+                            />
+                          )}
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1">
                               {isNew ? (
                                 <Badge className="bg-blue-100 text-blue-700 hover:bg-blue-100 text-xs">
-                                  新增
+                                  待导入
                                 </Badge>
                               ) : (
                                 <Badge variant="outline" className="text-xs">
@@ -201,7 +282,7 @@ export default function FetchPapersTab({ lastResult, isFetching, onFetch }: Fetc
                   </div>
                 )}
                 <p className="mt-4 text-xs text-muted-foreground">
-                  切到「论文管理」Tab 可对新论文执行总结、引用、下载 PDF 等操作。
+                  导入后切到「论文管理」Tab 可对新论文执行总结、引用、下载 PDF 等操作。
                 </p>
               </CardContent>
             </Card>

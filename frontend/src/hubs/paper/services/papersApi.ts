@@ -27,17 +27,25 @@ export interface FetchPapersParams {
 export interface FetchPapersResult {
   papers: Paper[]
   total: number
+  /** 本次新增数量（=后端 inserted；dry_run 下为 0） */
+  inserted?: number
+  /** dry_run 下本空间已存在的 arxivId 列表 */
+  alreadyInLibrary?: string[]
 }
 
 /**
  * 调用后端抓取论文（POST /api/papers/fetch?...）。
  * 返回 { papers, total }，与原 monolith handleFetchPapers 读取 result.papers / result.total 的行为一致。
+ * dryRun=true 时只检索不入库（预览勾选后走 importPapers 批量导入）。
  */
-export async function fetchPapers(params: FetchPapersParams): Promise<FetchPapersResult> {
+export async function fetchPapers(params: FetchPapersParams & { dryRun?: boolean }): Promise<FetchPapersResult> {
   const searchParams = new URLSearchParams()
   searchParams.append('max', params.maxResults.toString())
   if (params.keywords.trim()) {
     searchParams.append('keywords', params.keywords.trim())
+  }
+  if (params.dryRun) {
+    searchParams.append('dry_run', 'true')
   }
 
   const response = await fetch(`/api/papers/fetch?${searchParams.toString()}`, {
@@ -51,7 +59,31 @@ export async function fetchPapers(params: FetchPapersParams): Promise<FetchPaper
   const result = await response.json()
   return {
     papers: (result.papers as Paper[]) || [],
-    total: result.total || 0
+    total: result.total || 0,
+    inserted: result.inserted ?? 0,
+    alreadyInLibrary: result.alreadyInLibrary || [],
+  }
+}
+
+export interface ImportPapersResult {
+  imported: number
+  skipped: Array<{ arxivId: string; reason: string }>
+}
+
+/** 批量导入预览中勾选的论文（POST /api/papers/batch），逐篇跳过并报告数。 */
+export async function importPapers(papers: Paper[]): Promise<ImportPapersResult> {
+  const response = await fetch('/api/papers/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ papers }),
+  })
+  if (!response.ok) {
+    throw new Error('Failed to import papers')
+  }
+  const result = await response.json()
+  return {
+    imported: result.imported || 0,
+    skipped: result.skipped || [],
   }
 }
 

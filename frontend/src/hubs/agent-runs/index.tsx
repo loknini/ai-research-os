@@ -631,7 +631,7 @@ export default function AgentRunsHub() {
           {showOutput && detail && (
             <div className="absolute inset-0 z-[60] flex items-center justify-center p-4">
               <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowOutput(false)} />
-              <div className="relative w-[90vw] max-w-3xl max-h-[85vh] glass rounded-2xl border border-border/50 shadow-2xl flex flex-col overflow-hidden">
+              <div className="relative w-[94vw] max-w-5xl max-h-[90vh] glass rounded-2xl border border-border/50 shadow-2xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between p-4 border-b shrink-0">
                   <h4 className="font-medium">输出成果</h4>
                   <Button variant="ghost" size="icon" onClick={() => setShowOutput(false)}>
@@ -645,7 +645,9 @@ export default function AgentRunsHub() {
                       return (
                         <>
                           {parsed.title && <p className="text-sm font-semibold mb-2">{parsed.title}</p>}
-                          <MarkdownPreview content={parsed.markdown.slice(0, 8000)} />
+                          <div className="prose max-w-none">
+                            <MarkdownPreview content={parsed.markdown.slice(0, 20000)} />
+                          </div>
                           {parsed.tags.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-2">
                               {parsed.tags.map((t) => (
@@ -655,7 +657,7 @@ export default function AgentRunsHub() {
                           )}
                           <details className="mt-2">
                             <summary className="text-xs text-muted-foreground cursor-pointer">查看原始输出</summary>
-                            <pre className="text-xs whitespace-pre-wrap break-words max-h-40 overflow-y-auto mt-1">
+                            <pre className="text-xs whitespace-pre-wrap break-words max-h-60 overflow-y-auto mt-1">
                               {parsed.raw.slice(0, 2000)}
                             </pre>
                           </details>
@@ -703,10 +705,20 @@ function EventRow({ ev, nodesMap }: { ev: RunEvent; nodesMap?: Record<string, st
     (role && role !== 'user' ? role : '系统')
   const m = ROLE_META[role] || ROLE_META.user
   const Icon = m.icon
+  const nodeName =
+    (typeof d.name === 'string' && d.name !== '用户' ? d.name : null) || resolvedName
+  const iterSuffix = typeof d.iteration === 'number' ? `第${d.iteration}轮·` : ''
   let text = ''
   let statusBadge: { label: string; className: string } | null = null
+  let rawJson: string | null = null
 
   switch (ev.type) {
+    case 'run_start':
+      text = d.message && d.message !== 'Agent run started' ? d.message : '运行已开始'
+      break
+    case 'run_queued':
+      text = '已进入队列'
+      break
     case 'phase_start':
       text = `阶段开始 · ${resolvedName}${d.message ? `：${d.message}` : ''}`
       break
@@ -719,8 +731,35 @@ function EventRow({ ev, nodesMap }: { ev: RunEvent; nodesMap?: Record<string, st
     case 'complete':
       text = `${resolvedName} 阶段产出完成`
       break
+    case 'node_queued':
+      text = `${nodeName} 排队等待中`
+      break
+    case 'node_start':
+      text = `${nodeName} 开始运行`
+      break
+    case 'node_complete':
+      text = `${nodeName} 已完成`
+      break
+    case 'node_failed':
+      text = `${nodeName} 运行失败${d.error ? `：${d.error}` : ''}`
+      statusBadge = { label: '失败', className: 'bg-red-500/10 text-red-600' }
+      break
+    case 'node_skipped':
+      text = `${nodeName} 已跳过${d.reason ? `：${d.reason}` : ''}`
+      break
+    case 'node_warning':
+      text = `${nodeName} · ${d.message || '工具有缺失，已自动剔除'}`
+      statusBadge = { label: '警告', className: 'bg-amber-500/10 text-amber-600' }
+      break
     case 'run_complete':
       text = '全部阶段完成 ✅'
+      break
+    case 'run_failed':
+      text = `运行失败${d.message ? `：${d.message}` : ''}`
+      statusBadge = { label: '失败', className: 'bg-red-500/10 text-red-600' }
+      break
+    case 'workflow_complete':
+      text = '协作完成'
       break
     case 'run_cancelled':
       text = `运行已取消${d.message ? `：${d.message}` : ''}`
@@ -739,8 +778,34 @@ function EventRow({ ev, nodesMap }: { ev: RunEvent; nodesMap?: Record<string, st
       text = `上下文管理 · ${d.message || '历史已压缩'}`
       statusBadge = { label: '压缩', className: 'bg-blue-500/10 text-blue-600' }
       break
+    case 'development_phase_start':
+      text = `${iterSuffix}${devPhaseLabel(d.phase)}开始`
+      break
+    case 'development_phase_complete':
+      text = `${iterSuffix}${devPhaseLabel(d.phase)}完成`
+      break
+    case 'development_phase_failed':
+      text = `${iterSuffix}${devPhaseLabel(d.phase)}失败`
+      statusBadge = { label: '失败', className: 'bg-red-500/10 text-red-600' }
+      break
+    case 'development_files_written':
+      text = `${iterSuffix}本轮已写入 ${Array.isArray(d.files) ? d.files.length : 0} 个文件`
+      break
+    case 'development_tests_complete':
+      text = `${iterSuffix}测试${d.passed ? '通过' : '未通过'}`
+      statusBadge = d.passed
+        ? { label: '通过', className: 'bg-green-500/10 text-green-600' }
+        : { label: '未通过', className: 'bg-red-500/10 text-red-600' }
+      break
+    case 'development_context_read':
+      text = `${iterSuffix}已读取补充上下文`
+      break
+    case 'development_applied':
+      text = '已应用到项目'
+      break
     default:
-      text = JSON.stringify(d).slice(0, 80)
+      text = typeof d.message === 'string' && d.message ? d.message : ev.type
+      rawJson = JSON.stringify(d).slice(0, 500)
   }
 
   return (
@@ -757,10 +822,29 @@ function EventRow({ ev, nodesMap }: { ev: RunEvent; nodesMap?: Record<string, st
             </span>
           )}
         </div>
+        {rawJson && (
+          <details className="mt-1">
+            <summary className="text-xs text-muted-foreground cursor-pointer">原始事件</summary>
+            <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap break-all mt-1">{rawJson}</pre>
+          </details>
+        )}
         <p className="text-xs text-muted-foreground mt-0.5">{relTime(ev.createdAt)}</p>
       </div>
     </div>
   )
+}
+
+function devPhaseLabel(phase: unknown): string {
+  const map: Record<string, string> = {
+    preparing: '准备',
+    analyzing: '分析',
+    implementing: '实现',
+    testing: '测试',
+    reviewing: '审查',
+    applied: '应用',
+    queued: '排队',
+  }
+  return typeof phase === 'string' ? (map[phase] || phase) : '未知阶段'
 }
 
 // 审批记录行：pending 提供决策按钮，终态展示结果

@@ -20,7 +20,7 @@ from .. import config, db
 from ..deps import get_space_id
 from ..errors import APIError
 from ..llm import llm_client
-from ..schemas import FetchPapersRequest
+from ..schemas import BatchImportPapersRequest, FetchPapersRequest
 
 router = APIRouter(prefix="/api/papers", tags=["papers"])
 
@@ -44,6 +44,7 @@ async def fetch_papers(
     req: Optional[FetchPapersRequest] = None,
     max_results_q: Optional[int] = Query(None, alias="max", ge=1, le=100),
     keywords_q: Optional[str] = Query(None, alias="keywords"),
+    dry_run_q: Optional[bool] = Query(None, alias="dry_run"),
 ):
     """从 arXiv 抓取论文并入库。
 
@@ -54,6 +55,9 @@ async def fetch_papers(
 
     ``keywords`` query 参数支持逗号分隔多个关键词；单个值（含空格）整体视为一个
     短语关键词（arXiv 的 ``all:`` 字段支持短语匹配）。
+
+    ``dry_run=true`` 时只检索不入库（供前端预览勾选后批量导入），并返回
+    ``alreadyInLibrary``（本空间已存在的 arxivId 列表）。
     """
     try:
         from scripts import fetch_arxiv
@@ -67,9 +71,24 @@ async def fetch_papers(
             keywords = list(req.keywords)
 
         search_query = (req.query if req else None) or "cat:cs.CV"
+        dry_run = dry_run_q if dry_run_q is not None else (req.dry_run if req else False)
         raw = fetch_arxiv.fetch_papers(
             search_query=search_query, keywords=keywords, max_results=max_results
         )
+        if dry_run:
+            already = []
+            for paper in raw:
+                arxiv_id = paper.get("arxivId")
+                if arxiv_id and await db.database.get_paper_by_arxiv(arxiv_id, space_id=space_id):
+                    already.append(arxiv_id)
+            return {
+                "success": True,
+                "papers": raw,
+                "inserted": 0,
+                "count": len(raw),
+                "total": len(raw),
+                "alreadyInLibrary": already,
+            }
         inserted = 0
         for paper in raw:
             if await db.database.insert_paper(paper, space_id=space_id):
@@ -84,6 +103,33 @@ async def fetch_papers(
         }
     except Exception as exc:
         raise APIError(str(exc), code="FETCH_FAILED")
+
+
+@router.post("/batch")
+async def batch_import_papers(req: BatchImportPapersRequest, space_id: str = Depends(get_space_id)):
+    """批量导入论文（抓取预览后的勾选导入）。
+
+    逐篇处理、失败跳过：已存在记“已存在”，缺字段记“字段缺失”，
+    其它写入失败记“写入失败”。返回 ``{imported, skipped: [{arxivId, reason}]}``。
+    """
+    try:
+        imported = 0
+        skipped: list = []
+        for paper in req.papers or []:
+            arxiv_id = (paper.get("arxivId") or paper.get("arxiv_id") or "") if isinstance(paper, dict) else ""
+            if not arxiv_id:
+                skipped.append({"arxivId": "", "reason": "字段缺失"})
+                continue
+            if await db.database.get_paper_by_arxiv(arxiv_id, space_id=space_id):
+                skipped.append({"arxivId": arxiv_id, "reason": "已存在"})
+                continue
+            if await db.database.insert_paper(paper, space_id=space_id):
+                imported += 1
+            else:
+                skipped.append({"arxivId": arxiv_id, "reason": "写入失败"})
+        return {"success": True, "imported": imported, "skipped": skipped}
+    except Exception as exc:
+        raise APIError(str(exc), code="BATCH_IMPORT_FAILED")
 
 
 @router.delete("/{paper_id}")

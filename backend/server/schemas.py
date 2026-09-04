@@ -54,6 +54,13 @@ class FetchPapersRequest(BaseModel):
     keywords: Optional[List[str]] = None
     query: Optional[str] = None
     max_results: int = 10
+    dry_run: bool = False
+
+
+class BatchImportPapersRequest(BaseModel):
+    """Request body for ``POST /api/papers/batch``."""
+
+    papers: List[Dict[str, Any]] = []
 
 
 class RagIndexRequest(BaseModel):

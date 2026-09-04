@@ -38,12 +38,13 @@ import {
 import type { Paper } from '@/types'
 import type { SortOption, FilterOption } from './types'
 import {
-  loadLocalPapers,
   fetchPapers,
   summarizePaper,
-  deletePaperApi
+  deletePaperApi,
+  importPapers
 } from './services/papersApi'
 import { usePaperData } from './hooks/usePaperData'
+import { usePapers } from '@/hooks/usePapers'
 import PaperFilters from './components/PaperFilters'
 import FetchPapersTab, { type FetchBatchResult } from './components/FetchPapersTab'
 import { TeamContextRunDialog } from '@/components/agent/team-context-run-dialog'
@@ -51,7 +52,8 @@ import { useSearchParams } from 'react-router-dom'
 
 export default function PaperHub() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const { papers, setPapers, updatePaper, deletePaper, isLoadingPapers, setLoadingPapers, isConnected } = useAppStore()
+  const { papers, updatePaper, deletePaper, isConnected } = useAppStore()
+  const { isLoading: isLoadingPapers, ensureLoaded, refresh: refreshPapers } = usePapers()
   const { showToast, ToastContainer } = useToast()
   // 工具 Tab：论文管理 / 抓取论文 / 引用生成（后者收纳为论文中心子能力）
   const [activeTool, setActiveTool] = useState<'papers' | 'fetch' | 'citation'>('papers')
@@ -134,23 +136,15 @@ export default function PaperHub() {
     [papers, updatePaper, showToast]
   )
 
+  // 初次挂载走共享缓存（60s 内已加载则直接复用，不重复请求）
   const loadLocalPapersData = useCallback(async () => {
-    setLoadingPapers(true)
-    try {
-      const localPapers = await loadLocalPapers()
-      setPapers(localPapers)
-    } catch (error) {
-      console.error('Failed to load papers:', error)
-      setPapers([])
-    } finally {
-      setLoadingPapers(false)
-    }
-  }, [setLoadingPapers, setPapers])
+    await refreshPapers()
+  }, [refreshPapers])
 
   // 加载本地论文
   useEffect(() => {
-    void loadLocalPapersData()
-  }, [loadLocalPapersData])
+    void ensureLoaded()
+  }, [ensureLoaded])
 
   const handleFetchPapers = async (params?: { keywords: string; maxResults: number }) => {
     const keywords = params?.keywords ?? ''
@@ -159,36 +153,61 @@ export default function PaperHub() {
     showToast('正在抓取论文...', 'info')
 
     try {
-      // 调用后端 API 执行 Python 脚本
-      const result = await fetchPapers({ keywords, maxResults })
+      // 预览式抓取（dry_run）：只检索不入库，勾选后走批量导入
+      const result = await fetchPapers({ keywords, maxResults, dryRun: true })
 
       const newCount = result.papers.length || 0
       const totalCount = result.total || 0
-      const insertedCount = (result as { inserted?: number }).inserted ?? newCount
       if (newCount > 0) {
-        showToast(
-          `本次抓取 ${newCount} 篇，新增 ${insertedCount} 篇，当前共 ${totalCount} 篇`,
-          'success'
-        )
+        showToast(`本次检索到 ${newCount} 篇，勾选后可导入`, 'success')
       } else {
-        showToast(`没有发现新论文，当前共 ${totalCount} 篇（已跳过重复）`, 'info')
+        showToast('没有匹配到论文，可以换个关键词再试', 'info')
       }
       // 更新本次抓取结果预览（抓取论文 Tab 渲染用）
       setLastFetchResult({
         papers: result.papers,
         total: totalCount,
-        inserted: insertedCount,
+        inserted: 0,
+        alreadyInLibrary: result.alreadyInLibrary || [],
         fetchedAt: Date.now(),
         keywords,
         maxResults,
       })
-      // 重新加载论文管理列表
-      await loadLocalPapersData()
     } catch (error) {
       console.error('Fetch error:', error)
       showToast('抓取失败，请检查网络连接', 'error')
     } finally {
       setIsFetching(false)
+    }
+  }
+
+  // 导入预览中勾选的论文（逐篇跳过并报告数）
+  const handleImportSelected = async (selected: Paper[]) => {
+    if (selected.length === 0) return
+    try {
+      const result = await importPapers(selected)
+      const dupCount = result.skipped.filter((s) => s.reason === '已存在').length
+      const failCount = result.skipped.length - dupCount
+      showToast(
+        `导入成功 ${result.imported} 篇` +
+          (dupCount > 0 ? `，跳过已存在 ${dupCount} 篇` : '') +
+          (failCount > 0 ? `，失败 ${failCount} 篇` : ''),
+        result.imported > 0 ? 'success' : 'info'
+      )
+      // 已导入的并入“已存在”，预览即时更新（以 skipped 名单为准，不依赖顺序假设）
+      const skippedIds = new Set(result.skipped.map((s) => s.arxivId))
+      setLastFetchResult((prev) => {
+        if (!prev) return prev
+        const merged = new Set([...(prev.alreadyInLibrary || [])])
+        selected.forEach((p) => {
+          if (!skippedIds.has(p.arxivId)) merged.add(p.arxivId)
+        })
+        return { ...prev, alreadyInLibrary: [...merged], inserted: (prev.inserted || 0) + result.imported }
+      })
+      await loadLocalPapersData()
+    } catch (error) {
+      console.error('Import error:', error)
+      showToast('导入失败，请稍后重试', 'error')
     }
   }
 
@@ -634,6 +653,7 @@ export default function PaperHub() {
           lastResult={lastFetchResult}
           isFetching={isFetching}
           onFetch={(params) => handleFetchPapers(params)}
+          onImport={(selected) => handleImportSelected(selected)}
         />
       ) : (
         <div className="flex-1 overflow-hidden">
