@@ -3,14 +3,15 @@
 // It is a controlled presentational component: the container owns all state and
 // passes the setters + handlers down, so the rendered JSX is identical to the source.
 
-import { Dispatch, SetStateAction } from 'react'
+import { Dispatch, SetStateAction, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { MarkdownEditor, MarkdownPreview } from '@/components/ui/markdown-editor'
-import { Edit2, Trash2, FunctionSquare } from 'lucide-react'
+import { Edit2, Trash2, FunctionSquare, Maximize2, Minimize2 } from 'lucide-react'
 import type { Note } from '@/types'
 import { NOTE_TYPE_CONFIG } from '../config'
+import { cn } from '@/utils'
 
 interface NoteEditorProps {
   selectedNote: Note | null
@@ -27,6 +28,10 @@ interface NoteEditorProps {
   handleSaveNote: () => void
   /** 打开公式识别弹窗，识别结果插入笔记正文 */
   onInsertFormula?: () => void
+  width?: number
+  onWidthChange?: (w: number) => void
+  fullscreen?: boolean
+  onToggleFullscreen?: () => void
 }
 
 /** Right-hand panel showing either a note preview or the create/edit form. */
@@ -43,11 +48,45 @@ export function NoteEditor({
   setTagInput,
   handleAddTag,
   handleSaveNote,
-  onInsertFormula
+  onInsertFormula,
+  width = 560,
+  onWidthChange,
+  fullscreen = false,
+  onToggleFullscreen,
 }: NoteEditorProps) {
-  return (
-    <div className="w-[480px] border-l bg-muted/30 overflow-y-auto">
-      <div className="p-6">
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null)
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    dragRef.current = { startX: e.clientX, startWidth: width }
+    const onMove = (ev: PointerEvent) => {
+      const st = dragRef.current
+      if (!st || !onWidthChange) return
+      onWidthChange(st.startWidth + (st.startX - ev.clientX))
+    }
+    const onUp = () => {
+      dragRef.current = null
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      document.body.style.cursor = ''
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    document.body.style.cursor = 'col-resize'
+  }
+  const body = (
+    <div className={cn(fullscreen ? 'w-full max-w-4xl h-[80vh] glass rounded-2xl border shadow-2xl flex flex-col overflow-hidden' : 'relative h-full border-l bg-muted/30 flex flex-col')}>
+      {!fullscreen && onWidthChange && (
+        <div
+          onPointerDown={startResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖拽调整笔记面板宽度"
+          className="absolute left-0 top-0 h-full w-1.5 cursor-col-resize z-10"
+          style={{ touchAction: 'none' }}
+        />
+      )}
+      <div className="p-6 overflow-y-auto flex-1">
         {/* 查看模式 */}
         {selectedNote && !showEditor && (
           <>
@@ -80,7 +119,7 @@ export function NoteEditor({
 
             <h2 className="text-xl font-bold mb-4">{selectedNote.title}</h2>
 
-            <div className="mb-6">
+            <div className="mb-6 prose max-w-none">
               {selectedNote.content ? (
                 <MarkdownPreview content={selectedNote.content} />
               ) : (
@@ -109,9 +148,16 @@ export function NoteEditor({
           <>
             <div className="flex items-center justify-between mb-4">
               <h3 className="font-semibold">{editingNote ? '编辑笔记' : '新建笔记'}</h3>
-              <Button variant="ghost" size="sm" onClick={() => setShowEditor(false)}>
-                取消
-              </Button>
+              <div className="flex items-center gap-1">
+                {onToggleFullscreen && (
+                  <Button variant="ghost" size="icon" onClick={onToggleFullscreen} aria-label={fullscreen ? '退出全屏' : '全屏编辑'}>
+                    {fullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={() => setShowEditor(false)}>
+                  取消
+                </Button>
+              </div>
             </div>
 
             <div className="space-y-4">
@@ -149,7 +195,7 @@ export function NoteEditor({
                 <MarkdownEditor
                   value={formData.content || ''}
                   onChange={(value) => setFormData({ ...formData, content: value })}
-                  height={300}
+                  height={fullscreen ? 420 : 300}
                   toolbarExtra={
                     onInsertFormula ? (
                       <Button variant="ghost" size="sm" onClick={onInsertFormula}>
@@ -212,6 +258,19 @@ export function NoteEditor({
           </>
         )}
       </div>
+    </div>
+  )
+  if (fullscreen) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowEditor(false)} />
+        <div className="relative w-full flex justify-center">{body}</div>
+      </div>
+    )
+  }
+  return (
+    <div className="h-full flex-shrink-0" style={{ width }}>
+      {body}
     </div>
   )
 }

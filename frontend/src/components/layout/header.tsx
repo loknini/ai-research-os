@@ -218,10 +218,10 @@ function SpaceIndicator() {
 
 export function Header({ title, description, actions }: HeaderProps) {
   return (
-    <header className="border-b border-border/50 glass px-4 py-4 sm:px-6">
+    <header className="border-b border-border/50 glass px-4 py-3 sm:px-6">
       <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between lg:items-center">
         <div className="min-w-0">
-          <h1 className="font-display text-2xl font-semibold tracking-tight break-words">
+          <h1 className="font-display text-xl font-semibold tracking-tight break-words">
             {title}
           </h1>
           {description && (

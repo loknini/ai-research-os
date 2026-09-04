@@ -20,7 +20,7 @@ export default function LabHub() {
 
   return (
     <div className="flex flex-col h-screen">
-      <Header title="研发实验" description="AI 辅助软件开发与实验追踪" />
+      <Header title="研发实验" />
 
       <div className="px-6 pt-3 flex items-center gap-1 border-b border-border/60">
         <button

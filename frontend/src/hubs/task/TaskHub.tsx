@@ -156,7 +156,6 @@ export default function TaskHub() {
     <div className="flex flex-col h-screen">
       <Header
         title="任务管理"
-        description="管理你的待办事项和项目任务"
         actions={
           <HeaderAction
             icon={Plus}

@@ -252,7 +252,6 @@ export default function ExperimentHub({ embedded = false }: { embedded?: boolean
       {!embedded && (
       <Header
         title="实验管理"
-        description="查看和分析 SwanLab 实验数据"
         actions={
           <div className="flex items-center gap-2">
             <Button

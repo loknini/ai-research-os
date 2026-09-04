@@ -79,6 +79,15 @@ export default function KnowledgeHub() {
     isFavorite: false
   })
   const [tagInput, setTagInput] = useState('')
+  // 笔记面板宽度（默认560，min480/max860，持久化）+ 全屏切换
+  const [noteWidth, setNoteWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem('notePanelWidth'))
+      if (Number.isFinite(saved) && saved >= 480 && saved <= 860) return saved
+    } catch { /* ignore */ }
+    return 560
+  })
+  const [noteFullscreen, setNoteFullscreen] = useState(false)
 
   // 公式识别弹窗（笔记编辑器「插入公式」）
   const [formulaOpen, setFormulaOpen] = useState(false)
@@ -284,7 +293,6 @@ export default function KnowledgeHub() {
     <div className="flex flex-col h-screen">
       <Header
         title="知识库"
-        description="管理研究笔记、想法和知识"
         actions={
           <>
           <HeaderAction
@@ -595,7 +603,7 @@ export default function KnowledgeHub() {
           </ScrollArea>
         </div>
 
-        {/* 右侧详情/编辑器 */}
+        {/* 右侧详情/编辑器（可调宽 + 全屏） */}
         {(selectedNote || showEditor) && (
           <NoteEditor
             selectedNote={selectedNote}
@@ -611,6 +619,14 @@ export default function KnowledgeHub() {
             handleAddTag={handleAddTag}
             handleSaveNote={handleSaveNote}
             onInsertFormula={() => setFormulaOpen(true)}
+            width={noteWidth}
+            onWidthChange={(w) => {
+              const clamped = Math.min(860, Math.max(480, Math.round(w)))
+              setNoteWidth(clamped)
+              try { localStorage.setItem('notePanelWidth', String(clamped)) } catch { /* ignore */ }
+            }}
+            fullscreen={noteFullscreen}
+            onToggleFullscreen={() => setNoteFullscreen((v) => !v)}
           />
         )}
       </div>

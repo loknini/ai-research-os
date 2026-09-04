@@ -213,7 +213,6 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
       {!embedded && (
       <Header
         title="软件开发"
-        description="AI 辅助软件开发，从想法到部署"
         actions={
           <>
             <HeaderAction

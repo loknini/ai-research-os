@@ -170,7 +170,7 @@ export function RunGraph({
       <div className="px-3 py-2 border-b text-xs text-muted-foreground">
         DAG 运行过程（左图右文双显，点击节点看分产物）
       </div>
-      <div style={{ height: 320 }}>
+      <div style={{ height: 440 }}>
         <ReactFlow
           nodes={flowNodes}
           edges={flowEdges}

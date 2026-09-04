@@ -377,7 +377,6 @@ export default function CitationHub({
       {!embedded && (
         <Header
           title="参考文献引用"
-          description="通过 Crossref 免费获取论文引用格式"
         />
       )}
       

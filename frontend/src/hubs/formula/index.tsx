@@ -293,7 +293,6 @@ export default function FormulaHub({
       {!embedded && (
         <Header
           title="公式识别"
-          description="使用 SimpleTex AI 识别数学公式"
         />
       )}
       

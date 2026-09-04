@@ -476,7 +476,6 @@ export default function SettingsHub() {
     <div className="flex flex-col h-screen">
       <Header
         title="设置"
-        description="配置系统集成和偏好设置"
       />
 
       <div className="flex-1 flex flex-col overflow-hidden">

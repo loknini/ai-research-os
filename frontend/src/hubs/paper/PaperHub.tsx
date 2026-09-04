@@ -314,7 +314,6 @@ export default function PaperHub() {
     <div className="flex flex-col h-screen">
       <Header
         title="论文中心"
-        description="管理你的学术论文收藏"
         actions={
           <HeaderAction
             icon={isFetching ? RefreshCw : Plus}

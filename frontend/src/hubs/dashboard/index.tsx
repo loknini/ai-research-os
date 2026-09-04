@@ -194,7 +194,6 @@ export default function Dashboard() {
     <div className="flex flex-col h-screen">
       <Header
         title="仪表盘"
-        description="AI Research OS 控制中心"
         actions={<CommandPalette isGlobal={false} />}
       />
 

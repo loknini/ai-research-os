@@ -568,7 +568,7 @@ export default function TeamsHub() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <Header title="专家团队" description="配置静态 DAG，让多个角色并行分析并汇合结果。" />
+      <Header title="专家团队" />
       <div className="space-y-6 p-6">
         <div className="flex flex-wrap gap-2">
           <Button variant={view === 'teams' ? 'default' : 'outline'} onClick={() => setView('teams')}><Users className="mr-2 h-4 w-4" />团队</Button>

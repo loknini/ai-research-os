@@ -280,7 +280,7 @@ export default function AgentRunsHub() {
 
   return (
     <div className="flex flex-col h-screen">
-      <Header title="运行历史" description="后台多 Agent 协作运行记录（提交即返回，服务端持续推进）" />
+      <Header title="运行历史" />
 
       <div className="flex-1 overflow-y-auto p-6">
         <div className="max-w-5xl mx-auto space-y-4">
@@ -365,11 +365,11 @@ export default function AgentRunsHub() {
         </div>
       </div>
 
-      {/* 详情抽屉 */}
+      {/* 详情弹窗（A2 全屏居中 90vh） */}
       {selectedId && (
-        <div className="fixed inset-0 z-40 flex justify-end">
-          <div className="absolute inset-0 bg-black/30" onClick={() => setSelectedId(null)} />
-          <div className="relative w-full max-w-lg h-full bg-background border-l border-border shadow-xl flex flex-col">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setSelectedId(null)} />
+          <div className="relative w-full max-w-6xl h-[90vh] glass rounded-2xl border border-border/50 shadow-2xl flex flex-col overflow-hidden">
             <div className="flex items-center justify-between p-4 border-b">
               <div className="min-w-0">
                 <h3 className="font-medium truncate">运行详情</h3>
@@ -386,7 +386,8 @@ export default function AgentRunsHub() {
               </div>
             ) : detail ? (
               <>
-                <div className="p-4 border-b space-y-2">
+                <div className="grid gap-4 p-4 overflow-y-auto lg:grid-cols-[1.3fr_1fr] lg:overflow-hidden lg:flex-1 lg:min-h-0">
+                  <div className="space-y-2 lg:overflow-y-auto lg:pr-1 min-h-[420px]">
                   <div className="flex items-center gap-2">
                     {(() => {
                       const st = STATUS_META[detail.run.status]
@@ -402,28 +403,13 @@ export default function AgentRunsHub() {
                   </div>
                   <p className="text-sm">{detail.run.requirement}</p>
                   {detail.run.teamName && <p className="text-xs font-medium text-primary">团队：{detail.run.teamName}</p>}
-                  {detail.primaryOutput != null ? (
-                    <div className="rounded-lg border bg-muted/30 p-3">
-                      <p className="text-xs font-medium mb-1">主输出成果</p>
-                      <pre className="text-xs whitespace-pre-wrap break-words max-h-40 overflow-y-auto">
-                        {typeof detail.primaryOutput === 'string'
-                          ? detail.primaryOutput.slice(0, 2000)
-                          : JSON.stringify(detail.primaryOutput, null, 2).slice(0, 2000)}
-                      </pre>
-                    </div>
-                  ) : (
-                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
-                      <p className="text-amber-700">主输出未完成，去节点详情看分产物</p>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="mt-2"
-                        onClick={() => document.getElementById('run-nodes-block')?.scrollIntoView({ behavior: 'smooth' })}
-                      >
-                        查看节点分产物
-                      </Button>
-                    </div>
-                  )}
+                  <RunGraph
+                    teamSnapshot={detail.run.teamSnapshot}
+                    nodes={detail.nodes}
+                    events={detail.events}
+                    selectedNodeId={selectedNodeId}
+                    onSelect={(id) => setSelectedNodeId(selectedNodeId === id ? null : id)}
+                  />
                   {detail.nodes.length > 0 && (
                     <div id="run-nodes-block" className="flex flex-wrap gap-2 pt-2">
                       {detail.nodes.map(node => {
@@ -453,21 +439,39 @@ export default function AgentRunsHub() {
                       <div className="rounded-lg border p-3 text-xs space-y-1">
                         <p className="font-medium">节点分产物 · {n.name !== '用户' ? n.name : (DAG_NAME_MAP[n.nodeId] || n.nodeId)}</p>
                         {n.errorMessage && <p className="text-red-600">错误：{n.errorMessage}</p>}
-                        {n.textOutput && <pre className="whitespace-pre-wrap break-words max-h-40 overflow-y-auto bg-background p-2 rounded border">{n.textOutput.slice(0, 3000)}</pre>}
-                        {n.structuredOutput != null && <pre className="whitespace-pre-wrap break-words max-h-40 overflow-y-auto bg-background p-2 rounded border">{JSON.stringify(n.structuredOutput, null, 2).slice(0, 3000)}</pre>}
+                        {n.textOutput && <pre className="whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto bg-background p-2 rounded border">{n.textOutput.slice(0, 3000)}</pre>}
+                        {n.structuredOutput != null && <pre className="whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto bg-background p-2 rounded border">{JSON.stringify(n.structuredOutput, null, 2).slice(0, 3000)}</pre>}
                       </div>
                     )
                   })()}
                   {detail.run.errorMessage && (
                     <p className="text-xs text-red-600">错误：{detail.run.errorMessage}</p>
                   )}
-                  <RunGraph
-                    teamSnapshot={detail.run.teamSnapshot}
-                    nodes={detail.nodes}
-                    events={detail.events}
-                    selectedNodeId={selectedNodeId}
-                    onSelect={(id) => setSelectedNodeId(selectedNodeId === id ? null : id)}
-                  />
+                  </div>
+                  <div className="space-y-2 lg:overflow-y-auto lg:pl-1">
+                    {detail.primaryOutput != null ? (
+                      <div className="rounded-lg border bg-muted/30 p-3">
+                        <p className="text-xs font-medium mb-1">主输出成果</p>
+                        <pre className="text-xs whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto">
+                          {typeof detail.primaryOutput === 'string'
+                            ? detail.primaryOutput.slice(0, 2000)
+                            : JSON.stringify(detail.primaryOutput, null, 2).slice(0, 2000)}
+                        </pre>
+                      </div>
+                    ) : (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
+                        <p className="text-amber-700">主输出未完成，去节点详情看分产物</p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="mt-2"
+                          onClick={() => document.getElementById('run-nodes-block')?.scrollIntoView({ behavior: 'smooth' })}
+                        >
+                          查看节点分产物
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Tab 切换 */}
