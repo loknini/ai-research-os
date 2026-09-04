@@ -167,18 +167,18 @@ export function RunGraph({
   if (flowNodes.length === 0) return null
 
   return (
-    <div className="rounded-xl border bg-card overflow-hidden">
-      <div className="px-3 py-2 border-b text-xs text-muted-foreground">
+    <div className="rounded-xl border bg-card overflow-hidden flex flex-col flex-1 min-h-0" style={{ minHeight: 320 }}>
+      <div className="px-3 py-2 border-b text-xs text-muted-foreground shrink-0">
         DAG 运行过程（左图右文双显，点击节点看分产物）
       </div>
-      <div style={{ height: 'clamp(280px, 38vh, 440px)' }}>
+      <div className="flex-1 min-h-0">
         <ReactFlow
           nodes={flowNodes}
           edges={flowEdges}
           onNodeClick={(_, node) => onSelect?.(node.id)}
           fitView
-          fitViewOptions={{ padding: 0.25 }}
-          minZoom={0.4}
+          fitViewOptions={{ padding: 0.3 }}
+          minZoom={0.3}
           maxZoom={1.5}
           proOptions={{ hideAttribution: true }}
         >

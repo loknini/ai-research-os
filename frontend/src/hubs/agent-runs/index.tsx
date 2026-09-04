@@ -174,6 +174,7 @@ export default function AgentRunsHub() {
   const [replayLoaded, setReplayLoaded] = useState(false)
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const [savingNote, setSavingNote] = useState(false)
+  const [showOutput, setShowOutput] = useState(false)
 
   const hasRunning = runs.some((r) => r.status === 'running' || r.status === 'pending')
 
@@ -220,6 +221,7 @@ export default function AgentRunsHub() {
 
   const openDetail = useCallback(async (id: string) => {
     setSelectedId(id)
+    setShowOutput(false)
     setDetailLoading(true)
     setDetailTab('events')
     setReplayLoaded(false)
@@ -424,15 +426,26 @@ export default function AgentRunsHub() {
       {selectedId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setSelectedId(null)} />
-          <div className="relative w-[95vw] max-w-6xl h-[92vh] glass rounded-2xl border border-border/50 shadow-2xl flex flex-col overflow-hidden min-h-0">
-            <div className="flex items-center justify-between p-4 border-b">
+          <div className="relative w-[96vw] max-w-[1400px] h-[94vh] glass rounded-2xl border border-border/50 shadow-2xl flex flex-col overflow-hidden min-h-0">
+            <div className="flex items-center justify-between p-4 border-b shrink-0">
               <div className="min-w-0">
                 <h3 className="font-medium truncate">运行详情</h3>
                 <p className="text-xs text-muted-foreground mt-0.5">{detail?.run?.id}</p>
               </div>
-              <Button variant="ghost" size="icon" onClick={() => setSelectedId(null)}>
-                <X className="w-4 h-4" />
-              </Button>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={detail?.primaryOutput == null}
+                  title={detail?.primaryOutput == null ? '主输出尚未生成' : '查看输出成果'}
+                  onClick={() => setShowOutput(true)}
+                >
+                  查看输出成果
+                </Button>
+                <Button variant="ghost" size="icon" onClick={() => setSelectedId(null)}>
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
             </div>
 
             {detailLoading && !detail ? (
@@ -441,9 +454,9 @@ export default function AgentRunsHub() {
               </div>
             ) : detail ? (
               <>
-                <div className="grid gap-4 p-4 overflow-y-auto lg:grid-cols-[1.3fr_1fr] lg:overflow-hidden lg:flex-none lg:max-h-[54%] lg:min-h-0 min-h-0">
-                  <div className="space-y-2 lg:overflow-y-auto lg:pr-1 lg:min-h-0 min-h-[280px]">
-                  <div className="flex items-center gap-2">
+                <div className="grid gap-4 p-4 overflow-y-auto lg:grid-cols-[1.5fr_1fr] lg:overflow-hidden lg:flex-1 lg:min-h-0 min-h-0">
+                  <div className="flex flex-col gap-2 lg:min-h-0 lg:overflow-hidden min-h-[320px]">
+                  <div className="shrink-0 space-y-2">
                     {(() => {
                       const st = STATUS_META[detail.run.status]
                       const StIcon = st.icon
@@ -458,15 +471,17 @@ export default function AgentRunsHub() {
                   </div>
                   <p className="text-sm">{detail.run.requirement}</p>
                   {detail.run.teamName && <p className="text-xs font-medium text-primary">团队：{detail.run.teamName}</p>}
-                  <RunGraph
-                    teamSnapshot={detail.run.teamSnapshot}
-                    nodes={detail.nodes}
-                    events={detail.events}
-                    selectedNodeId={selectedNodeId}
-                    onSelect={(id) => setSelectedNodeId(selectedNodeId === id ? null : id)}
-                  />
+                  <div className="flex-1 min-h-0 lg:overflow-hidden flex flex-col">
+                    <RunGraph
+                      teamSnapshot={detail.run.teamSnapshot}
+                      nodes={detail.nodes}
+                      events={detail.events}
+                      selectedNodeId={selectedNodeId}
+                      onSelect={(id) => setSelectedNodeId(selectedNodeId === id ? null : id)}
+                    />
+                  </div>
                   {detail.nodes.length > 0 && (
-                    <div id="run-nodes-block" className="flex flex-wrap gap-2 pt-2">
+                    <div id="run-nodes-block" className="flex flex-wrap gap-2 pt-2 shrink-0">
                       {detail.nodes.map(node => {
                         const displayName = node.name && node.name !== '用户'
                           ? node.name
@@ -491,7 +506,7 @@ export default function AgentRunsHub() {
                     const n = detail.nodes.find(x => x.nodeId === selectedNodeId)
                     if (!n) return null
                     return (
-                      <div className="rounded-lg border p-3 text-xs space-y-1">
+                      <div className="rounded-lg border p-3 text-xs space-y-1 shrink-0 max-h-[18vh] overflow-y-auto">
                         <p className="font-medium">节点分产物 · {n.name !== '用户' ? n.name : (DAG_NAME_MAP[n.nodeId] || n.nodeId)}</p>
                         {n.errorMessage && <p className="text-red-600">错误：{n.errorMessage}</p>}
                         {n.textOutput && <pre className="whitespace-pre-wrap break-words max-h-[22vh] overflow-y-auto bg-background p-2 rounded border">{n.textOutput.slice(0, 3000)}</pre>}
@@ -503,161 +518,175 @@ export default function AgentRunsHub() {
                     <p className="text-xs text-red-600">错误：{detail.run.errorMessage}</p>
                   )}
                   </div>
-                  <div className="space-y-2 lg:overflow-y-auto lg:pl-1 lg:min-h-0">
-                    {detail.primaryOutput != null ? (
-                      <div className="rounded-lg border bg-muted/30 p-3">
-                        {(() => {
-                          const parsed = parsePrimaryOutput(detail.primaryOutput)
-                          return (
-                            <>
-                              <div className="flex items-center justify-between gap-2 mb-1">
-                                <p className="text-xs font-medium">主输出成果{parsed.title ? ` · ${parsed.title}` : ''}</p>
-                                <Button size="sm" variant="outline" onClick={saveOutputAsNote} disabled={savingNote}>
-                                  {savingNote ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null}
-                                  保存为 AI 笔记
-                                </Button>
-                              </div>
-                              {parsed.title && <p className="text-sm font-semibold mb-2">{parsed.title}</p>}
-                              <div className="max-h-[50vh] overflow-y-auto">
-                                <MarkdownPreview content={parsed.markdown.slice(0, 8000)} />
-                              </div>
-                              {parsed.tags.length > 0 && (
-                                <div className="flex flex-wrap gap-1 mt-2">
-                                  {parsed.tags.map((t) => (
-                                    <Badge key={t} variant="secondary" className="text-[10px]">{t}</Badge>
-                                  ))}
-                                </div>
-                              )}
-                              <details className="mt-2">
-                                <summary className="text-xs text-muted-foreground cursor-pointer">查看原始输出</summary>
-                                <pre className="text-xs whitespace-pre-wrap break-words max-h-40 overflow-y-auto mt-1">
-                                  {parsed.raw.slice(0, 2000)}
-                                </pre>
-                              </details>
-                            </>
-                          )
-                        })()}
-                      </div>
-                    ) : (
-                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs">
-                        <p className="text-amber-700">主输出未完成，去节点详情看分产物</p>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="mt-2"
-                          onClick={() => document.getElementById('run-nodes-block')?.scrollIntoView({ behavior: 'smooth' })}
-                        >
-                          查看节点分产物
-                        </Button>
-                      </div>
+                  <div className="flex flex-col lg:min-h-0 lg:overflow-hidden min-h-[300px]">
+                    {/* Tab 切换（右侧事件流） */}
+                    <div className="flex items-center gap-1 px-1 border-b shrink-0">
+                      {([
+                        { key: 'events', label: '事件流', icon: ListChecks },
+                        { key: 'approvals', label: '工具审批', icon: ShieldCheck },
+                        { key: 'replay', label: '会话回放', icon: RotateCcw },
+                      ] as const).map((tab) => {
+                        const Icon = tab.icon
+                        return (
+                          <button
+                            key={tab.key}
+                            onClick={() => {
+                              setDetailTab(tab.key)
+                              if (tab.key === 'approvals') loadApprovals(selectedId)
+                              if (tab.key === 'replay') loadReplay(selectedId)
+                            }}
+                            className={cn(
+                              'flex items-center gap-1.5 px-3 py-2 text-sm rounded-t-lg border-b-2 transition-colors',
+                              detailTab === tab.key
+                                ? 'border-primary text-foreground font-medium'
+                                : 'border-transparent text-muted-foreground hover:text-foreground'
+                            )}
+                          >
+                            <Icon className="w-3.5 h-3.5" />
+                            {tab.label}
+                            {tab.key === 'approvals' && approvals.some(a => a.status === 'pending') && (
+                              <span className="w-2 h-2 rounded-full bg-amber-500" />
+                            )}
+                          </button>
+                        )
+                      })}
+                    </div>
+
+                    {detailTab === 'events' && (
+                      <ScrollArea className="flex-1 min-h-0" style={{ minHeight: 160 }}>
+                        <div className="space-y-3 p-1">
+                          {detail.events.length === 0 ? (
+                            <p className="text-sm text-muted-foreground">暂无事件</p>
+                          ) : (
+                            detail.events.map((ev) => (
+                              <EventRow
+                                key={ev.id}
+                                ev={ev}
+                                nodesMap={Object.fromEntries(
+                                  detail.nodes
+                                    .filter((n) => n.name && n.name !== '用户')
+                                    .map((n) => [n.nodeId, n.name]),
+                                )}
+                              />
+                            ))
+                          )}
+                        </div>
+                      </ScrollArea>
+                    )}
+
+                    {detailTab === 'approvals' && (
+                      <ScrollArea className="flex-1 min-h-0" style={{ minHeight: 160 }}>
+                        {approvalsLoading && approvals.length === 0 ? (
+                          <div className="flex items-center justify-center py-10 text-muted-foreground">
+                            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                            加载中...
+                          </div>
+                        ) : approvals.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-10">
+                            本次运行没有触发工具审批
+                          </p>
+                        ) : (
+                          <div className="space-y-3">
+                            {approvals.map((ap) => (
+                              <ApprovalRow
+                                key={ap.id}
+                                approval={ap}
+                                runId={selectedId}
+                                onDecide={decideApproval}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </ScrollArea>
+                    )}
+
+                    {detailTab === 'replay' && (
+                      <ScrollArea className="flex-1 min-h-0" style={{ minHeight: 160 }}>
+                        {replayLoading ? (
+                          <div className="flex items-center justify-center py-10 text-muted-foreground">
+                            <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                            加载会话日志...
+                          </div>
+                        ) : replay.length === 0 ? (
+                          <div className="text-center py-10">
+                            <RotateCcw className="w-8 h-8 mx-auto mb-2 text-muted-foreground/40" />
+                            <p className="text-sm text-muted-foreground">暂无回放记录</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              运行中每轮「模型实际看到的消息」会落库，完成后可完整回放定位问题
+                            </p>
+                          </div>
+                        ) : (
+                          <ReplayPanel messages={replay} />
+                        )}
+                      </ScrollArea>
                     )}
                   </div>
                 </div>
 
-                {/* Tab 切换 */}
-                <div className="flex items-center gap-1 px-4 pt-3 border-b">
-                  {([
-                    { key: 'events', label: '事件流', icon: ListChecks },
-                    { key: 'approvals', label: '工具审批', icon: ShieldCheck },
-                    { key: 'replay', label: '会话回放', icon: RotateCcw },
-                  ] as const).map((tab) => {
-                    const Icon = tab.icon
-                    return (
-                      <button
-                        key={tab.key}
-                        onClick={() => {
-                          setDetailTab(tab.key)
-                          if (tab.key === 'approvals') loadApprovals(selectedId)
-                          if (tab.key === 'replay') loadReplay(selectedId)
-                        }}
-                        className={cn(
-                          'flex items-center gap-1.5 px-3 py-2 text-sm rounded-t-lg border-b-2 transition-colors',
-                          detailTab === tab.key
-                            ? 'border-primary text-foreground font-medium'
-                            : 'border-transparent text-muted-foreground hover:text-foreground'
-                        )}
-                      >
-                        <Icon className="w-3.5 h-3.5" />
-                        {tab.label}
-                        {tab.key === 'approvals' && approvals.some(a => a.status === 'pending') && (
-                          <span className="w-2 h-2 rounded-full bg-amber-500" />
-                        )}
-                      </button>
-                    )
-                  })}
-                </div>
-
-                {detailTab === 'events' && (
-                  <ScrollArea className="flex-1 min-h-0 p-4" style={{ minHeight: 160 }}>
-                    <div className="space-y-3">
-                      {detail.events.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">暂无事件</p>
-                      ) : (
-                        detail.events.map((ev) => (
-                          <EventRow
-                            key={ev.id}
-                            ev={ev}
-                            nodesMap={Object.fromEntries(
-                              detail.nodes
-                                .filter((n) => n.name && n.name !== '用户')
-                                .map((n) => [n.nodeId, n.name]),
-                            )}
-                          />
-                        ))
-                      )}
-                    </div>
-                  </ScrollArea>
-                )}
-
-                {detailTab === 'approvals' && (
-                  <ScrollArea className="flex-1 min-h-0 p-4" style={{ minHeight: 160 }}>
-                    {approvalsLoading && approvals.length === 0 ? (
-                      <div className="flex items-center justify-center py-10 text-muted-foreground">
-                        <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                        加载中...
-                      </div>
-                    ) : approvals.length === 0 ? (
-                      <p className="text-sm text-muted-foreground text-center py-10">
-                        本次运行没有触发工具审批
-                      </p>
-                    ) : (
-                      <div className="space-y-3">
-                        {approvals.map((ap) => (
-                          <ApprovalRow
-                            key={ap.id}
-                            approval={ap}
-                            runId={selectedId}
-                            onDecide={decideApproval}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </ScrollArea>
-                )}
-
-                {detailTab === 'replay' && (
-                  <ScrollArea className="flex-1 min-h-0 p-4" style={{ minHeight: 160 }}>
-                    {replayLoading ? (
-                      <div className="flex items-center justify-center py-10 text-muted-foreground">
-                        <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                        加载会话日志...
-                      </div>
-                    ) : replay.length === 0 ? (
-                      <div className="text-center py-10">
-                        <RotateCcw className="w-8 h-8 mx-auto mb-2 text-muted-foreground/40" />
-                        <p className="text-sm text-muted-foreground">暂无回放记录</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          运行中每轮「模型实际看到的消息」会落库，完成后可完整回放定位问题
-                        </p>
-                      </div>
-                    ) : (
-                      <ReplayPanel messages={replay} />
-                    )}
-                  </ScrollArea>
-                )}
               </>
             ) : null}
           </div>
+
+          {/* 输出成果二级悬浮窗（保存后不自动关闭） */}
+          {showOutput && detail && (
+            <div className="absolute inset-0 z-[60] flex items-center justify-center p-4">
+              <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowOutput(false)} />
+              <div className="relative w-[90vw] max-w-3xl max-h-[85vh] glass rounded-2xl border border-border/50 shadow-2xl flex flex-col overflow-hidden">
+                <div className="flex items-center justify-between p-4 border-b shrink-0">
+                  <h4 className="font-medium">输出成果</h4>
+                  <Button variant="ghost" size="icon" onClick={() => setShowOutput(false)}>
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+                <div className="p-4 overflow-y-auto flex-1 min-h-0">
+                  {detail.primaryOutput != null ? (
+                    (() => {
+                      const parsed = parsePrimaryOutput(detail.primaryOutput)
+                      return (
+                        <>
+                          {parsed.title && <p className="text-sm font-semibold mb-2">{parsed.title}</p>}
+                          <MarkdownPreview content={parsed.markdown.slice(0, 8000)} />
+                          {parsed.tags.length > 0 && (
+                            <div className="flex flex-wrap gap-1 mt-2">
+                              {parsed.tags.map((t) => (
+                                <Badge key={t} variant="secondary" className="text-[10px]">{t}</Badge>
+                              ))}
+                            </div>
+                          )}
+                          <details className="mt-2">
+                            <summary className="text-xs text-muted-foreground cursor-pointer">查看原始输出</summary>
+                            <pre className="text-xs whitespace-pre-wrap break-words max-h-40 overflow-y-auto mt-1">
+                              {parsed.raw.slice(0, 2000)}
+                            </pre>
+                          </details>
+                        </>
+                      )
+                    })()
+                  ) : (
+                    <p className="text-sm text-muted-foreground">主输出尚未生成，可去节点详情看分产物。</p>
+                  )}
+                </div>
+                <div className="flex items-center justify-end gap-2 p-4 border-t shrink-0">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const parsed = detail.primaryOutput != null ? parsePrimaryOutput(detail.primaryOutput) : null
+                      navigator.clipboard?.writeText(parsed?.markdown || '')
+                      toast({ title: '已复制输出成果', variant: 'success' })
+                    }}
+                    disabled={detail.primaryOutput == null}
+                  >
+                    复制
+                  </Button>
+                  <Button size="sm" onClick={saveOutputAsNote} disabled={savingNote || detail.primaryOutput == null}>
+                    {savingNote ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : null}
+                    保存为 AI 笔记
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
