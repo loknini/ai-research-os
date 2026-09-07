@@ -14,4 +14,4 @@ requests>=2.31
 python-multipart>=0.0.9
 aiosqlite>=0.20
 jsonschema>=4.22,<5
-pypdf>=4.0
+PyMuPDF>=1.24
