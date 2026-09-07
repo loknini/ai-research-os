@@ -330,9 +330,6 @@ async def init_db() -> None:
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_deadline ON tasks(deadline)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id)')
-        # Composite space-aware indexes (space_id first) for hot filtered queries
-        await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_space_project ON tasks(space_id, project_id)')
-        await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_space_status ON tasks(space_id, status)')
 
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_projects_status ON software_projects(status)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_code_gen_project ON code_generations(project_id)')
@@ -342,8 +339,6 @@ async def init_db() -> None:
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_paper ON notes(paper_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_project ON notes(project_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_parent ON notes(parent_note_id)')
-        await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_space_updated ON notes(space_id, updated_at DESC)')
-        await conn.execute('CREATE INDEX IF NOT EXISTS idx_version_space_entity ON version_history(space_id, entity_type, entity_id)')
 
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_experiments_project ON experiments(project_id)')
@@ -398,10 +393,8 @@ async def init_db() -> None:
         ''')
 
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC)')
-        await conn.execute('CREATE INDEX IF NOT EXISTS idx_conversations_space_updated ON conversations(space_id, updated_at DESC)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_timestamp ON chat_messages(timestamp)')
-        await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_space_conv ON chat_messages(space_id, conversation_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_conv_parent ON chat_messages(conversation_id, parent_id)')
 
         # ---------------- Agent 会话表 ----------------
@@ -751,6 +744,16 @@ async def init_db() -> None:
             await conn.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_{tbl}_space ON {tbl}(space_id)"
             )
+
+        # Composite space-aware indexes (space_id first) for hot filtered queries.
+        # 必须在 space_id 补列迁移之后建：新库建表 DDL 尚无 space_id 列，
+        # 提前建会报 no such column（见 qa_verify_agent_harness 新库回归）。
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_space_project ON tasks(space_id, project_id)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_space_status ON tasks(space_id, status)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_space_updated ON notes(space_id, updated_at DESC)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_version_space_entity ON version_history(space_id, entity_type, entity_id)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_conversations_space_updated ON conversations(space_id, updated_at DESC)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_chat_messages_space_conv ON chat_messages(space_id, conversation_id)')
 
         # Agent team migration. Each ALTER is independently idempotent so
         # concurrent uvicorn workers can initialize an old database safely.

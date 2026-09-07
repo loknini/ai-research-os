@@ -101,11 +101,11 @@ def test_approval_policy():
 
         os.environ.pop("AGENT_REQUIRE_APPROVAL_TOOLS", None)
 
-        # safe 工具任何模式都不需要审批
+        # safe 工具任何模式都不需要审批（fetch_papers 已删除，改用同为 safe 的 get_stats）
         os.environ["AGENT_APPROVAL_MODE"] = "auto"
-        check(reg.tool_needs_approval("fetch_papers") == (False, "safe"), "auto/safe -> 不需要审批")
+        check(reg.tool_needs_approval("get_stats") == (False, "safe"), "auto/safe -> 不需要审批")
         os.environ["AGENT_APPROVAL_MODE"] = "manual"
-        check(reg.tool_needs_approval("fetch_papers") == (False, "safe"), "manual/safe -> 不需要审批")
+        check(reg.tool_needs_approval("get_stats") == (False, "safe"), "manual/safe -> 不需要审批")
 
         # sensitive 工具：auto 直通，manual/strict 等待审批
         os.environ["AGENT_APPROVAL_MODE"] = "auto"
@@ -361,15 +361,16 @@ def test_context():
 def test_plugins():
     print("\n[E] 插件化（自动发现 + 合并 + 未知工具）")
     specs = {s.name: s for s in reg.list_specs()}
-    for expected in ("fetch_papers", "create_task", "create_project", "create_note", "get_stats"):
+    for expected in ("create_task", "create_project", "create_note", "get_stats"):
         check(expected in specs, f"discover_tools 自动发现 {expected}")
+    check("fetch_papers" not in specs, "已删除的 fetch_papers 不再被发现")
     # 策略标注正确
-    check(specs["fetch_papers"].policy == reg.POLICY_SAFE, "fetch_papers policy=safe")
+    check(specs["get_stats"].policy == reg.POLICY_SAFE, "get_stats policy=safe")
     check(specs["create_task"].policy == reg.POLICY_SENSITIVE, "create_task policy=sensitive")
 
     tools = reg.get_tools()
     names = {t["function"]["name"] for t in tools}
-    check("fetch_papers" in names, "注册表工具进入 function-calling schema")
+    check("create_task" in names, "注册表工具进入 function-calling schema")
     skill_names = {n for n in names if reg.is_skill_tool(n)}
     check(len(skill_names) >= 1, f"技能工具已合并（{sorted(skill_names)[:3]}…）")
 
