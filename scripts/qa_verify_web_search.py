@@ -57,8 +57,8 @@ class _Resp:
     def __init__(self, payload: bytes):
         self._payload = payload
 
-    def read(self):
-        return self._payload
+    def read(self, n: int = -1):
+        return self._payload[:n] if n is not None and n >= 0 else self._payload
 
     def __enter__(self):
         return self
@@ -202,10 +202,120 @@ check("非法 freshness 忽略并记 warnings", out.get("success") is True
       and any("freshness" in w for w in out.get("warnings", [])))
 
 # ---------- 9. 预算断言 ----------
-total = sum(ws.TIMEOUTS.values())
-check(f"超时预算 {total}s 远低于技能 timeout(30s)", total <= 25)
+total = sum(ws.TIMEOUTS[p] for p in ("duckduckgo", "bocha", "wikipedia"))
+check(f"搜索超时预算 {total}s 远低于技能 timeout(30s)", total <= 25)
 skill_md = (ROOT / "backend" / "skills" / "web-search" / "SKILL.md").read_text(encoding="utf-8")
 check("SKILL timeout 仍为 30", "timeout: 30" in skill_md)
+
+# ---------- 10. SSRF 守卫 ----------
+def _public_dns(host, *args, **kwargs):
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+
+def _mixed_dns(host, *args, **kwargs):
+    """字面 IP 按字面返回（还原真实解析行为），域名一律给公网 IP。"""
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(host)
+        return [(socket.AF_INET6 if ":" in host else socket.AF_INET,
+                 socket.SOCK_STREAM, 6, "", (host, 0))]
+    except ValueError:
+        return _public_dns(host)
+
+
+def _private_dns(host, *args, **kwargs):
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))]
+
+
+with patch.object(ws.socket, "getaddrinfo", _public_dns):
+    try:
+        ws._assert_fetchable_url("https://example.com/a")
+        check("公网 URL 放行", True)
+    except Exception:
+        check("公网 URL 放行", False)
+
+for bad in ["http://127.0.0.1/x", "http://10.0.0.5/x", "http://169.254.169.254/",
+            "http://[::1]/", "file:///etc/passwd", "ftp://a/b",
+            "http://user:pw@example.com/"]:
+    with patch.object(ws.socket, "getaddrinfo", _mixed_dns):
+        try:
+            ws._assert_fetchable_url(bad)
+            check(f"拦截 {bad}", False)
+        except Exception:
+            check(f"拦截 {bad}", True)
+
+with patch.object(ws.socket, "getaddrinfo", _private_dns):
+    try:
+        ws._assert_fetchable_url("http://example.com/")
+        check("DNS 指向内网被拦截", False)
+    except Exception:
+        check("DNS 指向内网被拦截", True)
+
+# ---------- 11. 重定向超限 ----------
+guard = ws._FetchRedirectGuard()
+with patch.object(ws.socket, "getaddrinfo", _public_dns):
+    import urllib.request as _urlreq
+
+    ok = False
+    try:
+        for i in range(4):
+            guard.redirect_request(
+                _urlreq.Request("https://example.com/0"), None, 302, "m",
+                {"Location": f"https://example.com/{i + 1}"}, f"https://example.com/{i + 1}")
+    except Exception:
+        ok = guard.count == 4
+    check("重定向超 3 跳终止", ok)
+
+# ---------- 12. fetch 成功形状 ----------
+FETCH_HTML = (
+    "<html><head><style>x</style></head><body><h1>Hi</h1>"
+    '<a href="/b">Bee</a><script>evil()</script><p>Body text here.</p></body></html>'
+).encode()
+
+
+class _FakeOpenerResp(_Resp):
+    def __init__(self, payload, final_url):
+        super().__init__(payload)
+        self._final = final_url
+
+    def geturl(self):
+        return self._final
+
+
+class _FakeOpener:
+    def open(self, req, timeout=None):
+        return _FakeOpenerResp(FETCH_HTML, "https://example.com/a")
+
+
+with patch.object(ws.socket, "getaddrinfo", _public_dns):
+    with patch.object(ws.urllib.request, "build_opener", lambda *a: _FakeOpener()):
+        out = _run({"url": "https://example.com/a"})
+check("fetch 成功", out.get("success") is True and out.get("mode") == "fetch")
+check("fetch 去标签且去脚本", "evil()" not in out.get("content", "") and "Body text" in out.get("content", ""))
+check("fetch 出站链接 ≤20", isinstance(out.get("links"), list)
+      and out["links"] and out["links"][0]["url"] == "https://example.com/b")
+check("薄页记 uncertainty", any("JS" in u for u in out.get("uncertainty", [])))
+
+# ---------- 13. 200KB 截断 ----------
+big = b"a" * (300 * 1024)
+
+
+class _BigOpener:
+    def open(self, req, timeout=None):
+        return _FakeOpenerResp(big, "https://example.com/big")
+
+
+with patch.object(ws.socket, "getaddrinfo", _public_dns):
+    with patch.object(ws.urllib.request, "build_opener", lambda *a: _BigOpener()):
+        out = _run({"url": "https://example.com/big"})
+check("超 200KB 截断", out.get("success") is True
+      and len(out.get("content", "").encode()) <= 200 * 1024)
+check("截断记 warnings", any("200KB" in w for w in out.get("warnings", [])))
+
+# ---------- 14. 无 query 无 url ----------
+out = _run({"max_results": 3})
+check("无 query 无 url 报错", out.get("success") is False)
 
 print(f"\nTOTAL: {PASS + FAIL}  PASS: {PASS}  FAIL: {FAIL}")
 sys.exit(1 if FAIL else 0)

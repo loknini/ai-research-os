@@ -31,6 +31,7 @@ uncertainty 是对事实的怀疑，warnings 是对路由的说明（成功也�
 from __future__ import annotations
 
 import html as _html
+import ipaddress
 import json
 import os
 import re as _re
@@ -49,9 +50,14 @@ DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 DEFAULT_PROVIDER = "duckduckgo"
 # 各源单次请求超时（秒）。总量预算 duckduckgo 8 + bocha 8 + wikipedia 5 = 21s，
 # 加一次超时重试仍低于技能 timeout（30s），避免被 skills_bridge 到点杀进程。
-TIMEOUTS = {"duckduckgo": 8, "bocha": 8, "wikipedia": 5}
+TIMEOUTS = {"duckduckgo": 8, "bocha": 8, "wikipedia": 5, "fetch": 8}
 # freshness 仅 Bocha 后端支持
 VALID_FRESHNESS = ("day", "week", "month", "year")
+# 抓页面上限：200KB 截断（与用户确认值一致），重定向最多跟 3 跳，
+# 正文过薄（疑似 JS 渲染页）阈值 500 字符
+FETCH_MAX_BYTES = 200 * 1024
+FETCH_MAX_REDIRECTS = 3
+FETCH_THIN_CHARS = 500
 UA = "AI-Research-OS/1.0 (research workbench)"
 # 浏览器级 UA：DuckDuckGo 对默认 python-urllib UA 会限流/拦爬虫
 DDG_UA = (
@@ -212,6 +218,90 @@ def _search_wikipedia(query: str, max_results: int, timeout: int = 5):
     return results
 
 
+def _assert_fetchable_url(url: str) -> str:
+    """SSRF 守卫：仅 http/https、主机名可解析且全部解析 IP 为公网地址。
+
+    通过返回规范化 URL，失败抛 URLError（可读原因）。注意残留风险：
+    解析与连接之间存在 DNS TOCTOU，本项目为可信内网部署，该残留已在
+    SKILL.md 注明；不要用本工具抓取不可信内网地址。
+    """
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except Exception:
+        raise urllib.error.URLError("URL 格式非法")
+    if parts.scheme not in ("http", "https"):
+        raise urllib.error.URLError("仅支持 http/https 链接")
+    host = (parts.hostname or "").strip().rstrip(".")
+    if not host:
+        raise urllib.error.URLError("URL 缺少主机名")
+    if parts.username or parts.password:
+        raise urllib.error.URLError("URL 不得携带认证信息")
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror:
+        raise urllib.error.URLError(f"域名解析失败：{host}")
+    for info in infos:
+        ip = str(info[4][0]).split("%")[0]
+        try:
+            if not ipaddress.ip_address(ip).is_global:
+                raise urllib.error.URLError(f"目标地址非公网 IP，已拦截（{host}）")
+        except ValueError:
+            raise urllib.error.URLError(f"无法解析目标地址（{host}）")
+    return url
+
+
+class _FetchRedirectGuard(urllib.request.HTTPRedirectHandler):
+    """抓取重定向守卫：超限即停，每跳重过 SSRF 校验。"""
+
+    def __init__(self):
+        self.count = 0
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.count += 1
+        if self.count > FETCH_MAX_REDIRECTS:
+            raise urllib.error.URLError(f"重定向超过 {FETCH_MAX_REDIRECTS} 次，已终止")
+        joined = urllib.parse.urljoin(req.full_url, newurl)
+        _assert_fetchable_url(joined)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _fetch_page(url: str):
+    """抓取单页：返回 (content, links, final_url, truncated)。
+
+    content 为去标签文本（script/style 已删）；links 为 ≤20 个出站链接
+    [{text, url}]；truncated 表示是否因 200KB 截断。
+    """
+    guard = _FetchRedirectGuard()
+    opener = urllib.request.build_opener(guard)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": DDG_UA,
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        },
+    )
+    with opener.open(req, timeout=TIMEOUTS["fetch"]) as resp:
+        final_url = resp.geturl()
+        raw = resp.read(FETCH_MAX_BYTES + 1)
+    truncated = len(raw) > FETCH_MAX_BYTES
+    html_text = raw[:FETCH_MAX_BYTES].decode("utf-8", errors="ignore")
+    links = []
+    seen = set()
+    for href, label in _re.findall(
+        r'<a\s[^>]*href="([^"]+)"[^>]*>(.*?)</a>', html_text, _re.S | _re.I
+    ):
+        abs_url = urllib.parse.urljoin(final_url, _strip_html(href))
+        if not abs_url.startswith(("http://", "https://")) or abs_url in seen:
+            continue
+        seen.add(abs_url)
+        links.append({"text": _strip_html(label)[:80], "url": abs_url})
+        if len(links) >= 20:
+            break
+    body = _re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_text, flags=_re.S | _re.I)
+    content = _re.sub(r"\n{3,}", "\n\n", _strip_html(body)).strip()
+    return content, links, final_url, truncated
+
+
 def _resolve_chain() -> list[str]:
     """返回要依次尝试的 provider 列表（去重保序）。
 
@@ -321,6 +411,11 @@ def main() -> None:
     except (TypeError, ValueError):
         max_results = 5
     freshness = (params.get("freshness") or "").strip()
+    url = (params.get("url") or "").strip()
+
+    if url:
+        _main_fetch(url, query)
+        return
 
     if not query:
         print(json.dumps({"success": False, "error": "缺少 query 参数"}, ensure_ascii=False))
@@ -362,6 +457,7 @@ def main() -> None:
                     "provider": prov,
                     "engine": prov,
                     "status": "ok",
+                    "mode": "search",
                     "query": query,
                     "results": results,
                     "uncertainty": [],
@@ -380,6 +476,7 @@ def main() -> None:
                 "provider": chain[-1],
                 "engine": chain[-1],
                 "status": "unavailable",
+                "mode": "search",
                 "query": query,
                 "results": [],
                 "uncertainty": [],
@@ -390,6 +487,103 @@ def main() -> None:
             ensure_ascii=False,
         )
     )
+
+
+def _main_fetch(url: str, query: str) -> None:
+    """抓页面模式（对标 modsearch -u）：SSRF 守卫 + 200KB 截断 + 薄页声明。"""
+    t0 = time.perf_counter()
+    try:
+        _assert_fetchable_url(url)
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "success": False,
+                    "provider": "fetch",
+                    "engine": "local",
+                    "status": "unavailable",
+                    "mode": "fetch",
+                    "query": query,
+                    "url": url,
+                    "uncertainty": [],
+                    "warnings": [],
+                    "error": _short_err(exc),
+                    "attempts": [
+                        {
+                            "provider": "fetch",
+                            "engine": "local",
+                            "ok": False,
+                            "error": _short_err(exc),
+                            "durationSeconds": round(time.perf_counter() - t0, 2),
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    try:
+        content, links, final_url, truncated = _fetch_page(url)
+        dt = round(time.perf_counter() - t0, 2)
+        uncertainty: list = []
+        warnings: list = []
+        if truncated:
+            warnings.append("页面超 200KB 已截断")
+        if len(content) < FETCH_THIN_CHARS:
+            uncertainty.append("页面正文过少（疑似 JS 渲染页），内容仅供参考")
+        print(
+            json.dumps(
+                {
+                    "success": True,
+                    "provider": "fetch",
+                    "engine": "local",
+                    "status": "ok",
+                    "mode": "fetch",
+                    "query": query,
+                    "url": final_url,
+                    "content": content,
+                    "links": links,
+                    "uncertainty": uncertainty,
+                    "warnings": warnings,
+                    "attempts": [
+                        {
+                            "provider": "fetch",
+                            "engine": "local",
+                            "ok": True,
+                            "durationSeconds": dt,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "success": False,
+                    "provider": "fetch",
+                    "engine": "local",
+                    "status": "unavailable",
+                    "mode": "fetch",
+                    "query": query,
+                    "url": url,
+                    "uncertainty": [],
+                    "warnings": [],
+                    "error": _short_err(exc),
+                    "attempts": [
+                        {
+                            "provider": "fetch",
+                            "engine": "local",
+                            "ok": False,
+                            "error": _short_err(exc),
+                            "durationSeconds": round(time.perf_counter() - t0, 2),
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        )
 
 
 if __name__ == "__main__":

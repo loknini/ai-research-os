@@ -5,13 +5,14 @@ type: tool
 command: ["python", "scripts/web_search.py"]
 timeout: 30
 enabled: true
-parameters: {"type":"object","properties":{"query":{"type":"string","description":"搜索关键词（中文/英文均可），越具体越好，例如 'GLM-4.5 发布 2025'"},"max_results":{"type":"integer","description":"返回条数，默认 5，最大 10"},"freshness":{"type":"string","description":"时间过滤（可选）：day / week / month / year，仅 Bocha 后端支持"}},"required":["query"]}
+parameters: {"type":"object","properties":{"query":{"type":"string","description":"搜索关键词（中文/英文均可），越具体越好，例如 'GLM-4.5 发布 2025'；抓页面模式下可选，仅作回显"},"max_results":{"type":"integer","description":"返回条数，默认 5，最大 10；抓页面模式下忽略"},"freshness":{"type":"string","description":"时间过滤（可选）：day / week / month / year，仅 Bocha 后端支持"},"url":{"type":"string","description":"抓页面模式（可选）：传入 http/https 链接即直接抓取该页正文，此时 query 可为空"}},"required":[]}
 ---
-# web_search（通用联网搜索）
+# web_search（通用联网搜索 + 抓页面）
 
-调用搜索 API 返回**结构化结果列表**（title / url / snippet / published），供调用方
-Agent 引用、总结、对比或写入笔记。这是 SkillBridge「工具型技能 → Agent」管线的一员，
-命令来自受信任的 SKILL.md，Agent 只提供参数（query / max_results / freshness）。
+搜索模式调用搜索 API 返回**结构化结果列表**（title / url / snippet / published），供调用方
+Agent 引用、总结、对比或写入笔记；抓页面模式（传 `url` 参数）直接返回该页正文
+`content` 与出站链接 `links`（≤20）。这是 SkillBridge「工具型技能 → Agent」管线的一员，
+命令来自受信任的 SKILL.md，Agent 只提供参数（query / max_results / freshness / url）。
 
 ## 何时调用 / 何时不调用
 
@@ -26,7 +27,8 @@ Agent 引用、总结、对比或写入笔记。这是 SkillBridge「工具型�
 
 ## 返回字段
 
-成功：`{success, provider, engine, status:"ok", query, results, uncertainty[], warnings[], attempts[]}`；
+搜索成功：`{success, provider, engine, status:"ok", mode:"search", query, results, uncertainty[], warnings[], attempts[]}`；
+抓页面成功：`{success, mode:"fetch", url(最终地址), content, links[{text,url}], uncertainty[], warnings[], attempts[]}`；
 失败：`{success:false, status:"unavailable", error, attempts[]}`（旧 `provider/query/results` 字段保留兼容）。
 其中 results 每项为 `{title, url, snippet, published}`（published 可能为空字符串）；
 `attempts` 逐条记录 `{provider, ok, error?, durationSeconds, keyIndex?}`。
@@ -37,8 +39,15 @@ Agent 引用、总结、对比或写入笔记。这是 SkillBridge「工具型�
 - `warnings` 是对**路由**的说明（降级、轮换、忽略的参数）：决定采信程度，不当事实引用。
 - 引用必须带 `results[].url` 来源链接；`status` 非 `ok` 时如实说明覆盖缺口。
 
+## 抓页面模式说明
+
+- 传 `url` 即进入抓页面模式（`query` 可空，仅回显）：返回正文 `content` + 出站链接 `links`。
+- 安全边界：仅 `http/https`、无认证信息、主机全部解析 IP 为公网才抓取；重定向≤3 跳（每跳重检）；
+  页面 200KB 截断（`warnings` 注明）；正文过少在 `uncertainty` 注明疑似 JS 渲染页。
+- 残留风险：DNS 解析与连接之间存在 TOCTOU，本项目为可信内网部署，不用本工具抓取不可信内网地址。
+
 ## 说明
 
-- 纯标准库实现（urllib + json + re + socket + time），零第三方依赖，契合项目零重依赖约定。
+- 纯标准库实现（urllib + json + re + socket + time + ipaddress），零第三方依赖，契合项目零重依赖约定。
 - 本工具只负责**取数**，不负责理解；引用、总结、落库由调用方 Agent 完成。
 - 网络不可达时返回 `success: false`（附 `attempts` 诊断），由 Agent 基于自身知识回答并说明原因。
