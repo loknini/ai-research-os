@@ -57,6 +57,8 @@ interface RagStats {
 interface Capabilities {
   embeddingsConfigured: boolean
   embeddingModel: string
+  embedProvider: string
+  embedLocalAvailable: boolean
   supportedTypes: string[]
   pdfAvailable: boolean
 }
@@ -88,6 +90,8 @@ export default function RagSettingsManager() {
   const [recursive, setRecursive] = useState(true)
   const [types, setTypes] = useState<Record<string, boolean>>({ pdf: true, txt: true, md: true })
   const [embedModel, setEmbedModel] = useState('')
+  const [embedProvider, setEmbedProvider] = useState('')
+  const [embedLocalModel, setEmbedLocalModel] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [indexing, setIndexing] = useState(false)
 
@@ -254,20 +258,25 @@ export default function RagSettingsManager() {
       {/* 能力提示 */}
       {caps && (
         <div className="flex flex-wrap gap-2 text-xs">
-          {caps.embeddingsConfigured ? (
+          {caps.embedProvider === 'local' ? (
+            <Badge variant="secondary" className="bg-purple-500/10 text-purple-600 flex items-center gap-1">
+              <KeyRound className="w-3 h-3" /> 本地嵌入
+              {caps.embeddingModel ? `（${caps.embeddingModel}）` : ''}
+            </Badge>
+          ) : caps.embeddingsConfigured ? (
             <Badge variant="secondary" className="bg-green-500/10 text-green-600 flex items-center gap-1">
-              <KeyRound className="w-3 h-3" /> 向量检索可用
+              <KeyRound className="w-3 h-3" /> API 嵌入
               {caps.embeddingModel ? `（${caps.embeddingModel}）` : ''}
             </Badge>
           ) : (
             <Badge variant="secondary" className="bg-yellow-500/10 text-yellow-600 flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" /> 未配置 LLM：将使用关键词检索
+              <AlertCircle className="w-3 h-3" /> 未配置嵌入：将使用关键词检索
             </Badge>
           )}
           {caps.pdfAvailable ? (
             <Badge variant="secondary" className="bg-blue-500/10 text-blue-600">PDF 解析已启用</Badge>
           ) : (
-            <Badge variant="secondary" className="bg-yellow-500/10 text-yellow-600">PDF 需 pip install pypdf</Badge>
+            <Badge variant="secondary" className="bg-yellow-500/10 text-yellow-600">PDF 需 pip install PyMuPDF</Badge>
           )}
         </div>
       )}
@@ -329,16 +338,43 @@ export default function RagSettingsManager() {
               <KeyRound className="w-3 h-3" /> 高级（嵌入模型，可选）
             </button>
             {showAdvanced && (
-              <div className="mt-2">
-                <Input
-                  value={embedModel}
-                  onChange={(e) => setEmbedModel(e.target.value)}
-                  placeholder="如 BAAI/bge-m3（留空用全局设置）"
-                  className="text-sm"
-                />
-                <p className="mt-1 text-xs text-muted-foreground">
-                  指定用于生成向量的嵌入模型；留空则使用「模型与 API」中的全局嵌入模型。
-                </p>
+              <div className="mt-2 space-y-2">
+                <div>
+                  <label className="text-xs text-muted-foreground">嵌入 Provider</label>
+                  <select
+                    value={embedProvider}
+                    onChange={(e) => setEmbedProvider(e.target.value)}
+                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+                  >
+                    <option value="">默认（API）</option>
+                    <option value="api">API（走 LLM 服务）</option>
+                    <option value="local">本地模型（离线，需 GPU 或 CPU）</option>
+                  </select>
+                </div>
+                {embedProvider === 'local' && (
+                  <div>
+                    <Input
+                      value={embedLocalModel}
+                      onChange={(e) => setEmbedLocalModel(e.target.value)}
+                      placeholder="如 Qwen/Qwen3-Embedding-0.6B（从 ModelScope 自动下载）"
+                      className="text-sm"
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      ModelScope 模型 ID 或本地目录路径。首次使用自动下载到 data/models/（~1.2GB）。
+                    </p>
+                  </div>
+                )}
+                <div>
+                  <Input
+                    value={embedModel}
+                    onChange={(e) => setEmbedModel(e.target.value)}
+                    placeholder="如 BAAI/bge-m3（留空用全局设置）"
+                    className="text-sm"
+                  />
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    指定用于生成向量的嵌入模型；留空则使用「模型与 API」中的全局嵌入模型。
+                  </p>
+                </div>
               </div>
             )}
           </div>

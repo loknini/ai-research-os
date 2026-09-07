@@ -34,21 +34,33 @@ _SUPPORTED_TYPES = ["pdf", "txt", "md"]
 
 @router.get("/capabilities")
 async def capabilities(space_id: str = Depends(get_space_id)):
+    from .. import config
+    eff = config.get_effective_llm_settings()
     return {
         "success": True,
         "embeddingsConfigured": llm_client.configured,
         "embeddingModel": llm_client.embedding_model,
+        "embedProvider": eff.get("embedProvider", ""),
+        "embedLocalAvailable": _local_model_available(),
         "supportedTypes": _SUPPORTED_TYPES,
-        "pdfAvailable": _pypdf_available(),
+        "pdfAvailable": _pdf_available(),
     }
 
 
-def _pypdf_available() -> bool:
+def _pdf_available() -> bool:
     try:
-        from pypdf import PdfReader  # noqa: F401
+        import pymupdf  # noqa: F401
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def _local_model_available() -> bool:
+    """检查本地嵌入模型是否已配置。"""
+    from .. import config
+    eff = config.get_effective_llm_settings()
+    model_path = (eff.get("embedLocalModel") or "").strip()
+    return bool(model_path)
 
 
 @router.get("/sources")

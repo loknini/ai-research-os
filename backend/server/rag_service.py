@@ -2,8 +2,8 @@
 
 设计要点
 --------
-* **零重依赖**：PDF 解析用可选依赖 ``pypdf``（已在 requirements.txt）；TXT/MD
-  用标准库读取。无 ``pypdf`` 时仅跳过 PDF，不影响其它格式。
+* **零重依赖**：PDF 解析用可选依赖 ``PyMuPDF``（已在 requirements.txt）；TXT/MD
+  用标准库读取。无 ``PyMuPDF`` 时仅跳过 PDF，不影响其它格式。
 * **嵌入向量**：复用 ``llm.py`` 的 OpenAI 兼容 ``/v1/embeddings`` 端点
   （与 chat 共用同一 LLM 配置）。嵌入失败时**自动降级**为关键词（词频）检索，
   保证 RAG 在任意环境下都能工作。
@@ -26,10 +26,10 @@ from .llm import llm_client
 
 # PDF 解析为可选依赖：未安装时仅跳过 PDF，不阻断其它格式。
 try:  # pragma: no cover - 依赖在 requirements 中声明
-    from pypdf import PdfReader
-    _HAS_PYPDF = True
+    import pymupdf  # PyMuPDF >= 1.24
+    _HAS_FITZ = True
 except Exception:  # noqa: BLE001
-    _HAS_PYPDF = False
+    _HAS_FITZ = False
 
 
 # 支持的扩展名 -> 归一化类型
@@ -150,16 +150,17 @@ def extract_document(fp: Path) -> Dict[str, Any]:
     file_size = fp.stat().st_size
     ext = fp.suffix.lower()
     if ext == ".pdf":
-        if not _HAS_PYPDF:
-            raise RuntimeError("未安装 pypdf，无法解析 PDF（请 pip install pypdf）")
-        reader = PdfReader(str(fp))
+        if not _HAS_FITZ:
+            raise RuntimeError("未安装 PyMuPDF，无法解析 PDF（请 pip install PyMuPDF）")
+        doc = pymupdf.open(str(fp))
         page_texts: List[Tuple[int, str]] = []
-        for i, page in enumerate(reader.pages):
+        for i, page in enumerate(doc):
             try:
-                txt = page.extract_text() or ""
+                txt = page.get_text("text") or ""
             except Exception:  # noqa: BLE001
                 txt = ""
             page_texts.append((i + 1, txt))
+        doc.close()
     else:
         txt = _read_text_file(fp)
         page_texts = [(1, txt)]
@@ -263,16 +264,29 @@ def chunk_document(full_text: str, bounds: List[Tuple[int, int, int]],
 # 4. 嵌入（向量化）
 # ===========================================================================
 def _embed_texts(texts: List[str], model: Optional[str] = None) -> Optional[List[List[float]]]:
-    """批量嵌入；任一分组失败即返回 None（调用方降级为关键词检索）。"""
-    if not texts or not llm_client.configured:
+    """批量嵌入；失败返回 None（调用方降级为关键词检索）。
+
+    走 ``llm_client.embed_with_fallback``（API → 本地 → None 三层降级）。
+    """
+    if not texts:
+        return None
+    if not llm_client.configured and not _local_embed_available():
         return None
     out: List[List[float]] = []
     for i in range(0, len(texts), _EMBED_BATCH):
-        vecs = llm_client.embed(texts[i:i + _EMBED_BATCH], model=model)
+        vecs = llm_client.embed_with_fallback(texts[i:i + _EMBED_BATCH], model=model)
         if vecs is None:
             return None
         out.extend(vecs)
     return out if len(out) == len(texts) else None
+
+
+def _local_embed_available() -> bool:
+    """检查本地嵌入是否可用（provider=local 且模型已配置）。"""
+    from . import config
+    eff = config.get_effective_llm_settings()
+    return ((eff.get("embedProvider") or "").strip() == "local"
+            and bool((eff.get("embedLocalModel") or "").strip()))
 
 
 # ===========================================================================
@@ -346,14 +360,22 @@ async def index_source(
     if doc_count == 0:
         await db.database.update_rag_source(
             source_id, space_id, status="failed",
-            error="所有文件均解析失败（PDF 需安装 pypdf；或文件为空/损坏）")
+            error="所有文件均解析失败（PDF 需安装 PyMuPDF；或文件为空/损坏）")
         return {"status": "failed", "doc_count": 0, "chunk_count": 0}
 
     # 向量化（可选）。
     embed_mode = "keyword"
-    if embedding_model and llm_client.configured:
+    if embedding_model and (llm_client.configured or _local_embed_available()):
         texts = [c["content"] for c in all_chunks]
         vecs = _embed_texts(texts, model=embedding_model)
+        if vecs is not None and len(vecs) == len(all_chunks):
+            for c, v in zip(all_chunks, vecs):
+                c["embedding"] = v
+            embed_mode = "vector"
+    elif _local_embed_available():
+        # local provider 不需要 embedding_model 参数
+        texts = [c["content"] for c in all_chunks]
+        vecs = _embed_texts(texts)
         if vecs is not None and len(vecs) == len(all_chunks):
             for c, v in zip(all_chunks, vecs):
                 c["embedding"] = v
@@ -433,9 +455,9 @@ async def retrieve(space_id: str, question: str, top_k: int = 5,
     q_tokens = _tokenize(question)
     q_emb: Optional[List[float]] = None
     embed_available = False
-    if llm_client.configured:
+    if llm_client.configured or _local_embed_available():
         try:
-            r = llm_client.embed([question])
+            r = llm_client.embed_with_fallback([question])
             if r:
                 q_emb = r[0]
                 embed_available = True

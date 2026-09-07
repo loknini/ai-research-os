@@ -42,6 +42,8 @@ _MANAGED_KEYS = [
     "LLM_TIMEOUT",
     "LLM_HTTP_PATH",
     "LLM_EMBED_MODEL",
+    "EMBED_PROVIDER",
+    "EMBED_LOCAL_MODEL",
 ]
 
 
@@ -54,6 +56,8 @@ class LLMSettingsIn(BaseModel):
     timeout: Optional[int] = None
     httpPath: Optional[str] = None
     embedModel: Optional[str] = None  # empty -> keep the currently saved embed model
+    embedProvider: Optional[str] = None  # "api" / "local"
+    embedLocalModel: Optional[str] = None  # ModelScope model ID or local path
 
 
 class LLMTestIn(BaseModel):
@@ -110,6 +114,8 @@ async def get_llm_settings():
             "apiKeyConfigured": bool((eff["apiKey"] or "").strip()),
             "model": eff["model"],
             "embedModel": eff["embedModel"],
+            "embedProvider": eff.get("embedProvider", ""),
+            "embedLocalModel": eff.get("embedLocalModel", ""),
             "temperature": eff["temperature"],
             "maxTokens": eff["maxTokens"],
             "timeout": eff["timeout"],
@@ -136,6 +142,8 @@ async def save_llm_settings(req: LLMSettingsIn):
     timeout = req.timeout if req.timeout is not None else eff["timeout"]
     http_path = (req.httpPath or eff["httpPath"] or s.llm_http_path).strip() or "/chat/completions"
     embed_model = (req.embedModel or "").strip() or eff["embedModel"] or s.llm_embed_model
+    embed_provider = (req.embedProvider or "").strip() or eff["embedProvider"] or s.embed_provider
+    embed_local_model = (req.embedLocalModel or "").strip() or eff["embedLocalModel"] or s.embed_local_model
 
     # 1) 热生效：写 DB（多 worker 可见，TTL 5s）+ 本 worker 内存/环境变量立即可见
     env_updates = {
@@ -147,6 +155,8 @@ async def save_llm_settings(req: LLMSettingsIn):
         "LLM_TIMEOUT": str(timeout),
         "LLM_HTTP_PATH": http_path,
         "LLM_EMBED_MODEL": embed_model,
+        "EMBED_PROVIDER": embed_provider,
+        "EMBED_LOCAL_MODEL": embed_local_model,
     }
     # DB 为准（多 worker 可见）
     try:
@@ -163,6 +173,8 @@ async def save_llm_settings(req: LLMSettingsIn):
     s.llm_timeout = timeout
     s.llm_http_path = http_path
     s.llm_embed_model = embed_model
+    s.embed_provider = embed_provider
+    s.embed_local_model = embed_local_model
     os.environ.update(env_updates)
     config.invalidate_llm_cache()
 

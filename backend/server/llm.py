@@ -272,6 +272,60 @@ class LLMClient:
         except Exception:
             return None
 
+    # ------------------------------------------------------------------
+    # Embeddings with fallback (API → local → None)
+    # ------------------------------------------------------------------
+    def embed_with_fallback(
+        self,
+        texts: List[str],
+        *,
+        model: Optional[str] = None,
+    ) -> Optional[List[List[float]]]:
+        """三层降级嵌入：根据 EMBED_PROVIDER 配置决定优先策略。
+
+        * ``"local"``：优先本地 → 失败回退 API
+        * ``"api"``（默认）：优先 API → 失败回退本地（如果已配置）
+        * 两者都失败：返回 ``None``（调用方降级关键词检索）
+        """
+        if not texts:
+            return []
+        eff = self._eff()
+        provider = (eff.get("embedProvider") or "").strip() or "api"
+
+        if provider == "local":
+            vecs = self._try_local_embed(texts, eff)
+            if vecs is not None:
+                return vecs
+            return self.embed(texts, model=model)
+        else:
+            vecs = self.embed(texts, model=model)
+            if vecs is not None:
+                return vecs
+            return self._try_local_embed(texts, eff)
+
+    def _try_local_embed(
+        self, texts: List[str], eff: Dict[str, Any]
+    ) -> Optional[List[List[float]]]:
+        """尝试本地嵌入（provider=local 且模型已配置时）。"""
+        model_path = (eff.get("embedLocalModel") or "").strip()
+        if not model_path:
+            return None
+        try:
+            from .local_embed import get_local_embedder
+            embedder = get_local_embedder()
+            if not embedder.loaded:
+                if not embedder.load(model_path):
+                    return None
+            return embedder.embed(texts)
+        except Exception:
+            return None
+
+    @property
+    def embedding_provider(self) -> str:
+        """当前生效的嵌入提供者（"api" / "local"）。"""
+        eff = self._eff()
+        return (eff.get("embedProvider") or "").strip() or "api"
+
     def is_available(self) -> bool:
         """Whether the LLM is configured *and* reachable."""
         if not self.configured:

@@ -112,6 +112,12 @@ async def main() -> None:
     assert len(r2["hits"]) > 0
     print("PASS query(关键词降级):", r2["mode"], "hits =", len(r2["hits"]))
 
+    # 5) embed_with_fallback 降级测试：API + 本地都失败 → keyword
+    llm_client.embed = lambda texts, model=None: None
+    r3 = await rag_service.query(SPACE, "什么是 RAG？", top_k=3)
+    assert r3["mode"] == "keyword", r3["mode"]
+    print("PASS embed_with_fallback 降级:", r3["mode"])
+
     # 5) 源列表 / 统计
     srcs = await database.get_rag_sources(SPACE)
     assert len(srcs) == 2, srcs

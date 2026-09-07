@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     # （如 SiliconFlow 用 BAAI/bge-m3，OpenAI 用 text-embedding-3-small）。
     llm_embed_model: str = ""
 
+    # ---- 本地嵌入（RAG 向量检索，可选） ----
+    # 嵌入提供者："" / "api"（走 LLM /v1/embeddings） / "local"（本地 transformers）
+    embed_provider: str = ""
+    # 本地嵌入模型：ModelScope 模型 ID（如 Qwen/Qwen3-Embedding-0.6B）或本地目录路径
+    embed_local_model: str = ""
+    # 向量维度：0 = 自动检测（Qwen3-Embedding-0.6B 为 1024）
+    embed_local_dims: int = 0
+
     # ---- Database ----
     db_path: Optional[str] = None
     data_dir: Optional[str] = None
@@ -183,6 +191,9 @@ def get_effective_llm_settings() -> dict:
         "timeout": db_vals.get("LLM_TIMEOUT", str(settings.llm_timeout)),
         "httpPath": _pick("LLM_HTTP_PATH", "llm_http_path"),
         "embedModel": _pick("LLM_EMBED_MODEL", "llm_embed_model"),
+        "embedProvider": _pick("EMBED_PROVIDER", "embed_provider"),
+        "embedLocalModel": _pick("EMBED_LOCAL_MODEL", "embed_local_model"),
+        "embedLocalDims": db_vals.get("EMBED_LOCAL_DIMS", str(getattr(settings, "embed_local_dims", 0))),
         "contextWindow": _context_for_model(model),
     }
     # 类型归一
@@ -198,6 +209,10 @@ def get_effective_llm_settings() -> dict:
         cfg["timeout"] = int(float(cfg["timeout"]))
     except Exception:
         cfg["timeout"] = settings.llm_timeout
+    try:
+        cfg["embedLocalDims"] = int(float(cfg["embedLocalDims"]))
+    except Exception:
+        cfg["embedLocalDims"] = 0
     _LLM_CACHE = cfg
     _LLM_CACHE_EXPIRES = now + _LLM_CACHE_TTL
     return cfg
