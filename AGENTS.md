@@ -41,7 +41,8 @@ D:\project\ai-research-os/
 │   ├── skills/            # Agent Skills（backend/skills/<name>/SKILL.md，零依赖约定）
 │   └── requirements.txt   # 后端依赖（不含 openai）
 ├── scripts/               # Python 后端脚本（业务逻辑，输出 JSON 供后端解析）
-│   ├── database.py        # SQLite 数据模型（aiosqlite 异步，WAL）
+│   ├── database.py        # SQLite 兼容门面（保留既有导入路径）
+│   ├── db/                # 连接内核、显式迁移与领域 repositories
 │   ├── fetch_arxiv.py     # arXiv 抓取
 │   ├── agent_service.py   # 兼容入口；可配置执行器真身位于 backend/server/
 │   └── ...
@@ -174,7 +175,8 @@ npm run dev
 ### 后端铁律
 
 - **禁止 `openai` SDK**：LLM 调用一律走 `backend/server/llm.py`（`urllib` 实现）。
-- **数据库操作统一走 `scripts/database.py`**：不要直接散落 SQL。
+- **数据库操作统一走持久层**：调用方继续从 `scripts.database` 使用兼容 API；新增 SQL 放入 `scripts/db/repos/<domain>.py`，不要散落到路由或业务脚本。
+- **Schema 变更必须新增迁移**：在 `scripts/db/migrations/` 增加连续、单向的新版本；禁止修改已经执行的迁移或把新结构探测塞回 baseline。
 - **空间隔离**：新增数据表/路由必须加 `space_id` 列并通过 `Depends(get_space_id)` 过滤；系统级接口可豁免空间头，
   但 settings/backup/skills/swanlab 等敏感全局能力必须通过 `Depends(require_admin)`：本机免令牌，远程要求 `X-Admin-Token`。
 - **更新语义**：写操作返回 `rowcount > 0`，不要跨空间返回 True。
@@ -195,7 +197,8 @@ npm run dev
 | `backend/server/tools/` | **内置工具目录**（`pkgutil` 自动发现，新增工具零改动主循环） |
 | `backend/server/context.py` | **共享上下文管理**（token 估算 / LLM 摘要 / `compact_messages`，Chat 与 Agent 共用） |
 | `backend/server/agent_runner.py` | 后台非阻塞 runner（消费 `__approval_required` 审批等待 + `__replay` 落库） |
-| `scripts/database.py` | SQLite 数据模型（异步；含 `agent_tool_approvals` / `agent_replay_messages` 表） |
+| `scripts/database.py` | SQLite 兼容门面（初始化与既有 API re-export） |
+| `scripts/db/` | `core.py` 连接/事务；`migrations/` 显式版本；`repos/` 领域 SQL |
 | `scripts/qa_verify_agent_harness.py` | Agent 工程能力回归脚本（审批/重放/上下文/插件化，61 项） |
 | `backend/.env` | LLM API 配置（可由设置界面写入） |
 | `start.ps1` | 一键启动脚本 |

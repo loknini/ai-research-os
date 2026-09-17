@@ -502,7 +502,8 @@ ai-research-os/
 │   ├── requirements.txt       # 后端 Python 依赖（不含 openai）
 │   └── .env.example          # LLM / DB / CORS / Agent / web_search 配置示例
 ├── scripts/                   # Python 后端脚本（业务逻辑 + QA 回归）
-│   ├── database.py            # SQLite 数据模型（标准库，aiosqlite 异步）
+│   ├── database.py            # SQLite 兼容门面（保留既有导入路径）
+│   ├── db/                    # 连接内核、显式迁移、领域 repositories
 │   ├── fetch_arxiv.py         # arXiv 抓取
 │   ├── summarize_paper.py     # AI 论文总结
 │   ├── agent_service.py       # Multi-Agent 服务（角色化管线）
@@ -654,7 +655,8 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
 - **后端（Python）**
   - 遵循 PEP 8；优先使用标准库，新增第三方依赖需同步更新 `backend/requirements.txt` 与 README 安装步骤。
   - **禁止 `openai` SDK**：LLM 调用一律走 `backend/server/llm.py`。
-  - 数据库操作统一走 `scripts/database.py`，不要直接写 SQL 散落在各脚本。
+  - 调用方统一走 `scripts.database` 兼容 API；新增 SQL 放到 `scripts/db/repos/<domain>.py`，不要散落在路由或业务脚本。
+  - 数据库结构变更必须在 `scripts/db/migrations/` 新增连续迁移，禁止修改已执行历史。
   - **空间隔离**：新增数据表/路由必须加 `space_id` 列并通过 `Depends(get_space_id)` 过滤；系统级接口可豁免。
   - **更新语义**：写操作返回 `rowcount > 0`，不要跨空间返回 True。
   - **新增工具 = 新模块**：用 `@register_tool` 装饰器写在 `backend/server/tools/<name>.py`（自动发现），不要在 Agent 主循环里硬编码工具分支；策略标注 `safe`（只读）/ `sensitive`（写库）/ `dangerous`（不可逆）。

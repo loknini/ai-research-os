@@ -54,7 +54,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 from scripts import database  # noqa: E402  (scripts/database.py，与后端同一模块对象)
 
 # 强制测试库落点，必须在 import backend 之前，避免 backend 缓存真实库路径
-database.DB_PATH = TMP / "ai_research_os.db"
+database.configure_paths(data_dir=TMP, db_path=TMP / "ai_research_os.db")
 
 from backend.server.main import app  # noqa: E402
 from backend.server import config as server_config  # noqa: E402
@@ -464,8 +464,7 @@ async def test_backward_compat() -> None:
     # 保存当前模块级路径，测试后还原
     saved_data = database.DATA_DIR
     saved_db = database.DB_PATH
-    database.DATA_DIR = legacy_dir
-    database.DB_PATH = legacy_db
+    database.configure_paths(data_dir=legacy_dir, db_path=legacy_db)
 
     try:
         # 1) 构造老式 papers 表（含 paper_to_dict 所需全部列，但无 space_id）
@@ -486,6 +485,16 @@ async def test_backward_compat() -> None:
             )
             await c.commit()
 
+        # 遗留 JSON 必须在 baseline 之前存在；显式迁移一旦记为 v1，历史
+        # 迁移不会因之后出现一个旧文件而被重新执行。
+        cron_json = legacy_dir / "cron_jobs.json"
+        cron_json.write_text(
+            '{"jobs":['
+            '{"id":"c1","name":"j1","schedule":"* * * * *","command":"echo 1"},'
+            '{"id":"c2","name":"j2","schedule":"* * * * *","command":"echo 2"}'
+            ']}', encoding="utf-8",
+        )
+
         # 2) 运行幂等迁移 init_db
         await database.init_db()
 
@@ -505,15 +514,7 @@ async def test_backward_compat() -> None:
         record("D2 存量数据在 __default__ 可访问", in_default)
         record("D3 存量数据对其它空间不可见", hidden_other)
 
-        # 5) cron JSON 仅迁移一次
-        cron_json = legacy_dir / "cron_jobs.json"
-        cron_json.write_text(
-            '{"jobs":['
-            '{"id":"c1","name":"j1","schedule":"* * * * *","command":"echo 1"},'
-            '{"id":"c2","name":"j2","schedule":"* * * * *","command":"echo 2"}'
-            ']}', encoding="utf-8",
-        )
-        await database.init_db()  # 第一次：应导入 2 条
+        # 5) cron JSON 在 baseline 中迁入，后续启动不重复导入
         async with database.get_db() as conn:
             n1 = (await (await conn.execute("SELECT COUNT(*) FROM cron_jobs")).fetchone())[0]
         await database.init_db()  # 第二次：应跳过（不重复导入）
@@ -522,8 +523,7 @@ async def test_backward_compat() -> None:
         record("D4 cron JSON 首次迁移生效", n1 == 2, f"count_after_1st={n1}")
         record("D5 cron JSON 二次运行不重复导入", n2 == 2, f"count_after_2nd={n2}")
     finally:
-        database.DATA_DIR = saved_data
-        database.DB_PATH = saved_db
+        database.configure_paths(data_dir=saved_data, db_path=saved_db)
 
 
 async def run_async_tests() -> None:

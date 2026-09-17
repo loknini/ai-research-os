@@ -1,8 +1,8 @@
 """Database bootstrap.
 
-Makes ``scripts/database.py`` importable in-process (the ``scripts/`` directory
-is already on ``sys.path`` thanks to ``backend/server/__init__.py``) and
-re-exports the helpers used by the routers.
+Imports the regular ``scripts.database`` compatibility facade in-process and
+re-exports it for routers. The facade delegates to ``scripts.db`` core,
+versioned migrations and domain repositories.
 
 ``DATA_DIR`` / ``DB_PATH`` are already exported on ``os.environ`` by
 ``config.py`` by the time this module is imported, so ``database`` resolves the

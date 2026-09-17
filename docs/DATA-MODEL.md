@@ -1,7 +1,8 @@
 # 数据模型与空间隔离
 
-> 实现文件：`scripts/database.py`；引导壳：`backend/server/db.py`。版本与数量以 `docs/_meta.json` 为准（当前 36 张表，31 张列入 `SPACE_TABLES` 通用迁移；另有原生含 `space_id` 或系统级内部表）。
-> 核对日期：2026-09-02
+> 实现目录：`scripts/db/`；兼容门面：`scripts/database.py`；引导壳：`backend/server/db.py`。
+> 版本与数量以 `docs/_meta.json` 为准（当前 36 张业务/运行表，另有内部迁移账本 `schema_migrations`；31 张列入 `SPACE_TABLES` 兼容迁移）。
+> 核对日期：2026-09-17
 
 ---
 
@@ -13,6 +14,7 @@
 | 覆盖方式 | `DB_PATH`（优先） > `DATA_DIR`/ai_research_os.db > 默认 |
 | 驱动 | `aiosqlite`（异步）；`scripts/obsidian_service.py` 是唯一例外，仍用同步 `sqlite3` |
 | 表数量 | 见 `_meta.json`（全部含 `space_id`） |
+| Schema 版本 | `schema_migrations` 为事实源，`PRAGMA user_version` 同步镜像；当前版本 `v1` |
 | 空间迁移 | `SPACE_TABLES` 统一补列/建索引；`cron_run_history` DDL 原生含 `space_id` |
 | 时间戳 | 毫秒级 Unix 时间戳 `int(time.time() * 1000)`；例外：`obsidian_vaults` 的 DDL 默认值是秒级 |
 | 文件产物 | `data/papers/<space_id>/pdfs/`、`data/memory/<space_id>.md`、`data/.swanlab/config.json`（全局） |
@@ -60,7 +62,7 @@ space_id = "lab-zhang"  →  每条 SQL 带 WHERE space_id = ?
 
 ### 2.2 隔离范围
 
-**由通用迁移维护的表**（`SPACE_TABLES`，见 `scripts/database.py:54`；含 `development_run_steps`/`development_artifacts`/`rag_*` 等，数量以 `_meta.json` 为准）：
+**由通用迁移维护的表**（`SPACE_TABLES`，见 `scripts/db/core.py`；含 `development_run_steps`/`development_artifacts`/`rag_*` 等，数量以 `_meta.json` 为准）：
 
 ```
 papers cron_jobs software_projects tasks code_generations notes note_links
@@ -77,7 +79,8 @@ rag_sources rag_documents rag_chunks development_run_steps development_artifacts
 
 ### 2.3 迁移机制
 
-`init_db()` 末尾对每张表执行幂等迁移：
+`init_db()` 先由跨进程锁串行检查 `schema_migrations`。无版本的新库或旧库执行
+`v0001_baseline`：它创建完整结构，并对每张遗留表执行一次兼容归一化：
 
 ```sql
 PRAGMA table_info(<table>);                        -- 检查是否已有 space_id
@@ -85,7 +88,13 @@ ALTER TABLE <table> ADD COLUMN space_id TEXT NOT NULL DEFAULT '__default__';
 CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 ```
 
-存量数据因此自动归入 `__default__` 空间。新表仍应在 DDL 中原生声明 `space_id`；只有需要兼容既有无空间列老表时，才依赖 `SPACE_TABLES` 的补列迁移。
+存量数据因此自动归入 `__default__` 空间。baseline 验证结构与 `integrity_check` 后才写入版本记录；
+以后每次结构变化必须新增连续、单向的迁移文件，禁止修改已执行迁移。迁移名称与校验和不匹配、版本断档，
+或数据库版本高于应用支持版本时均拒绝启动。普通后续迁移的 DDL、验证和账本写入处于同一
+`BEGIN IMMEDIATE` 事务，失败不会推进版本。
+
+新表仍应在 DDL 中原生声明 `space_id`；只有 baseline 需要兼容既有无空间列老表时，才依赖
+`SPACE_TABLES` 的补列迁移。迁移完成后不会在每次启动时重放历史结构探测。
 
 子表（`note_links` / `chat_messages` / `experiment_runs` / `agent_messages` / `code_generations`）**反范式冗余写入父实体的空间**，保证任何查询都能单列过滤、无需 JOIN。
 
@@ -210,11 +219,15 @@ job lease 负责故障接管，全局 writer lease 保证多进程仅一个索�
 
 ---
 
-## 4. `database.py` 函数分组
+## 4. 持久层模块分组
 
-| 分组 | 代表函数 |
+`scripts/database.py` 仅保留初始化、路径配置与兼容 re-export；路由和现有脚本仍可使用
+`from scripts import database`。新实现按下列模块维护：
+
+| 模块/分组 | 代表函数 |
 |---|---|
-| 基础设施 | `get_db` · `_fetchall` · `_fetchone` · `init_db` |
+| `db/core.py` | `get_db` · `_fetchall` · `_fetchone` · `with_busy_retry` |
+| `db/migrations/` | `run_migrations` · `v0001_baseline` · schema 校验 |
 | 论文 | `get_all_papers` · `get_paper_by_arxiv` · `insert_paper` · `update_paper` · `delete_paper` · `get_papers_count` |
 | 任务 | `get_all_tasks` · `insert_task` · `update_task` · `delete_task` · `get_tasks_by_project` |
 | 项目 | `get_all_projects` · `get_project_by_id` · `insert_project` · `update_project` · `delete_project` |
@@ -250,6 +263,9 @@ python scripts/qa_verify_agent_runner.py
 
 # LLM 可达性与状态端点（不触网）
 python scripts/qa_verify_llm_status.py
+
+# 显式迁移账本、幂等、校验和、未来版本拒绝与事务回滚
+python scripts/qa_verify_migrations.py
 ```
 
 两个脚本都使用隔离的临时 `DATA_DIR` + 真实 aiosqlite + `TestClient`，不会污染现有数据库。运行需要 `aiosqlite / fastapi / httpx / uvicorn`。

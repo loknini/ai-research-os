@@ -27,8 +27,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scripts import database  # noqa: E402
 
-database.DATA_DIR = TMP_DIR
-database.DB_PATH = TMP_DIR / "ai_research_os.db"
+database.configure_paths(data_dir=TMP_DIR, db_path=TMP_DIR / "ai_research_os.db")
 
 CHECKS: list[tuple[str, bool, str]] = []
 
@@ -86,6 +85,10 @@ async def downgrade_papers_to_legacy() -> None:
         await conn.execute(
             "CREATE INDEX idx_papers_custom_title_date ON papers(title, published_date)"
         )
+        # This fixture represents a pre-versioning database. Once v1 is
+        # recorded, schema drift is rejected rather than replaying history.
+        await conn.execute("DELETE FROM schema_migrations")
+        await conn.execute("PRAGMA user_version = 0")
         await conn.commit()
         await conn.execute("PRAGMA foreign_keys=ON")
 
@@ -107,7 +110,7 @@ def run_parallel_database_cli() -> None:
         for _ in range(4)
     ]
     results = [process.communicate(timeout=60) + (process.returncode,) for process in processes]
-    ok = all(code == 0 and "Database initialized at" in stdout for stdout, _stderr, code in results)
+    ok = all(code == 0 and "Database schema is at v1" in stdout for stdout, _stderr, code in results)
     detail = "; ".join(f"exit={code}, stderr={stderr.strip()[:80]}" for _out, stderr, code in results)
     check("旧库可多进程并发、幂等初始化", ok, detail)
 
@@ -347,7 +350,7 @@ def verify_clis() -> None:
         [sys.executable, "-m", "scripts.database"], cwd=PROJECT_ROOT, env=env,
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )
-    check("database 模块 CLI 真正调用 _main", database_cli.returncode == 0 and "Database initialized at" in database_cli.stdout)
+    check("database 模块 CLI 真正调用 _main", database_cli.returncode == 0 and "Database schema is at v1" in database_cli.stdout)
 
     direct = subprocess.run(
         [sys.executable, str(PROJECT_ROOT / "backend/server/agent_service.py")],

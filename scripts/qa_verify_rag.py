@@ -26,8 +26,7 @@ TMP = Path(tempfile.mkdtemp(prefix="rag_qa_"))
 import scripts.database as database  # noqa: E402
 
 # 隔离数据库到临时目录（覆盖模块级全局）。
-database.DATA_DIR = TMP
-database.DB_PATH = TMP / "qa_rag.db"
+database.configure_paths(data_dir=TMP, db_path=TMP / "qa_rag.db")
 shutil.rmtree(TMP, ignore_errors=True)
 TMP.mkdir(parents=True, exist_ok=True)
 

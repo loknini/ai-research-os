@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi.testclient import TestClient  # noqa: E402
 from scripts import database  # noqa: E402
-database.DB_PATH = TMP / "ai_research_os.db"  # noqa: E402
+database.configure_paths(data_dir=TMP, db_path=TMP / "ai_research_os.db")  # noqa: E402
 from backend.server.main import app  # noqa: E402
 
 SPACE = "qa-dream"

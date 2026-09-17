@@ -17,6 +17,7 @@ import asyncio
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -25,16 +26,15 @@ if hasattr(sys.stdout, "reconfigure"):
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "scripts"))
 
 # 在 import database / backend 之前把数据库重定向到临时位置，避免污染真实 data
 _TMP_DB_DIR = Path(tempfile.mkdtemp(prefix="qa_paper_pdf_"))
 _TMP_DB_PATH = _TMP_DB_DIR / "qa.db"
-os.environ.setdefault("AI_RESEARCH_OS_DATA_DIR", str(_TMP_DB_DIR))
+os.environ["DATA_DIR"] = str(_TMP_DB_DIR)
 
 from fastapi.testclient import TestClient
 
-import database  # noqa: E402
+from scripts import database  # noqa: E402
 
 
 def _make_test_pdf(tmpdir: Path, name: str = "fake.pdf") -> Path:
@@ -58,7 +58,7 @@ async def _seed_paper(tmpdir: Path, space_id: str, arxiv_id: str, *, with_local:
     db_file = tmpdir / "seed.db"
     # 暂存当前 DB_PATH，写完后还原
     orig_db_path = database.DB_PATH
-    database.DB_PATH = db_file
+    database.configure_paths(data_dir=db_file.parent, db_path=db_file)
     try:
         await database.init_db()
         # 删干净，重跑测试也不冲突
@@ -90,7 +90,7 @@ async def _seed_paper(tmpdir: Path, space_id: str, arxiv_id: str, *, with_local:
             raise RuntimeError(f"seed insert returned False")
         return paper
     finally:
-        database.DB_PATH = orig_db_path
+        database.configure_paths(data_dir=orig_db_path.parent, db_path=orig_db_path)
 
 
 def _get_app():
@@ -103,15 +103,16 @@ def _client():
     return TestClient(_get_app(), raise_server_exceptions=False)
 
 
+@contextmanager
 def _patch_db(db_file: Path):
-    """上下文管理器：把 backend.server.db.database.DB_PATH 切到临时文件。"""
-    # backend.server.db.database 引用的是同一个 database 模块
-    backend_db = sys.modules.get("backend.server.db")
-    if backend_db is None:
-        import backend.server.db as bd  # noqa
-        backend_db = bd
-    # 它的 database 属性就是 scripts.database 模块
-    return patch.object(backend_db.database, "DB_PATH", db_file)
+    """将共享持久层切到临时文件，并在请求后恢复。"""
+    original_data = database.DATA_DIR
+    original_db = database.DB_PATH
+    database.configure_paths(data_dir=db_file.parent, db_path=db_file)
+    try:
+        yield
+    finally:
+        database.configure_paths(data_dir=original_data, db_path=original_db)
 
 
 # ---------------- 测试 ----------------
@@ -165,6 +166,7 @@ def test_pdf_stream_lazy_download():
 
 def test_pdf_stream_not_found():
     """[3] arxiv_id 不存在 → 404。"""
+    asyncio.run(database.init_db())
     client = _client()
     r = client.get(
         "/api/papers/0000.0000-not-exist/pdf",

@@ -19,8 +19,7 @@ sys.path.insert(0, str(PROJECT))
 TMP = Path(tempfile.mkdtemp(prefix="vec_qa_"))
 import scripts.database as database  # noqa: E402
 
-database.DATA_DIR = TMP
-database.DB_PATH = TMP / "qa_vec.db"
+database.configure_paths(data_dir=TMP, db_path=TMP / "qa_vec.db")
 shutil.rmtree(TMP, ignore_errors=True)
 TMP.mkdir(parents=True, exist_ok=True)
 

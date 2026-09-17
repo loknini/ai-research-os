@@ -339,7 +339,7 @@ def api_checks() -> None:
 
 async def main() -> int:
     temp_dir = Path(tempfile.mkdtemp(prefix="qa_agent_teams_"))
-    database.DB_PATH = temp_dir / "ai_research_os.db"
+    database.configure_paths(data_dir=temp_dir, db_path=temp_dir / "ai_research_os.db")
     await database.init_db()
     await database_and_dag_checks()
     structured_output_repair_check()

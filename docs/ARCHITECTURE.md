@@ -16,7 +16,8 @@
 ## 2. 进程与分层
 
 ```
-浏览器 React SPA --fetch /api + X-Space-Key--> Vite :5173 --proxy--> FastAPI :8000 --import--> scripts/database.py
+浏览器 React SPA --fetch /api + X-Space-Key--> Vite :5173 --proxy--> FastAPI :8000 --import--> scripts/database.py（兼容门面）
+                                                                                  `-> scripts/db/{core,migrations,repos}
                                                               |-> subprocess: scripts/*.py
                                                               |-> 守护线程: agent_runner / development_runner / cron_scheduler
                                                               `-> SQLite WAL + 文件系统 / LLM / arXiv / Crossref / SwanLab
@@ -26,6 +27,7 @@
 - `backend/server/admin_access.py`：部署级管理边界；本机 loopback 免令牌，远程 settings/backup/SwanLab/Skills 请求必须通过 `X-Admin-Token`，与 space-key 软隔离职责分离。
 - `frontend/src/App.tsx`：12 个 Hub 全部 `React.lazy` 分割，`installApiMonitor()` 单点注入 `X-Space-Key`。
 - `scripts/`：同时是**被 import 的库**（`database/chat_agent_stream/fetch_arxiv`）和**被 subprocess 调的 CLI**（`swanlab/citation/formula/obsidian`），后者经 `SPACE_ID` 环境变量透传空间。
+- `scripts/db/`：`core.py` 管理连接与事务，`migrations/` 用显式版本账本单向升级，`repos/` 按业务域承载 SQL；多 Worker 启动由迁移锁串行化。
 
 **多 Worker**：`uvicorn --workers N` 无 `--reload`，状态全落库跨 Worker 可见，无共享内存。
 
@@ -61,6 +63,7 @@
 | 摘要而非截断 | 截断会切断 `assistant(tool_calls)→tool` 配对；`context.py` 选最近 `user` 边界切分 |
 | `@register_tool` 自动发现 | `tools/` 目录 `pkgutil` 发现，`safe/sensitive/dangerous × auto/manual/strict` 随注册声明 |
 | SQLite-vec 为派生索引 | `rag_chunks` 仍是真源；扩展缺失/未就绪时流式暴力召回，避免维护 FAISS 第二套持久状态 |
+| 轻量显式迁移而非 ORM | SQLite 是唯一数据库；`schema_migrations` + 校验和 + 事务迁移满足审计/恢复需求，不引入 SQLAlchemy/Alembic |
 
 ## 5. 外部依赖（可插拔）
 

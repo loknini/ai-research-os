@@ -6,6 +6,7 @@
 
 ## [Unreleased] - 2026-09-17 · RAG 2.1 正确性与可恢复性
 
+- 数据库层从 5,168 行单文件拆为连接内核、版本化迁移与 13 个领域仓储模块；`scripts/database.py` 保留兼容门面。新增 `schema_migrations` 账本、迁移校验和、跨进程启动锁、未来版本拒绝、事务回滚和专项 QA。
 - 系统级设置、备份、SwanLab 与 Skills 增加管理访问边界：本机免登录，远程必须使用 `ADMIN_TOKEN` / `X-Admin-Token`；Vite 转发保留真实客户端地址，启动时明确报告保护状态。
 - 备份导入改为完整暂存、SQLite 预检、原子文件替换和失败自动回滚；导入/导出增加跨 Worker 互斥锁，并用持久导入日志在 Worker 崩溃后的下次启动自动恢复一致性快照。
 - 嵌入向量按 provider/model/revision/dims/query instruction 指纹隔离；批处理中禁止 API/本地模型静默互换，配置不兼容时降级 FTS5。

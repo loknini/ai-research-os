@@ -68,6 +68,7 @@ EXCLUDE_FILES = {
     ".airos-backup-operation.lock",
     ".airos-backup-import.json",
     ".airos-backup-import.json.tmp",
+    ".airos-schema-migration.lock",
 }
 
 # Hard cap on uploaded backup size to prevent abuse (500 MB).

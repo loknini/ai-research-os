@@ -67,7 +67,8 @@
   ],
   "hubs": 12,
   "generatedFrom": [
-    "scripts/database.py",
+    "scripts/db/migrations/v0001_baseline.py",
+    "scripts/db/core.py",
     "backend/server/routers/__init__.py",
     "frontend/src/App.tsx",
     "backend/server/main.py"
