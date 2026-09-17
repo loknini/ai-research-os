@@ -287,7 +287,9 @@ export DATA_DIR=~/synced/airos-data
 打开 **「设置 → 数据备份与迁移」** 卡片：
 
 - **导出备份**：把 `DATA_DIR` 整个打成 zip 下载（SQLite 使用 Online Backup API 生成 WAL 一致性快照；自动剔除缓存、实例心跳及 DB sidecar，并附 `manifest.json` 清单）。
-- **导入备份**：选择旧机器导出的 zip，后端会**先自动备份当前数据到 `<DATA_DIR 同级>/.backup-时间戳`**，再把备份包内容覆盖进 `DATA_DIR`。若导入时应用正占用数据库导致写入失败，会给出明确提示——此时请停止 app 后重新导入 / 重启以加载新数据。
+- **导入备份**：选择旧机器导出的 zip，后端会先完整校验和同盘暂存，再把当前数据快照到
+  `<DATA_DIR 同级>/.backup-时间戳`；正式应用采用原子文件替换，任一步失败都会自动回滚；Worker 中断时下次启动自动恢复。
+- **管理保护**：本机操作免令牌；从其它设备导入/导出时需配置 `ADMIN_TOKEN`，并在设置页解锁或发送 `X-Admin-Token`。
 
 对应接口（供脚本 / 自动化调用）：
 
@@ -539,6 +541,7 @@ ai-research-os/
 | `DB_PATH` | `<DATA_DIR>/ai_research_os.db` | SQLite 路径 |
 | `DATA_DIR` | `<项目根>/data` | 数据目录 |
 | `APP_HOST` / `APP_PORT` | `0.0.0.0` / `8000` | 后端监听 |
+| `ADMIN_TOKEN` | `（空）` | 远程系统管理令牌；为空时只允许本机管理设置、备份、SwanLab 与 Skills |
 | `CORS_ORIGINS` | `*` | 允许的前端来源（逗号分隔，生产建议收敛） |
 
 ### Agent 工程（v0.3）

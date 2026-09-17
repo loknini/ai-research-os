@@ -21,10 +21,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..deps import get_space_id
+from ..admin_access import require_admin
 from ..skills_bridge import reload_skills, scan_skills, set_skill_enabled
 from scripts.chat_agent_stream import execute_tool, is_skill_tool
 
-router = APIRouter(prefix="/api/skills", tags=["skills"])
+router = APIRouter(
+    prefix="/api/skills",
+    tags=["skills"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 class SkillEnabledRequest(BaseModel):

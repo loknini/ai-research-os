@@ -103,6 +103,7 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 | `DATA_DIR` | `<项目根>/data` | 数据目录，脚本与文件归档均以此为根 |
 | `APP_HOST` | `0.0.0.0` | |
 | `APP_PORT` | `8000` | |
+| `ADMIN_TOKEN` | `""` | 远程系统管理令牌；本机免令牌，远程设置/备份/SwanLab/Skills 必须提供 |
 | `CORS_ORIGINS` | `*` | 逗号分隔；为 `*` 时自动关闭 credentials |
 
 ### 3.3 LLM 配置（三选一）
@@ -139,11 +140,13 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 2. 同事访问 `http://<你的内网IP>:8000`（生产态）或 `:5173`（开发态，Vite 已 `host: true`）。
 3. 首屏 `SpaceGate` 要求每人填写自己的**空间口令**（≥ 4 字符），此后所有数据按空间隔离。
 4. 需要协作时，用顶栏空间指示器的「分享」生成 `?space=xxx` 链接发给对方，对方打开即自动进入同一空间。
+5. 如需从其它设备进入设置、备份、SwanLab 或 Skills，请在后端 `.env` 配置至少 32 字符的 `ADMIN_TOKEN`，
+   然后在设置页“系统管理访问”输入；令牌只保存在该浏览器标签页。
 
 **边界说明**：
 
 - 空间是**数据视图隔离，不是安全边界**——知道口令即可访问。仅适用于可信内网。
-- LLM 配置、SwanLab 配置、Skills、备份是**全局共享**的，任何人改都影响所有人。
+- LLM 配置、SwanLab 配置、Skills、备份是**全局共享**的，修改会影响所有人，因此远程访问受 `ADMIN_TOKEN` 保护。
 - 不要把服务暴露到公网。
 
 ---
@@ -177,12 +180,16 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 界面「设置 → 数据备份与迁移」：
 
 - **导出**：整个 `DATA_DIR` 打包 zip 下载；SQLite 通过 Online Backup API 生成 WAL 一致性快照，自动剔除缓存、实例心跳及 `-wal` / `-shm` sidecar，附 `manifest.json`。
-- **导入**：选择 zip，后端**先自动把当前数据备份到 `<DATA_DIR 同级>/.backup-<时间戳>`**，再覆盖。若应用正占用数据库导致写入失败，响应里会给出明确提示，此时停掉服务重新导入。
+- **导入**：选择 zip，后端先完整校验并暂存，再把当前数据快照到 `<DATA_DIR 同级>/.backup-<时间戳>`；
+  文件使用原子替换，任一步失败都会自动回滚并返回错误；若 Worker 被强制终止，下次启动会在数据库初始化前根据
+  `.airos-backup-import.json` 自动恢复，不再产生部分成功。
 
 ```bash
 curl -X POST http://localhost:8000/api/backup/export -o airos-backup.zip
 curl -X POST http://localhost:8000/api/backup/import -F "file=@airos-backup.zip"
 ```
+
+远程调用需额外添加 `-H "X-Admin-Token: $ADMIN_TOKEN"`。同一部署的导入和导出通过跨进程文件锁互斥。
 
 > 导入是**整库覆盖、不合并**，会替换所有空间的数据。适合换机，不适合日常来回同步。
 

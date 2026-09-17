@@ -26,6 +26,8 @@ export default defineConfig({
       '/api': {
         target: process.env.VITE_API_TARGET || 'http://localhost:8000',
         changeOrigin: true,
+        // 保留原始客户端地址，供后端区分本机管理与远程管理请求。
+        xfwd: true,
         // SSE 透传：避免代理缓冲导致流式响应中断
         configure: (proxy) => {
           proxy.on('proxyReq', (p) => {

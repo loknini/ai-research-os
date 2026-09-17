@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     cors_origins: str = "*"
+    # 部署级系统管理令牌：远程备份、设置、SwanLab、Skills 管理必须携带。
+    # 本机 loopback 请求保持免登录；space-key 不是管理凭证。
+    admin_token: str = ""
 
     @property
     def resolved_data_dir(self) -> Path:

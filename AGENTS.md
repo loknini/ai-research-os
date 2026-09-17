@@ -175,7 +175,8 @@ npm run dev
 
 - **禁止 `openai` SDK**：LLM 调用一律走 `backend/server/llm.py`（`urllib` 实现）。
 - **数据库操作统一走 `scripts/database.py`**：不要直接散落 SQL。
-- **空间隔离**：新增数据表/路由必须加 `space_id` 列并通过 `Depends(get_space_id)` 过滤；系统级接口（healthz/settings/backup/skills/swanlab/citation）可豁免。
+- **空间隔离**：新增数据表/路由必须加 `space_id` 列并通过 `Depends(get_space_id)` 过滤；系统级接口可豁免空间头，
+  但 settings/backup/skills/swanlab 等敏感全局能力必须通过 `Depends(require_admin)`：本机免令牌，远程要求 `X-Admin-Token`。
 - **更新语义**：写操作返回 `rowcount > 0`，不要跨空间返回 True。
 - **新增工具 = 新模块**：工具用 `@register_tool` 装饰器写在 `backend/server/tools/<name>.py`（自动发现），不要在 Agent 主循环里硬编码工具分支。
 - **工具策略标注**：只读工具 `policy="safe"`；写库等有副作用 `policy="sensitive"`；删除/覆盖等不可逆 `policy="dangerous"`（非 strict 模式自动拦截）。

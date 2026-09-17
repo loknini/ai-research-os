@@ -9,6 +9,7 @@ import { toast } from '@/components/ui/toast'
 import SkillManager from './SkillManager'
 import MemoryManager from './MemoryManager'
 import RagSettingsManager from './RagSettingsManager'
+import AdminAccessCard from './AdminAccessCard'
 import {
   Key,
   TestTube,
@@ -518,12 +519,16 @@ export default function SettingsHub() {
     }
   }, [])
 
-  useEffect(() => {
+  const reloadProtectedSettings = useCallback(() => {
     loadConfig()
     loadLlmConfig()
     loadIntegrationConfig()
     loadLocalModels()
   }, [loadConfig, loadLlmConfig, loadIntegrationConfig, loadLocalModels])
+
+  useEffect(() => {
+    reloadProtectedSettings()
+  }, [reloadProtectedSettings])
 
   // 测试连接
   const handleTestConnection = async () => {
@@ -703,6 +708,7 @@ export default function SettingsHub() {
 
         <div className="flex-1 overflow-y-auto p-6">
           <div className="max-w-4xl mx-auto space-y-6">
+          <AdminAccessCard onVerified={reloadProtectedSettings} />
           {/* LLM API 配置 */}
           {activeTab === 'general' && (<>
           <Card>

@@ -39,7 +39,7 @@ export function usePapers() {
         if (useAppStore.getState().spaceKey === key) setPapers([])
       } finally {
         if (useAppStore.getState().spaceKey === key) setLoadingPapers(false)
-        if (inflight.get(key) === task) inflight.delete(key)
+        inflight.delete(key)
       }
     })()
     inflight.set(key, task)

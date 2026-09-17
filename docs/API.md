@@ -1,6 +1,6 @@
 # API 参考
 
-> 版本与路由数以 `docs/_meta.json` 为准（当前 22 个 Router，含 health）；运行时以 FastAPI `/docs` 为准。核对日期：2026-09-02
+> 版本与路由数以 `docs/_meta.json` 为准（当前 22 个 Router，含 health）；运行时以 FastAPI `/docs` 为准。核对日期：2026-09-17
 > 交互式文档：`http://localhost:8000/docs`
 
 ---
@@ -17,6 +17,18 @@ X-Space-Key: <你的空间口令>
 
 服务端 `trim + lower` 归一化后直接作为 `space_id`。缺失或长度 < 4 → `400 SPACE_REQUIRED`。
 前端由 `services/apiMonitor.ts` 统一注入，业务代码无需手动设置。
+
+### 管理头
+
+设置、备份、SwanLab 与 Skills 是部署级能力。本机 loopback 请求保持免登录；其它设备必须先在后端配置
+`ADMIN_TOKEN`，并发送：
+
+```
+X-Admin-Token: <ADMIN_TOKEN>
+```
+
+前端设置页的“系统管理访问”只把令牌保存在当前标签页 `sessionStorage`，关闭标签页后自动清除。
+经代理访问时必须保留真实客户端地址；项目自带 Vite 代理已启用 `xfwd`。
 
 ### 响应格式
 
@@ -294,7 +306,7 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 ---
 
-## 13. 设置 `settings.py` — prefix `/api/settings` · 全局（无 `X-Space-Key`，任意空间可读写，影响全局）
+## 13. 设置 `settings.py` — prefix `/api/settings` · 受保护的全局管理接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -307,7 +319,7 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 ---
 
-## 14. 技能 `skills.py` — prefix `/api/skills` · 混合（列表/启停为全局，`run` 按空间）
+## 14. 技能 `skills.py` — prefix `/api/skills` · 受保护（`run` 仍按空间写入）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -318,7 +330,7 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 ---
 
-## 15. SwanLab `swanlab.py` — prefix `/api/swanlab` · 全局
+## 15. SwanLab `swanlab.py` — prefix `/api/swanlab` · 受保护的全局管理接口
 
 全部经 `run_script("swanlab_api.py", ...)` subprocess 执行。
 
@@ -336,14 +348,14 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 ---
 
-## 16. 备份 `backup.py` — prefix `/api/backup` · 全局（无 `X-Space-Key`，导出即全租户数据）
+## 16. 备份 `backup.py` — prefix `/api/backup` · 受保护的全局管理接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/backup/export` | 整个 `DATA_DIR` 打包为 zip 流式返回，含 `manifest.json`；DB 通过 SQLite Online Backup API 生成 WAL 一致性快照；排除缓存、实例心跳与 DB sidecar |
-| POST | `/api/backup/import` | 上传 zip（字段名 `file`，≤500MB，仅 `.zip`）：校验 manifest `app == ai-research-os` → Zip Slip 防护 → `testzip()` → 先生成一致性回滚快照到 `.backup-<时间戳>` → 再覆盖 |
+| POST | `/api/backup/import` | 上传 zip（字段名 `file`，≤500MB，仅 `.zip`）：校验 manifest/路径/体积/SQLite → 同盘完整暂存 → 生成一致性回滚快照 → 原子替换；任一步失败自动恢复，进程中断则下次启动按持久日志恢复 |
 
-> 全局操作：**整库覆盖**替换所有空间数据，仅适用于可信内网；内网中任何空间均可触发导出，需注意数据外泄风险。DB 被占用时通过 `note` 字段报告。
+> 全局操作：**整库覆盖**替换所有空间数据。导入与导出使用跨 Worker 文件锁互斥；远程请求必须携带 `X-Admin-Token`。
 
 ---
 

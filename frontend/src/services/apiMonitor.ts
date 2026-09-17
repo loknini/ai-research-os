@@ -5,6 +5,7 @@
 // - 任意 /api 请求返回 5xx / 502 / 503 / 504（开发态 Vite 代理也可能返回 500）→ 视为断开
 // 注意：HTTP 4xx 不算断开（后端活着，只是请求有误），不更新状态。
 import { useAppStore } from '@/stores/appStore'
+import { ADMIN_TOKEN_HEADER, getAdminSessionToken } from '@/services/adminAccess'
 
 let installed = false
 
@@ -26,16 +27,15 @@ export function installApiMonitor(): void {
     // 单一收口：仅对 /api/ 请求注入 X-Space-Key（归一化与后端一致：trim + lower）。
     // 无 key 时不带该头（此时 SpaceGate 已保证先引导，不会发出缺失请求）。
     if (isApi) {
+      const headers = new Headers(input instanceof Request ? input.headers : undefined)
+      new Headers(init?.headers).forEach((value, key) => headers.set(key, value))
       const key = useAppStore.getState().spaceKey
       if (key && key.trim()) {
-        init = {
-          ...init,
-          headers: {
-            ...(init?.headers || {}),
-            'X-Space-Key': key.trim().toLowerCase(),
-          },
-        }
+        headers.set('X-Space-Key', key.trim().toLowerCase())
       }
+      const adminToken = getAdminSessionToken()
+      if (adminToken) headers.set(ADMIN_TOKEN_HEADER, adminToken)
+      init = { ...init, headers }
     }
 
     try {

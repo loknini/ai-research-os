@@ -8,7 +8,7 @@
 
 覆盖验收点：
   A. 空间隔离（跨空间 读/改/删 均被过滤/拒绝）
-  B. 缺失/非法 X-Space-Key → 400；settings/health/backup 系统路由豁免
+  B. 缺失/非法 X-Space-Key → 400；系统路由本机豁免、远程管理令牌保护
   C. 并发 ≥20 路并行写入，零 "database is locked"
   D. 向后兼容：存量无 space_id 数据归 __default__ 且可访问；cron JSON 仅迁移一次
   E. WAL：连接后 journal_mode = wal
@@ -57,6 +57,8 @@ from scripts import database  # noqa: E402  (scripts/database.py，与后端同�
 database.DB_PATH = TMP / "ai_research_os.db"
 
 from backend.server.main import app  # noqa: E402
+from backend.server import config as server_config  # noqa: E402
+import backend.server.routers.backup as backup_module  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 极简测试账本
@@ -93,17 +95,17 @@ def test_http_400_and_exemption() -> None:
         r = client.get("/api/papers", headers={"X-Space-Key": "abcd"})
         record("B4 合法 key → 200", r.status_code == 200, f"status={r.status_code}")
 
-        # --- 系统路由豁免（不带 key 也不应 400）---
+        # --- 系统路由不使用 space-key；本机请求保持免登录 ---
         r = client.get("/api/healthz")
         record("B5 healthz 豁免（无 key 非 400）", r.status_code != 400,
                f"status={r.status_code}")
 
         r = client.get("/api/settings/llm")
-        record("B6 settings 豁免（无 key 非 400）", r.status_code != 400,
+        record("B6 settings 本机免管理令牌", r.status_code == 200,
                f"status={r.status_code}")
 
         r = client.post("/api/backup/export")
-        record("B7 backup 豁免（无 key 非 400）", r.status_code != 400,
+        record("B7 backup 本机免管理令牌", r.status_code == 200,
                f"status={r.status_code}")
         if r.status_code == 200:
             with zipfile.ZipFile(io.BytesIO(r.content), "r") as zf:
@@ -111,6 +113,9 @@ def test_http_400_and_exemption() -> None:
                 runtime_files = {
                     ".backend_supervisors.json",
                     ".backend_supervisors.json.tmp",
+                    ".airos-backup-operation.lock",
+                    ".airos-backup-import.json",
+                    ".airos-backup-import.json.tmp",
                     "ai_research_os.db-wal",
                     "ai_research_os.db-shm",
                 }
@@ -161,6 +166,175 @@ def test_http_400_and_exemption() -> None:
                 rejected.status_code == 400,
                 f"status={rejected.status_code}",
             )
+
+            # 故障注入：第一个文件已替换、第二个文件失败时，必须自动恢复，
+            # 不能留下部分导入或返回伪成功。
+            alpha = TMP / "alpha.txt"
+            beta = TMP / "nested" / "beta.txt"
+            alpha.write_text("old-alpha", encoding="utf-8")
+            rollback_before = set(TMP.parent.glob(".backup-*"))
+            candidate_db = TMP.parent / f"qa-import-candidate-{os.getpid()}.db"
+            src_conn = sqlite3.connect(database.DB_PATH)
+            dst_conn = sqlite3.connect(candidate_db)
+            try:
+                src_conn.backup(dst_conn)
+                dst_conn.execute(
+                    "INSERT OR REPLACE INTO global_config(key, value, updated_at) VALUES (?,?,?)",
+                    ("QA_IMPORT_MARKER", "must-rollback", 1),
+                )
+                dst_conn.commit()
+            finally:
+                dst_conn.close()
+                src_conn.close()
+            tx_buf = io.BytesIO()
+            with zipfile.ZipFile(tx_buf, "w") as tx:
+                tx.writestr("manifest.json", '{"app":"ai-research-os"}')
+                tx.write(candidate_db, "ai_research_os.db")
+                tx.writestr("alpha.txt", "new-alpha")
+                tx.writestr("nested/beta.txt", "new-beta")
+            real_atomic_copy = backup_module._atomic_copy_file
+            failed_once = False
+
+            def fail_second_file(source: Path, target: Path) -> None:
+                nonlocal failed_once
+                if target.name == "beta.txt" and not failed_once:
+                    failed_once = True
+                    raise OSError("injected apply failure")
+                real_atomic_copy(source, target)
+
+            backup_module._atomic_copy_file = fail_second_file
+            try:
+                failed_import = client.post(
+                    "/api/backup/import",
+                    files={"file": ("rollback.zip", tx_buf.getvalue(), "application/zip")},
+                )
+            finally:
+                backup_module._atomic_copy_file = real_atomic_copy
+                candidate_db.unlink(missing_ok=True)
+            verify_conn = sqlite3.connect(database.DB_PATH)
+            try:
+                marker_count = int(verify_conn.execute(
+                    "SELECT COUNT(*) FROM global_config WHERE key='QA_IMPORT_MARKER'"
+                ).fetchone()[0])
+            finally:
+                verify_conn.close()
+            record(
+                "B12 backup 应用失败返回错误并自动回滚",
+                failed_import.status_code == 500
+                and alpha.read_text(encoding="utf-8") == "old-alpha"
+                and not beta.exists()
+                and marker_count == 0,
+                f"status={failed_import.status_code}, alpha={alpha.read_text(encoding='utf-8')}, marker={marker_count}",
+            )
+            alpha.unlink(missing_ok=True)
+            for rollback in set(TMP.parent.glob(".backup-*")) - rollback_before:
+                shutil.rmtree(rollback, ignore_errors=True)
+
+        # 模拟经本机 Vite 代理转发的远程浏览器。无 ADMIN_TOKEN 必须拒绝；
+        # 配置令牌后仅正确的常量时间比较结果可通过。
+        remote = {
+            "X-Forwarded-For": "192.0.2.44",
+            "Origin": "http://192.0.2.44:5173",
+        }
+        previous_admin_token = server_config.settings.admin_token
+        try:
+            server_config.settings.admin_token = ""
+            denied_statuses = {
+                "settings": client.get("/api/settings/llm", headers=remote).status_code,
+                "backup": client.post("/api/backup/export", headers=remote).status_code,
+                "swanlab": client.get("/api/swanlab/status", headers=remote).status_code,
+                "skills": client.get("/api/skills", headers=remote).status_code,
+            }
+            record(
+                "B13 四类远程系统管理接口默认拒绝",
+                all(status == 403 for status in denied_statuses.values()),
+                f"statuses={denied_statuses}",
+            )
+            server_config.settings.admin_token = "qa-admin-token-32-characters-long"
+            denied_wrong = client.get(
+                "/api/settings/llm",
+                headers={**remote, "X-Admin-Token": "wrong"},
+            )
+            allowed = client.get(
+                "/api/settings/llm",
+                headers={
+                    **remote,
+                    "X-Admin-Token": "qa-admin-token-32-characters-long",
+                },
+            )
+            record(
+                "B14 远程系统管理校验 X-Admin-Token",
+                denied_wrong.status_code == 403 and allowed.status_code == 200,
+                f"wrong={denied_wrong.status_code}, correct={allowed.status_code}",
+            )
+        finally:
+            server_config.settings.admin_token = previous_admin_token
+
+        # 直接远程连接即使伪造 loopback XFF 也不能绕过：仅信任来自本机代理的转发头。
+        from starlette.requests import Request
+        from backend.server.admin_access import request_is_local
+        spoofed_scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/settings/llm",
+            "headers": [(b"x-forwarded-for", b"127.0.0.1")],
+            "client": ("192.0.2.99", 54321),
+            "server": ("127.0.0.1", 8000),
+            "scheme": "http",
+            "query_string": b"",
+        }
+        record(
+            "B15 远程客户端不能伪造 X-Forwarded-For 绕过",
+            not request_is_local(Request(spoofed_scope)),
+        )
+
+        cross_site = client.get(
+            "/api/settings/llm",
+            headers={"Origin": "https://attacker.example"},
+        )
+        record(
+            "B16 跨站页面不能借本机地址绕过",
+            cross_site.status_code == 403,
+            f"status={cross_site.status_code}",
+        )
+
+        lock_path = backup_module._claim_backup_operation(TMP)
+        try:
+            locked = client.post("/api/backup/export")
+        finally:
+            backup_module._release_backup_operation(lock_path)
+        record(
+            "B17 备份导入/导出跨 Worker 互斥",
+            locked.status_code == 409,
+            f"status={locked.status_code}",
+        )
+
+        # 模拟 Worker 在已替换一个文件后被强制终止：启动恢复必须先还原，
+        # 而 committed 标记表示全部替换完成，只清理日志、不撤销成功导入。
+        crash_target = TMP / "crash-recovery.txt"
+        crash_target.write_text("before-crash", encoding="utf-8")
+        crash_backup = TMP.parent / f".backup-crash-qa-{os.getpid()}"
+        crash_backup.mkdir()
+        (crash_backup / crash_target.name).write_text("before-crash", encoding="utf-8")
+        crash_plan = [(crash_target, Path(crash_target.name), False, True)]
+        backup_module._write_import_journal(TMP, crash_backup, crash_plan, "applying")
+        crash_target.write_text("partial-new", encoding="utf-8")
+        recovered = backup_module.recover_interrupted_import(wait_seconds=2)
+        record(
+            "B18 启动时恢复中断的导入日志",
+            recovered and crash_target.read_text(encoding="utf-8") == "before-crash",
+        )
+
+        backup_module._write_import_journal(TMP, crash_backup, crash_plan, "committed")
+        crash_target.write_text("committed-new", encoding="utf-8")
+        recovered_committed = backup_module.recover_interrupted_import(wait_seconds=2)
+        record(
+            "B19 committed 日志保留已完成导入",
+            not recovered_committed
+            and crash_target.read_text(encoding="utf-8") == "committed-new",
+        )
+        crash_target.unlink(missing_ok=True)
+        shutil.rmtree(crash_backup, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +546,10 @@ def test_frontend_injection_unique() -> None:
     record("G0 前端源码目录存在", True)
 
     files_with_token: list[str] = []
-    # 真正“注入请求头”的写法：'X-Space-Key': ... 或 headers['X-Space-Key'] = ...
-    assign_re = re.compile(r"""['"]X-Space-Key['"]\s*[:=]""")
+    # 真正“注入请求头”的写法：对象属性、下标赋值或 Headers.set(...)。
+    assign_re = re.compile(
+        r"""(?:['"]X-Space-Key['"]\s*[:=]|\.set\(\s*['"]X-Space-Key['"]\s*,)"""
+    )
     assign_files: list[str] = []
 
     for p in frontend_src.rglob("*"):
@@ -392,8 +568,12 @@ def test_frontend_injection_unique() -> None:
     print(f"    真正注入请求头的文件:   {assign_files}")
 
     assign_norm = [f.replace("\\", "/") for f in assign_files]
-    only_api = assign_norm == ["frontend/src/services/apiMonitor.ts"]
-    record("G1 唯一注入点为 apiMonitor.ts", only_api,
+    expected = {
+        "frontend/src/services/api.ts",       # 未来统一客户端（当前尚未迁移调用方）
+        "frontend/src/services/apiMonitor.ts",  # 当前全局运行时注入点
+    }
+    only_api_layer = set(assign_norm) == expected
+    record("G1 注入实现仅位于 API 基础层", only_api_layer,
            f"assign_files={assign_files}")
 
     # 其它仅含注释引用的文件（如 SpaceGate.tsx 的文档注释）不视为注入点
@@ -441,7 +621,8 @@ def main() -> None:
 
     verdict = "ALL_PASS" if failed == 0 else "HAS_FAILURES"
     print(f"VERDICT: {verdict}")
-    return None
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

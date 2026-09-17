@@ -47,10 +47,16 @@ class SPAStaticFiles(StaticFiles):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # A worker may have died between two atomic file replacements during a
+    # backup import. Recover the durable journal before opening/migrating DB.
+    from .routers.backup import recover_interrupted_import
+    recover_interrupted_import()
     # Initialise the database schema once, idempotently, before serving.
     # `init_db` applies the aiosqlite WAL pragmas and the idempotent
     # `space_id` column migration for legacy/user tables.
     await db.init_db()
+    from .admin_access import startup_security_message
+    print(startup_security_message())
     # 跨端口重复实例心跳：登记自己 + 发现同 DB 的其它 supervisor。
     # 双后端共享同一 SQLite 是慢性锁竞争（reindex 500 事故根因），这里只做
     # 可见性（ERROR 日志 + /api/healthz siblings），不强制单例。

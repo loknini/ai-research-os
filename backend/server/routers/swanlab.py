@@ -9,12 +9,17 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from ..helpers import run_script
+from ..admin_access import require_admin
 
-router = APIRouter(prefix="/api/swanlab", tags=["swanlab"])
+router = APIRouter(
+    prefix="/api/swanlab",
+    tags=["swanlab"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 class SwanlabConfig(BaseModel):

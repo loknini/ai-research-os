@@ -9,10 +9,12 @@ Two endpoints, both mounted under ``/api/backup``:
     placed at the zip root describing the package.
 * ``POST /api/backup/import``
     Accept an ``UploadFile`` (field ``file``, ``.zip`` only, 500 MB cap),
-    validate its manifest, back up the *current* ``DATA_DIR`` to a sibling
-    ``.backup-<timestamp>`` directory, then overwrite ``DATA_DIR`` with the
-    zip contents.  SQLite may be locked while the app runs — failures are
-    caught and reported via the JSON ``note`` rather than crashing.
+    validate and fully stage it, snapshot the current data, then apply files
+    with atomic replacement / SQLite Online Backup. Any failure automatically
+    restores every target touched by the import.
+
+Both endpoints are system-wide and protected by ``require_admin``: localhost
+is allowed directly, while remote callers must provide ``X-Admin-Token``.
 
 Only the standard library (``zipfile`` / ``shutil`` / ``tempfile``) is used;
 no new dependency beyond ``python-multipart`` (needed for ``UploadFile``).
@@ -21,20 +23,27 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
+import time
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from .. import config
+from ..admin_access import require_admin
 
-router = APIRouter(prefix="/api/backup", tags=["backup"])
+router = APIRouter(
+    prefix="/api/backup",
+    tags=["backup"],
+    dependencies=[Depends(require_admin)],
+)
 
 APP_NAME = "ai-research-os"
 MANIFEST_VERSION = "0.1"
@@ -56,12 +65,17 @@ EXCLUDE_FILES = {
     ".backend_supervisors.json",
     ".backend_supervisors.json.tmp",
     ".backend_supervisors.lock",
+    ".airos-backup-operation.lock",
+    ".airos-backup-import.json",
+    ".airos-backup-import.json.tmp",
 }
 
 # Hard cap on uploaded backup size to prevent abuse (500 MB).
 MAX_IMPORT_BYTES = 500 * 1024 * 1024
 MAX_EXTRACT_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 100_000
+BACKUP_LOCK_STALE_SECONDS = 24 * 60 * 60
+IMPORT_JOURNAL_NAME = ".airos-backup-import.json"
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +87,8 @@ def _utcnow_iso() -> str:
 
 
 def _timestamp() -> str:
-    """Filesystem-friendly local timestamp ``YYYYMMDD-HHMMSS``."""
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    """Filesystem-friendly timestamp with enough precision for concurrent imports."""
+    return datetime.now().strftime("%Y%m%d-%H%M%S-%f")
 
 
 def _top_entries(data_dir: Path) -> List[str]:
@@ -163,14 +177,252 @@ def _snapshot_data_dir(data_dir: Path, target: Path, db_path: Path) -> None:
 
 def _validate_member_names(names: List[str]) -> None:
     """Reject zip entries that try to escape the extraction root (Zip Slip)."""
+    seen: set[str] = set()
     for name in names:
         normalized = name.replace("\\", "/")
         parts = normalized.split("/")
         if ("\x00" in normalized or normalized.startswith("/") or ".." in parts
-                or (parts and ":" in parts[0])):
+                or "." in parts or (parts and ":" in parts[0])):
             raise HTTPException(
                 status_code=400, detail="备份包包含非法路径，已拒绝导入"
             )
+        identity = normalized.rstrip("/").casefold()
+        if identity in seen:
+            raise HTTPException(status_code=400, detail="备份包包含重复路径，已拒绝导入")
+        seen.add(identity)
+
+
+def _atomic_copy_file(source: Path, target: Path) -> None:
+    """Copy a regular file and atomically replace its destination."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".importing",
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            with source.open("rb") as src:
+                shutil.copyfileobj(src, tmp)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_path, target)
+        tmp_path = None
+    finally:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _validate_sqlite_file(path: Path) -> None:
+    """Reject an imported DB before any live data is changed."""
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5)
+        try:
+            result = conn.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=400, detail=f"备份数据库无效：{exc}") from exc
+    if not result or str(result[0]).lower() != "ok":
+        raise HTTPException(status_code=400, detail=f"备份数据库完整性检查失败：{result!r}")
+
+
+def _import_target(data_dir: Path, db_path: Path, rel: Path) -> tuple[Path, bool]:
+    """Resolve one staged file to a safe live target."""
+    is_db = rel.parts == (db_path.name,)
+    if is_db:
+        if db_path.exists() and not db_path.is_file():
+            raise HTTPException(status_code=400, detail="数据库导入目标不是文件")
+        return db_path, True
+    target = data_dir / rel
+    # Existing symlinks inside DATA_DIR must not redirect an import elsewhere.
+    try:
+        target.resolve(strict=False).relative_to(data_dir.resolve())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"导入目标越界：{rel}") from exc
+    cursor = data_dir
+    for index, part in enumerate(rel.parts):
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise HTTPException(status_code=400, detail=f"导入目标包含符号链接：{rel}")
+        if cursor.exists():
+            is_leaf = index == len(rel.parts) - 1
+            if (is_leaf and not cursor.is_file()) or (not is_leaf and not cursor.is_dir()):
+                raise HTTPException(status_code=400, detail=f"导入目标类型冲突：{rel}")
+    return target, False
+
+
+def _rollback_import(
+    applied: list[tuple[Path, Path, bool, bool]],
+    backup_path: Path,
+    db_name: str,
+) -> list[str]:
+    """Restore every target touched by a failed import, in reverse order."""
+    failures: list[str] = []
+    for target, rel, is_db, existed in reversed(applied):
+        original = backup_path / (db_name if is_db else rel)
+        try:
+            if existed:
+                if not original.is_file():
+                    raise FileNotFoundError(f"回滚快照缺少 {rel}")
+                if is_db:
+                    _sqlite_snapshot(original, target)
+                else:
+                    _atomic_copy_file(original, target)
+            elif target.exists():
+                target.unlink()
+        except (OSError, sqlite3.Error) as exc:
+            failures.append(f"{rel}: {exc}")
+    return failures
+
+
+def _claim_backup_operation(data_dir: Path) -> Path:
+    """Acquire a cross-process export/import lock using exclusive creation."""
+    data_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = data_dir / ".airos-backup-operation.lock"
+    for attempt in range(2):
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, f"pid={os.getpid()} time={time.time()}\n".encode("ascii"))
+            finally:
+                os.close(fd)
+            return lock_path
+        except FileExistsError as exc:
+            owner_alive = False
+            try:
+                raw = lock_path.read_text(encoding="ascii", errors="ignore")
+                match = next(
+                    (part for part in raw.split() if part.startswith("pid=")), ""
+                )
+                owner_pid = int(match.split("=", 1)[1]) if match else 0
+                if owner_pid > 0:
+                    try:
+                        os.kill(owner_pid, 0)
+                        owner_alive = True
+                    except PermissionError:
+                        owner_alive = True
+                    except OSError:
+                        owner_alive = False
+            except (OSError, ValueError):
+                owner_alive = False
+            try:
+                stale = time.time() - lock_path.stat().st_mtime > BACKUP_LOCK_STALE_SECONDS
+            except OSError:
+                stale = False
+            if (stale or not owner_alive) and attempt == 0:
+                try:
+                    lock_path.unlink()
+                    continue
+                except OSError:
+                    pass
+            raise HTTPException(
+                status_code=409,
+                detail="已有备份导入或导出正在执行，请稍后重试",
+            ) from exc
+    raise HTTPException(status_code=409, detail="无法获取备份操作锁")
+
+
+def _release_backup_operation(lock_path: Path | None) -> None:
+    if lock_path is None:
+        return
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _write_import_journal(
+    data_dir: Path,
+    backup_path: Path,
+    plan: list[tuple[Path, Path, bool, bool]],
+    state: str,
+) -> Path:
+    """Durably record enough information to recover after process death."""
+    journal_path = data_dir / IMPORT_JOURNAL_NAME
+    payload = {
+        "version": 1,
+        "state": state,
+        "backupPath": str(backup_path.resolve()),
+        "targets": [
+            {
+                "rel": rel.as_posix(),
+                "isDb": is_db,
+                "existed": existed,
+            }
+            for _, rel, is_db, existed in plan
+        ],
+    }
+    tmp_path = journal_path.with_suffix(".json.tmp")
+    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    with tmp_path.open("wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(tmp_path, journal_path)
+    return journal_path
+
+
+def recover_interrupted_import(wait_seconds: float = 30.0) -> bool:
+    """Recover an interrupted import before the application opens the DB.
+
+    Multiple uvicorn workers may start together. Exactly one takes the backup
+    lock; peers wait for the journal to disappear instead of racing recovery.
+    """
+    data_dir = config.DATA_DIR
+    journal_path = data_dir / IMPORT_JOURNAL_NAME
+    if not journal_path.is_file():
+        return False
+    deadline = time.monotonic() + max(0.1, wait_seconds)
+    operation_lock: Path | None = None
+    while operation_lock is None:
+        if not journal_path.is_file():
+            return False
+        try:
+            operation_lock = _claim_backup_operation(data_dir)
+        except HTTPException as exc:
+            if exc.status_code != 409 or time.monotonic() >= deadline:
+                raise RuntimeError("等待备份导入恢复锁超时") from exc
+            time.sleep(0.1)
+
+    try:
+        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+        if payload.get("version") != 1:
+            raise RuntimeError("不支持的备份导入恢复日志版本")
+        if payload.get("state") == "committed":
+            journal_path.unlink(missing_ok=True)
+            return False
+        backup_path = Path(str(payload.get("backupPath") or "")).resolve()
+        expected_parent = data_dir.parent.resolve()
+        if backup_path.parent != expected_parent or not backup_path.name.startswith(".backup-"):
+            raise RuntimeError("备份导入恢复日志中的快照路径非法")
+        targets = payload.get("targets")
+        if not isinstance(targets, list) or not targets:
+            raise RuntimeError("备份导入恢复日志缺少目标清单")
+        restore_plan: list[tuple[Path, Path, bool, bool]] = []
+        for item in targets:
+            if not isinstance(item, dict):
+                raise RuntimeError("备份导入恢复日志目标格式错误")
+            rel_text = str(item.get("rel") or "")
+            _validate_member_names([rel_text])
+            rel = Path(rel_text)
+            target, is_db = _import_target(data_dir, config.DB_PATH, rel)
+            if is_db != bool(item.get("isDb")):
+                raise RuntimeError(f"备份导入恢复目标类型不匹配：{rel}")
+            restore_plan.append((target, rel, is_db, bool(item.get("existed"))))
+        failures = _rollback_import(restore_plan, backup_path, config.DB_PATH.name)
+        if failures:
+            raise RuntimeError("备份导入自动恢复失败：" + "；".join(failures))
+        journal_path.unlink(missing_ok=True)
+        print(f"[backup] recovered interrupted import from {backup_path}")
+        return True
+    finally:
+        _release_backup_operation(operation_lock)
 
 
 # ---------------------------------------------------------------------------
@@ -187,37 +439,41 @@ async def export_backup() -> StreamingResponse:
     filename = f"airos-backup-{_timestamp()}.zip"
 
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        manifest = {
-            "app": APP_NAME,
-            "version": MANIFEST_VERSION,
-            "exported_at": _utcnow_iso(),
-            "entries": _top_entries(data_dir),
-            "db_relative": db_path.name,
-        }
-        zf.writestr(
-            "manifest.json",
-            json.dumps(manifest, ensure_ascii=False, indent=2),
-        )
+    operation_lock = _claim_backup_operation(data_dir)
+    try:
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            manifest = {
+                "app": APP_NAME,
+                "version": MANIFEST_VERSION,
+                "exported_at": _utcnow_iso(),
+                "entries": _top_entries(data_dir),
+                "db_relative": db_path.name,
+            }
+            zf.writestr(
+                "manifest.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+            )
 
-        db_added = False
-        for item in sorted(data_dir.rglob("*")):
-            if not item.is_file():
-                continue
-            rel = item.relative_to(data_dir)
-            if _is_excluded(rel, db_path.name):
-                continue
-            arcname = str(rel)
-            if item.resolve() == db_path.resolve():
-                _safe_add_db(zf, item, arcname)
-                db_added = True
-            else:
-                zf.write(item, arcname)
+            db_added = False
+            for item in sorted(data_dir.rglob("*")):
+                if not item.is_file():
+                    continue
+                rel = item.relative_to(data_dir)
+                if _is_excluded(rel, db_path.name):
+                    continue
+                arcname = str(rel)
+                if item.resolve() == db_path.resolve():
+                    _safe_add_db(zf, item, arcname)
+                    db_added = True
+                else:
+                    zf.write(item, arcname)
 
-        # DB_PATH may intentionally live outside DATA_DIR. It still belongs in
-        # a portable backup, at the manifest-declared root name.
-        if db_path.is_file() and not db_added:
-            _safe_add_db(zf, db_path, db_path.name)
+            # DB_PATH may intentionally live outside DATA_DIR. It still belongs
+            # in a portable backup at the manifest-declared root name.
+            if db_path.is_file() and not db_added:
+                _safe_add_db(zf, db_path, db_path.name)
+    finally:
+        _release_backup_operation(operation_lock)
 
     buf.seek(0)
     headers = {
@@ -235,12 +491,7 @@ async def export_backup() -> StreamingResponse:
 # ---------------------------------------------------------------------------
 @router.post("/import")
 async def import_backup(file: UploadFile = File(...)) -> dict:
-    """Import a ``.zip`` backup, backing up the current data first.
-
-    Returns JSON ``{success, message, imported_entries, backup_path, note}``.
-    A locked SQLite file (app still running) is reported via ``note`` instead
-    of raising, so the operator knows to restart the app to load new data.
-    """
+    """Transactionally apply a validated backup, with automatic rollback."""
     filename = file.filename or ""
     if not filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="仅支持 .zip 格式的备份包")
@@ -256,8 +507,11 @@ async def import_backup(file: UploadFile = File(...)) -> dict:
 
     data_dir: Path = config.DATA_DIR
     backup_path = data_dir.parent / f".backup-{_timestamp()}"
+    stage_path: Path | None = None
+    operation_lock: Path | None = None
 
     try:
+        operation_lock = _claim_backup_operation(data_dir)
         with tempfile.TemporaryDirectory() as tmp_root:
             tmp_root_path = Path(tmp_root)
             zip_path = tmp_root_path / "upload.zip"
@@ -307,28 +561,13 @@ async def import_backup(file: UploadFile = File(...)) -> dict:
                 extract_dir = tmp_root_path / "extracted"
                 zf.extractall(extract_dir)
 
-            # 1) 先备份当前数据（避免覆盖丢失）
-            try:
-                _snapshot_data_dir(data_dir, backup_path, config.DB_PATH)
-            except (PermissionError, OSError, sqlite3.Error) as exc:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"备份当前数据失败（可能是数据库正被占用）：{exc}。请先停止应用再导入。",
-                )
-
-            # 2) 用临时目录内容覆盖 DATA_DIR（剔除垃圾目录、manifest.json 与 OpenClaw 遗留文件）
-            imported_entries = sorted(
-                {
-                    n.split("/")[0]
-                    for n in names
-                    if n.split("/")[0]
-                    and n.split("/")[0] not in EXCLUDE_DIRS
-                    and n.split("/")[0] != "manifest.json"
-                    and n.split("/")[0] not in EXCLUDE_FILES
-                    and not _is_excluded(Path(n), config.DB_PATH.name)
-                }
+            # 1) Copy every candidate to a same-filesystem staging directory.
+            # Any read/space/permission error happens before live data changes.
+            data_dir.parent.mkdir(parents=True, exist_ok=True)
+            stage_path = Path(
+                tempfile.mkdtemp(prefix=".airos-import-stage-", dir=data_dir.parent)
             )
-            db_write_failed = False
+            staged: list[tuple[Path, Path, bool]] = []
             for item in sorted(extract_dir.rglob("*")):
                 if not item.is_file():
                     continue
@@ -341,18 +580,79 @@ async def import_backup(file: UploadFile = File(...)) -> dict:
                     or _is_excluded(rel, config.DB_PATH.name)
                 ):
                     continue
-                is_db = top == config.DB_PATH.name and len(rel.parts) == 1
-                target = config.DB_PATH if is_db else data_dir / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                try:
+                target, is_db = _import_target(data_dir, config.DB_PATH, rel)
+                staged_file = stage_path / rel
+                staged_file.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(item, staged_file)
+                if is_db:
+                    _validate_sqlite_file(staged_file)
+                staged.append((staged_file, target, is_db))
+
+            if not staged:
+                raise HTTPException(status_code=400, detail="备份包不包含可导入的数据文件")
+
+            # 2) Snapshot the complete current state before applying anything.
+            try:
+                _snapshot_data_dir(data_dir, backup_path, config.DB_PATH)
+            except (PermissionError, OSError, sqlite3.Error) as exc:
+                shutil.rmtree(backup_path, ignore_errors=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"备份当前数据失败（可能是数据库正被占用）：{exc}。请先停止应用再导入。",
+                )
+
+            # 3) Apply each staged file atomically. SQLite uses its Online Backup
+            # API. Any failure restores every target touched by this import.
+            imported_entries = sorted(
+                {staged_file.relative_to(stage_path).parts[0] for staged_file, _, _ in staged}
+            )
+            plan = [
+                (
+                    target,
+                    staged_file.relative_to(stage_path),
+                    is_db,
+                    target.exists(),
+                )
+                for staged_file, target, is_db in staged
+            ]
+            journal_path = _write_import_journal(
+                data_dir, backup_path, plan, state="applying"
+            )
+            applied: list[tuple[Path, Path, bool, bool]] = []
+            try:
+                for (staged_file, target, is_db), plan_item in zip(staged, plan):
+                    # Record before applying so a partially failed DB backup is
+                    # restored defensively as well.
+                    applied.append(plan_item)
                     if is_db:
-                        _sqlite_snapshot(item, target)
+                        _sqlite_snapshot(staged_file, target)
                     else:
-                        shutil.copyfile(item, target)
-                except (PermissionError, OSError, sqlite3.Error):
-                    if is_db:
-                        db_write_failed = True
-                    # 非数据库文件失败仅跳过，不阻断整体导入
+                        _atomic_copy_file(staged_file, target)
+                _write_import_journal(data_dir, backup_path, plan, state="committed")
+            except Exception as exc:  # noqa: BLE001 - rollback every apply failure
+                rollback_failures = _rollback_import(
+                    applied, backup_path, config.DB_PATH.name
+                )
+                if rollback_failures:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"导入失败且自动回滚不完整：{exc}；"
+                            f"回滚错误：{'；'.join(rollback_failures)}；"
+                            f"完整快照保留在 {backup_path}"
+                        ),
+                    ) from exc
+                journal_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"导入失败，已自动恢复原数据：{exc}",
+                ) from exc
+            # A committed journal is safe after a crash: startup keeps the new
+            # data and only removes the marker. Best-effort cleanup is enough.
+            try:
+                journal_path.unlink()
+            except OSError:
+                pass
 
     except HTTPException:
         raise
@@ -360,18 +660,17 @@ async def import_backup(file: UploadFile = File(...)) -> dict:
         raise HTTPException(
             status_code=500, detail=f"导入过程中发生未知错误：{exc}"
         ) from exc
+    finally:
+        if stage_path is not None:
+            shutil.rmtree(stage_path, ignore_errors=True)
+        _release_backup_operation(operation_lock)
 
-    note = (
-        "导入完成，已用备份包覆盖当前数据目录。"
-        if not db_write_failed
-        else "数据库文件写入失败（可能被正在运行的应用占用）。请停止 app 后重启以加载新数据。"
-    )
     return {
         "success": True,
-        "message": "导入完成" if not db_write_failed else "导入完成（数据库需重启后生效）",
+        "message": "导入完成",
         "imported_entries": imported_entries,
         "backup_path": str(backup_path),
-        "note": note,
+        "note": "所有文件已成功应用，并保留导入前一致性快照。",
     }
 
 

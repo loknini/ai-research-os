@@ -6,6 +6,8 @@
 
 ## [Unreleased] - 2026-09-17 · RAG 2.1 正确性与可恢复性
 
+- 系统级设置、备份、SwanLab 与 Skills 增加管理访问边界：本机免登录，远程必须使用 `ADMIN_TOKEN` / `X-Admin-Token`；Vite 转发保留真实客户端地址，启动时明确报告保护状态。
+- 备份导入改为完整暂存、SQLite 预检、原子文件替换和失败自动回滚；导入/导出增加跨 Worker 互斥锁，并用持久导入日志在 Worker 崩溃后的下次启动自动恢复一致性快照。
 - 嵌入向量按 provider/model/revision/dims/query instruction 指纹隔离；批处理中禁止 API/本地模型静默互换，配置不兼容时降级 FTS5。
 - local 重建采用 generation staging + 原子激活，构建失败、取消或进程崩溃不再先删除可用旧索引。
 - local/paper/web 统一进入持久队列；新增数据库全局 writer lease，修复多 Worker 可同时认领不同任务及跨线程 event loop 续租失效。

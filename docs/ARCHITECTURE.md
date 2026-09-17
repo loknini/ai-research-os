@@ -23,6 +23,7 @@
 ```
 
 - `backend/server/main.py`：CORS → 异常处理 → 挂载 `routers`（22个，见 `_meta.json`）→ `lifespan: init_db + start_scheduler + start_development_runner` → 生产态托管 `frontend/dist`。
+- `backend/server/admin_access.py`：部署级管理边界；本机 loopback 免令牌，远程 settings/backup/SwanLab/Skills 请求必须通过 `X-Admin-Token`，与 space-key 软隔离职责分离。
 - `frontend/src/App.tsx`：12 个 Hub 全部 `React.lazy` 分割，`installApiMonitor()` 单点注入 `X-Space-Key`。
 - `scripts/`：同时是**被 import 的库**（`database/chat_agent_stream/fetch_arxiv`）和**被 subprocess 调的 CLI**（`swanlab/citation/formula/obsidian`），后者经 `SPACE_ID` 环境变量透传空间。
 

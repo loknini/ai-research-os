@@ -22,13 +22,18 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from .. import config
+from ..admin_access import require_admin
 from ..utils import mask_key
 
-router = APIRouter(prefix="/api/settings", tags=["settings"])
+router = APIRouter(
+    prefix="/api/settings",
+    tags=["settings"],
+    dependencies=[Depends(require_admin)],
+)
 
 ENV_PATH: Path = config.PROJECT_ROOT / ".env"
 
