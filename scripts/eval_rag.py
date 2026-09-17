@@ -21,7 +21,7 @@ async def main(limit=10):
     sample = pool[:limit]
     results = []
     for title, q, gold in sample:
-        hits, mode, _ = await rag.retrieve("__default__", q, top_k=5)
+        hits, mode, _, _ = await rag.retrieve("__default__", q, top_k=5)
         # P@5：命中是否含 gold 关键词
         hit_text = " ".join(h["content"] for h in hits)
         hit = gold[:6] in hit_text if gold else False

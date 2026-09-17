@@ -7,6 +7,11 @@
 #   .\start.ps1 -ApiPort 9000   # 自定义后端端口
 #   .\start.ps1 -ReuseBackend   # 端口已有健康后端实例时不重启，直接复用（默认会先结束旧实例再以最新代码启动）
 #   .\start.ps1 -Restart        # 重启模式：结束后端+前端（如正在运行）后以最新代码重新启动
+#   .\start.ps1 -Background     # 后台模式：不弹新终端，日志进 logs/，用 .\stop.ps1 停止
+#
+# ⚠️ 不要用系统 python 手动再起一个 uvicorn（即使不同端口）：
+#   双后端共享同一 SQLite 会造成慢性 database is locked（reindex 500 事故根因）。
+#   如需多开，先换 DATA_DIR 再起；健康检查 /api/healthz 会报 siblingInstances。
 #
 # 说明:
 #   - FastAPI 后端（uvicorn backend.server.main:app）为核心，默认启动。
@@ -24,8 +29,10 @@ param(
     [switch]$Restart,         # 重启模式：结束后端+前端（如正在运行）后以最新代码重新启动
     [int]$FrontendPort = 5173,
     [int]$ApiPort = 8000,
-    [int]$ApiWorkers = 0,    # FastAPI worker 进程数；0 = 自动探测 min(CPU, 8)
-    [string]$DataDir          # 数据目录（DATA_DIR）覆盖；优先级最高：命令行 -DataDir > .airos-data-dir 文件 > 已有环境变量 > 默认
+    [int]$ApiWorkers = 0,    # FastAPI worker 进程数；0 = 自动探测 min(CPU, 4)
+    [string]$DataDir,         # 数据目录（DATA_DIR）覆盖；优先级最高：命令行 -DataDir > .airos-data-dir 文件 > 已有环境变量 > 默认
+    [switch]$Background,      # 后台模式：不弹新终端，前后端日志写入 $LogDir，用 .\stop.ps1 停止
+    [string]$LogDir = ""      # 后台日志目录；留空则为 $ProjectDir\logs（git 已忽略）
 )
 
 # 强制控制台使用 UTF-8，避免中文/emoji 输出乱码
@@ -51,6 +58,10 @@ if (-not $DataDir -and $env:DATA_DIR) {
 }
 if (-not $DataDir) {
     $DataDir = "$ProjectDir\data"
+}
+# 后台日志目录（仅 -Background 有效；前景模式保持弹终端实时看日志）
+if (-not $LogDir) {
+    $LogDir = "$ProjectDir\logs"
 }
 # 项目内虚拟环境（不污染全局 Python）
 $VenvDir = "$ProjectDir\.venv"
@@ -96,7 +107,7 @@ if (Test-Path -LiteralPath $RequirementsStamp) {
 }
 $BackendImportsReady = $false
 if ($InstalledRequirementsHash -eq $RequirementsHash) {
-    & "$VenvPython" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pypdf, requests, uvicorn" 2>$null
+    & "$VenvPython" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pymupdf, requests, sqlite3, sqlite_vec, uvicorn; c=sqlite3.connect(':memory:'); c.enable_load_extension(True); sqlite_vec.load(c); assert c.execute('select vec_version()').fetchone()[0]" 2>$null
     $BackendImportsReady = ($LASTEXITCODE -eq 0)
 }
 if (-not $BackendImportsReady) {
@@ -106,7 +117,7 @@ if (-not $BackendImportsReady) {
         Write-Host "❌ 后端依赖安装失败，请手动执行: $VenvPython -m pip install -r backend/requirements.txt" -ForegroundColor Red
         exit 1
     }
-    & "$VenvPython" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pypdf, requests, uvicorn" 2>$null
+    & "$VenvPython" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pymupdf, requests, sqlite3, sqlite_vec, uvicorn; c=sqlite3.connect(':memory:'); c.enable_load_extension(True); sqlite_vec.load(c); assert c.execute('select vec_version()').fetchone()[0]" 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "❌ 后端依赖安装后仍无法导入，请检查上方 pip 输出" -ForegroundColor Red
         exit 1
@@ -143,11 +154,14 @@ Write-Host "`n🚀 启动服务..." -ForegroundColor Yellow
 # 将解析后的数据目录导出给后端进程（必须在启动 uvicorn 之前设置 DATA_DIR）
 if ($DataDir) { $env:DATA_DIR = $DataDir }
 
-# 多 worker：优先使用 -ApiWorkers，否则自动探测 min(CPU, 8)
+# 多 worker：优先使用 -ApiWorkers，否则自动探测 min(CPU, 4)。
+# 4 是 I/O 型负载（等 LLM API、等 SQLite 单写锁）的甜点：再多 workers 只增加
+# 锁竞争与内存（本地嵌入模型每进程独立加载一份），吞吐几乎无提升。
+# 如需压测峰值并发，可显式 -ApiWorkers 8 覆盖。
 if ($ApiWorkers -gt 0) {
     $Workers = $ApiWorkers
 } else {
-    $Workers = [Math]::Min((& "$VenvPython" -c "import os; print(min(os.cpu_count() or 1, 8))"), 8)
+    $Workers = [Math]::Min((& "$VenvPython" -c "import os; print(min(os.cpu_count() or 1, 4))"), 4)
 }
 
 # 端口占用检测：WinError 10013 的主要根因是端口被残留实例/其他程序占用，
@@ -155,6 +169,14 @@ if ($ApiWorkers -gt 0) {
 function Get-PortListener {
     param([int]$Port)
     return Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+
+# 后台模式日志轮转：超 10MB 留一个 .1 备份，防止 uvicorn 日志无限增长
+function Rotate-Log {
+    param([string]$Path)
+    if ((Test-Path -LiteralPath $Path) -and ((Get-Item -LiteralPath $Path).Length -gt 10MB)) {
+        Move-Item -LiteralPath $Path -Destination "$Path.1" -Force
+    }
 }
 
 # 重启模式：先结束后端+前端旧进程，再以最新代码启动
@@ -210,6 +232,38 @@ if ($Restart) {
     Write-Host "   ✅ 旧进程已清理，即将以最新代码重启`n" -ForegroundColor Green
 }
 
+# 跨端口重复实例预检：同端口残留由下方端口检查处理；这里查心跳文件，
+# 发现**其它端口**仍有活着的后端在用同一数据目录 → 直接 abort。
+# （双后端共享同一 SQLite 是慢性锁竞争之源，reindex 500 事故根因。）
+if (-not $SkipBackend) {
+    $hbFile = "$DataDir\.backend_supervisors.json"
+    if (Test-Path $hbFile) {
+        try {
+            $hb = Get-Content -LiteralPath $hbFile -Raw -ErrorAction Stop | ConvertFrom-Json
+            $nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+            $liveForeign = @()
+            foreach ($prop in ($hb.PSObject.Properties)) {
+                if ([int]$prop.Value.port -eq $ApiPort) { continue }  # 同端口走下方端口逻辑（复用/重启）
+                $ageSec = ($nowMs - [long]$prop.Value.updatedAt) / 1000
+                if ($ageSec -gt 120) { continue }  # 心跳过期 = 已死，忽略
+                $alive = Get-Process -Id ([int]$prop.Name) -ErrorAction SilentlyContinue
+                if ($alive) {
+                    $liveForeign += "supervisor PID $($prop.Name)（端口 $($prop.Value.port)，$([Math]::Round($ageSec))s 前心跳）"
+                }
+            }
+            if ($liveForeign.Count -gt 0) {
+                Write-Host "   ❌ 检测到其它后端实例正在使用同一数据目录 ($DataDir):" -ForegroundColor Red
+                $liveForeign | ForEach-Object { Write-Host "      - $_" -ForegroundColor Red }
+                Write-Host "      双后端共享 SQLite 必然导致 database is locked。请先停掉它们再启动。" -ForegroundColor Yellow
+                Write-Host "      可按上述 PID 逐个结束，或直接复用已有实例（前端 proxy 指向其端口）。" -ForegroundColor Yellow
+                exit 1
+            }
+        } catch {
+            # 心跳文件损坏/不可读：忽略，按无残留继续（后端启动后会重写）
+        }
+    }
+}
+
 # 启动 FastAPI 后端（使用 .venv 解释器，多 worker 常驻）
 if (-not $SkipBackend) {
     # 预检：端口若被占用，区分「本应用健康实例 → 复用」与「其他程序 → 报错退出」
@@ -262,7 +316,17 @@ if (-not $SkipBackend) {
 
 if (-not $SkipBackend) {
     Write-Host "   🔌 启动 FastAPI 后端 (端口: $ApiPort, workers: $Workers)..." -ForegroundColor Cyan
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ProjectDir'; & '$VenvPython' -m uvicorn backend.server.main:app --port $ApiPort --workers $Workers" -WindowStyle Normal
+    if ($Background) {
+        if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+        Rotate-Log "$LogDir\backend.log"
+        Rotate-Log "$LogDir\backend.err.log"
+        # 后台模式直接起 uvicorn 进程（无 powershell 包装层），PID 即 supervisor，可被 stop.ps1 精准结束
+        $beProc = Start-Process -FilePath $VenvPython -ArgumentList "-m", "uvicorn", "backend.server.main:app", "--port", "$ApiPort", "--workers", "$Workers" -WorkingDirectory $ProjectDir -WindowStyle Hidden -RedirectStandardOutput "$LogDir\backend.log" -RedirectStandardError "$LogDir\backend.err.log" -PassThru
+        Set-Content -LiteralPath "$LogDir\backend.pid" -Value $beProc.Id -Encoding Ascii -NoNewline
+        Write-Host "   🔇 后台运行中 (PID $($beProc.Id)，日志: $LogDir\backend.log)" -ForegroundColor Gray
+    } else {
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ProjectDir'; & '$VenvPython' -m uvicorn backend.server.main:app --port $ApiPort --workers $Workers" -WindowStyle Normal
+    }
 
     # 等待后端就绪（除非显式跳过 LLM 校验也仍等待健康检查）
     Write-Host "   ⏳ 等待后端就绪..." -ForegroundColor Gray
@@ -298,7 +362,18 @@ if (-not $SkipFrontend) {
     }
 
     Write-Host "   🎨 启动前端开发服务器 (端口: $FrontendPort)..." -ForegroundColor Cyan
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ProjectDir\frontend'; npm run dev -- --port $FrontendPort" -WindowStyle Normal
+    if ($Background) {
+        if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+        Rotate-Log "$LogDir\frontend.log"
+        Rotate-Log "$LogDir\frontend.err.log"
+        $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+        if (-not $npmCmd) { $npmCmd = "npm" }
+        $feProc = Start-Process -FilePath $npmCmd -ArgumentList "run", "dev", "--", "--port", "$FrontendPort" -WorkingDirectory "$ProjectDir\frontend" -WindowStyle Hidden -RedirectStandardOutput "$LogDir\frontend.log" -RedirectStandardError "$LogDir\frontend.err.log" -PassThru
+        Set-Content -LiteralPath "$LogDir\frontend.pid" -Value $feProc.Id -Encoding Ascii -NoNewline
+        Write-Host "   🔇 后台运行中 (PID $($feProc.Id)，日志: $LogDir\frontend.log)" -ForegroundColor Gray
+    } else {
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ProjectDir\frontend'; npm run dev -- --port $FrontendPort" -WindowStyle Normal
+    }
 }
 
 Write-Host @"
@@ -320,5 +395,17 @@ Write-Host @"
    - 数据备份与迁移：打开前端「设置 → 数据备份与迁移」卡片
    - 查看设计文档: .\docs\SYSTEM-DESIGN.md
    - 按 Ctrl+C 停止各个服务窗口
-
 "@ -ForegroundColor Green
+
+if ($Background) {
+    Write-Host @"
+
+🔇 后台模式已启用（无新终端）：
+   后端日志: $LogDir\backend.log
+   后端错误: $LogDir\backend.err.log
+   前端日志: $LogDir\frontend.log
+   前端错误: $LogDir\frontend.err.log
+   停止服务: .\stop.ps1
+   实时跟踪: Get-Content $LogDir\backend.log -Wait -Tail 50
+"@ -ForegroundColor Yellow
+}

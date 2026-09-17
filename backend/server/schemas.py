@@ -67,13 +67,19 @@ class RagIndexRequest(BaseModel):
     """Request body for ``POST /api/rag/index``.
 
     ``paths`` 支持一个或多个目标路径（文件或目录）；``fileTypes`` 为空则接受全部
-    受支持类型（pdf/txt/md）。``embedModel`` 可选，留空则用全局嵌入模型配置。
+    受支持类型（pdf/txt/md）。嵌入模型一律走全局 LLM 配置（单空间单向量空间，
+    不支持按源覆盖）。
     """
 
     paths: List[str] = []
     recursive: bool = True
     fileTypes: Optional[List[str]] = None
-    embedModel: Optional[str] = None
+
+
+class RagWebRequest(BaseModel):
+    """Request body for ``POST /api/rag/web``（P0：用户粘贴 URL，无递归爬取）。"""
+
+    urls: List[str] = []
 
 
 class RagQueryRequest(BaseModel):
@@ -85,4 +91,4 @@ class RagQueryRequest(BaseModel):
 
 
 __all__ = ["ChatRequest", "AgentRunRequest", "SessionCreate", "FetchPapersRequest",
-           "RagIndexRequest", "RagQueryRequest"]
+           "RagIndexRequest", "RagWebRequest", "RagQueryRequest"]

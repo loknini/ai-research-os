@@ -1,6 +1,6 @@
 # 数据模型与空间隔离
 
-> 实现文件：`scripts/database.py`；引导壳：`backend/server/db.py`。版本与数量以 `docs/_meta.json` 为准（当前 31 张表，30 张经 `SPACE_TABLES` 迁移）。
+> 实现文件：`scripts/database.py`；引导壳：`backend/server/db.py`。版本与数量以 `docs/_meta.json` 为准（当前 36 张表，31 张列入 `SPACE_TABLES` 通用迁移；另有原生含 `space_id` 或系统级内部表）。
 > 核对日期：2026-09-02
 
 ---
@@ -190,11 +190,23 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 
 ### 3.8 RAG
 
-**`rag_sources`** — 索引源及索引状态、目标路径、文档/切片统计、嵌入模式与模型。
+**`rag_sources`** — `(space_id,id)` 复合主键；索引状态、目标路径、活动代
+`active_generation_id`，以及当前嵌入 profile/model/provider/revision/dims。
 
-**`rag_documents`** — 源内文件元数据、哈希、页数、字符数与切片数。
+**`rag_documents`** — `(space_id,id)` 复合主键；源内文件元数据、哈希、页数、字符数、
+切片数与 `generation_id`。
 
-**`rag_chunks`** — 检索切片正文、页码/字符区间、token 估算与可选向量 JSON。
+**`rag_chunks`** — `(space_id,id)` 复合主键；正文、页码/字符区间、token 估算、
+可选向量 JSON、`embedding_profile_id` 与 `generation_id`。
+
+**`rag_embedding_profiles`** — 不可变向量空间定义：provider / model / revision /
+dims / normalized / query instruction；不同 profile 的向量禁止相互计算相似度。
+
+**`rag_index_jobs` / `rag_worker_lease`** — local、paper、web 共用的持久任务队列，
+job lease 负责故障接管，全局 writer lease 保证多进程仅一个索引写者。
+
+**`rag_chunks_fts` / `rag_vec_meta` / `rag_vec`** — FTS5 稀疏候选和可选 sqlite-vec
+派生索引。FTS 与主表同事务显式维护；查询 JOIN 活动主表，因此历史代与孤儿不可见。
 
 ---
 
@@ -215,7 +227,7 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 | Agent 会话 | `create_agent_session` · `update_agent_session` · `add_agent_message` |
 | Agent 后台运行 | `create_agent_run` · `update_agent_run` · `get_agent_run_status` · `add_agent_run_event` · `create_agent_tool_approval` · `append_agent_replay` · `cancel_agent_run` |
 | Cron | `get_cron_jobs` · `create_cron_job` · `get_due_cron_jobs` · `try_acquire_cron_job` · `add_cron_run_history` |
-| RAG | `create_rag_source` · `create_rag_document` · `insert_rag_chunks` · `get_rag_chunks_for_retrieval` · `get_rag_stats` |
+| RAG | `enqueue_rag_job` · `activate_rag_generation` · `clear_rag_generation` · `insert_rag_chunks` · `fts_search_chunk_ids` · `get_rag_chunks_for_retrieval` |
 
 ---
 

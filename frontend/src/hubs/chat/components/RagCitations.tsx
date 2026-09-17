@@ -15,6 +15,7 @@ export function RagCitations({ sources, openRank, onOpenRank }: { sources: RagSo
         {sources.map((s) => {
           const open = openRank === s.rank
           const pageLabel = s.pageEnd && s.pageEnd !== s.pageStart ? `第 ${s.pageStart}-${s.pageEnd} 页` : `第 ${s.pageStart} 页`
+          const title = s.title || s.fileName
           return (
             <button
               key={s.rank}
@@ -24,9 +25,20 @@ export function RagCitations({ sources, openRank, onOpenRank }: { sources: RagSo
             >
               <div className="flex items-center gap-2 text-xs">
                 <span className="inline-flex h-4 w-4 items-center justify-center rounded bg-primary/15 text-primary text-[10px] font-semibold flex-shrink-0">{s.rank}</span>
-                <span className="font-medium truncate flex-1">{s.fileName}</span>
+                <span className="font-medium truncate flex-1" title={s.url || s.filePath}>{title}</span>
                 <span className="text-[10px] text-muted-foreground whitespace-nowrap flex-shrink-0">{pageLabel}</span>
               </div>
+              {s.url && (
+                <a
+                  href={s.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="mt-1 block truncate text-[10px] text-primary/80 hover:underline"
+                >
+                  {s.url}
+                </a>
+              )}
               {open && <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground whitespace-pre-wrap border-l-2 border-border pl-2 max-h-44 overflow-auto">{s.snippet}</p>}
             </button>
           )

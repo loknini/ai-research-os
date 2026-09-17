@@ -1,0 +1,24 @@
+﻿# 可选重依赖（默认不装，装了才启用；保持本地优先 + 零重依赖默认行为）
+# 注意：本文件含中文注释且带 UTF-8 BOM，请勿去 BOM——否则中文 Windows 下
+# pip 会以 GBK 解码本文件并报 UnicodeDecodeError（或执行前 $env:PYTHONUTF8="1"）。
+#
+# Install (optional):
+#   pip install -r backend/requirements-optional.txt
+#
+# 说明：
+# - 不再默认安装 FAISS：SQLite-vec 是唯一推荐的派生加速层，减少双索引复杂度。
+# - trafilatura：网页正文抽取增强（未安装则用标准库简版 readability，同接口降级）
+# - modelscope / huggingface_hub（二选一安装即可，加速本地嵌入模型下载；
+#   均未安装时自动降级为标准库 urllib 下载，开箱可用，断点续传。
+#   注意：pip install -r 会全装，如需二选一请单独 pip install 其中之一）
+# - torch + transformers：本地嵌入推理必需（缺失时索引自动降级关键词检索，
+#   并在设置页提示）。Windows 下 pip 默认即 CPU 版：
+#   .venv\Scripts\python -m pip install torch transformers
+# - swanlab：实验追踪集成（缺失时相关接口返回友好提示，不影响其它功能）
+# - sqlite-vec 已进入 backend/requirements.txt，不在此重复声明。
+trafilatura>=1.10
+modelscope>=1.18
+huggingface_hub>=0.23
+torch>=2.2
+transformers>=4.38
+swanlab

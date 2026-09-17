@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     embed_provider: str = ""
     # 本地嵌入模型：ModelScope 模型 ID（如 Qwen/Qwen3-Embedding-0.6B）或本地目录路径
     embed_local_model: str = ""
+    # Hub 模型必须固定到不可变 commit/tag；空值仅兼容既有本地目录。
+    embed_local_revision: str = ""
+    # Qwen3 Embedding 官方建议给 query 加任务指令，文档保持原文。
+    embed_query_instruction: str = (
+        "Given a research question, retrieve relevant passages that answer it"
+    )
     # 向量维度：0 = 自动检测（Qwen3-Embedding-0.6B 为 1024）
     embed_local_dims: int = 0
 
@@ -193,6 +199,8 @@ def get_effective_llm_settings() -> dict:
         "embedModel": _pick("LLM_EMBED_MODEL", "llm_embed_model"),
         "embedProvider": _pick("EMBED_PROVIDER", "embed_provider"),
         "embedLocalModel": _pick("EMBED_LOCAL_MODEL", "embed_local_model"),
+        "embedLocalRevision": _pick("EMBED_LOCAL_REVISION", "embed_local_revision"),
+        "embedQueryInstruction": _pick("EMBED_QUERY_INSTRUCTION", "embed_query_instruction"),
         "embedLocalDims": db_vals.get("EMBED_LOCAL_DIMS", str(getattr(settings, "embed_local_dims", 0))),
         "contextWindow": _context_for_model(model),
     }

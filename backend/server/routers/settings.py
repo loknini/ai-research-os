@@ -44,6 +44,8 @@ _MANAGED_KEYS = [
     "LLM_EMBED_MODEL",
     "EMBED_PROVIDER",
     "EMBED_LOCAL_MODEL",
+    "EMBED_LOCAL_REVISION",
+    "EMBED_QUERY_INSTRUCTION",
 ]
 
 
@@ -58,6 +60,8 @@ class LLMSettingsIn(BaseModel):
     embedModel: Optional[str] = None  # empty -> keep the currently saved embed model
     embedProvider: Optional[str] = None  # "api" / "local"
     embedLocalModel: Optional[str] = None  # ModelScope model ID or local path
+    embedLocalRevision: Optional[str] = None
+    embedQueryInstruction: Optional[str] = None
 
 
 class LLMTestIn(BaseModel):
@@ -116,6 +120,8 @@ async def get_llm_settings():
             "embedModel": eff["embedModel"],
             "embedProvider": eff.get("embedProvider", ""),
             "embedLocalModel": eff.get("embedLocalModel", ""),
+            "embedLocalRevision": eff.get("embedLocalRevision", ""),
+            "embedQueryInstruction": eff.get("embedQueryInstruction", ""),
             "temperature": eff["temperature"],
             "maxTokens": eff["maxTokens"],
             "timeout": eff["timeout"],
@@ -144,6 +150,11 @@ async def save_llm_settings(req: LLMSettingsIn):
     embed_model = (req.embedModel or "").strip() or eff["embedModel"] or s.llm_embed_model
     embed_provider = (req.embedProvider or "").strip() or eff["embedProvider"] or s.embed_provider
     embed_local_model = (req.embedLocalModel or "").strip() or eff["embedLocalModel"] or s.embed_local_model
+    embed_local_revision = ((req.embedLocalRevision or "").strip()
+                            or eff.get("embedLocalRevision", "") or s.embed_local_revision)
+    embed_query_instruction = ((req.embedQueryInstruction or "").strip()
+                               or eff.get("embedQueryInstruction", "")
+                               or s.embed_query_instruction)
 
     # 1) 热生效：写 DB（多 worker 可见，TTL 5s）+ 本 worker 内存/环境变量立即可见
     env_updates = {
@@ -157,6 +168,8 @@ async def save_llm_settings(req: LLMSettingsIn):
         "LLM_EMBED_MODEL": embed_model,
         "EMBED_PROVIDER": embed_provider,
         "EMBED_LOCAL_MODEL": embed_local_model,
+        "EMBED_LOCAL_REVISION": embed_local_revision,
+        "EMBED_QUERY_INSTRUCTION": embed_query_instruction,
     }
     # DB 为准（多 worker 可见）
     try:
@@ -175,6 +188,8 @@ async def save_llm_settings(req: LLMSettingsIn):
     s.llm_embed_model = embed_model
     s.embed_provider = embed_provider
     s.embed_local_model = embed_local_model
+    s.embed_local_revision = embed_local_revision
+    s.embed_query_instruction = embed_query_instruction
     os.environ.update(env_updates)
     config.invalidate_llm_cache()
 
@@ -191,6 +206,107 @@ async def save_llm_settings(req: LLMSettingsIn):
         "success": True,
         "message": "配置已保存并多 worker 热更新（DB TTL 5s 内全量可见，已写入 .env 冷备）",
     }
+
+
+@router.get("/embed-local-models")
+async def list_embed_local_models():
+    """列出已下载的本地嵌入模型 + 当前配置的可用性（只读，不触发下载）。
+
+    系统级接口（无需空间隔离）：扫描 ``data/models/*``（含 config.json 即可用），
+    并判定当前 ``EMBED_LOCAL_MODEL`` 是本地命中还是首次使用时才下载。
+    """
+    from .. import local_embed
+    eff = config.get_effective_llm_settings()
+    configured = (eff.get("embedLocalModel") or "").strip()
+    configured_revision = (eff.get("embedLocalRevision") or "").strip()
+    try:
+        models = local_embed.scan_local_models()
+    except Exception:
+        models = []
+    try:
+        status = local_embed.probe_local_model(configured, configured_revision)
+    except Exception:
+        status = {"configured": False, "resolvable": False, "reason": "检测失败"}
+    try:
+        loaded = local_embed.get_local_embedder().loaded
+        load_error = local_embed.get_local_embedder().last_error
+    except Exception:
+        loaded = False
+        load_error = ""
+    return {
+        "success": True,
+        "configured": configured,
+        "provider": eff.get("embedProvider", ""),
+        "resolvable": status.get("resolvable", False),
+        "reason": status.get("reason", ""),
+        "resolvedPath": status.get("path", ""),
+        "loaded": loaded,
+        "loadError": load_error,
+        "models": models,
+    }
+
+
+class EmbedDownloadIn(BaseModel):
+    model: str = ""
+    revision: str = ""
+
+
+@router.post("/embed-download")
+async def start_embed_download(req: EmbedDownloadIn):
+    """提交本地嵌入模型后台下载（幂等；失败手动重试，不自动重试）。
+
+    已下载直返 ready；下载中直返现状；本地目录缺权重直接 failed。
+    全局单飞行：已有其它模型在下载（含其它 worker）时回 busy，不排队。
+    """
+    from .. import local_embed
+    model = (req.model or "").strip()
+    if not model:
+        return {"success": False, "message": "模型 ID 不能为空"}
+    revision = (req.revision or "").strip()
+    if not revision:
+        eff = config.get_effective_llm_settings()
+        if model == (eff.get("embedLocalModel") or "").strip():
+            revision = (eff.get("embedLocalRevision") or "").strip()
+    try:
+        # 跨进程单飞行（状态文件全局可见；本进程线程级检查在 download_in_background 内）
+        active = local_embed.get_active_download()
+        if active and (active.get("model") or "") != model:
+            return {"success": False, "activeModel": active.get("model"),
+                    "message": f"已有下载进行中：{active.get('model')}"}
+        st = local_embed.download_in_background(model, revision)
+    except Exception as exc:
+        return {"success": False, "message": f"提交失败：{exc}"}
+    if st.get("state") == "busy":
+        return {"success": False, "activeModel": st.get("activeModel"),
+                "message": f"已有下载进行中：{st.get('activeModel')}"}
+    return {"success": True, **st}
+
+
+@router.get("/embed-download-status")
+async def embed_download_status(model: str = ""):
+    """查询模型下载状态：idle|downloading|ready|failed + 已下 MB + 错误。"""
+    from .. import local_embed
+    try:
+        st = local_embed.get_download_status((model or "").strip())
+    except Exception as exc:
+        return {"success": False, "message": f"查询失败：{exc}"}
+    return {"success": True, **st}
+
+
+@router.get("/embed-download-active")
+async def embed_download_active():
+    """查询当前进行中的下载（切 Hub 回来后恢复轮询用；无则回 active: None）。
+
+    顺带做过期判定：downloading 但心跳超 5min 未更新，就地改 failed（可重试）。
+    """
+    from .. import local_embed
+    try:
+        active = local_embed.get_active_download()
+    except Exception as exc:
+        return {"success": False, "message": f"查询失败：{exc}"}
+    if not active:
+        return {"success": True, "active": None}
+    return {"success": True, "active": active}
 
 
 @router.get("/llm/models")

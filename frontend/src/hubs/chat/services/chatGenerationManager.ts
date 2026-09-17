@@ -5,10 +5,14 @@ import type { Message, ReasoningStep, ToolResult, RagSource } from '../types'
 
 export type GenStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 
+/** 生成阶段（供 UI 做 Perplexity 式 phase pill）：检索中 → 干活中（工具）→ 写回答. */
+export type GenPhase = 'retrieving' | 'working' | 'writing'
+
 export interface ActiveGeneration {
   conversationId: string
   genId: string
   status: GenStatus
+  phase: GenPhase
   streamingContent: string
   reasoningSteps: ReasoningStep[]
   contextInfo?: { estimated_tokens: number; limit: number; compressed: boolean }
@@ -122,6 +126,7 @@ class ChatGenerationManager {
       conversationId,
       genId,
       status: 'running',
+      phase: rag?.enabled ? 'retrieving' : 'writing',
       streamingContent: '',
       reasoningSteps: [],
       hadError: false,
@@ -192,9 +197,11 @@ class ChatGenerationManager {
         messagesForLLM,
         (chunk) => {
           state.streamingContent += chunk
+          if (state.phase !== 'writing') state.phase = 'writing'
           this.notify(conversationId)
         },
         (tool, params) => {
+          if (state.phase !== 'writing') state.phase = 'working'
           // 落定之前的思考文本为一步；若模型未输出任何思考，自动补一条占位说明
           if (state.streamingContent.trim()) {
             pushReasoning({ kind: 'text', content: state.streamingContent.trim() })
@@ -233,6 +240,11 @@ class ChatGenerationManager {
         (sources) => {
           ragSourcesRef = sources
           state.ragSources = sources
+          this.notify(conversationId)
+        },
+        () => {
+          // 后端 retrieving 首字节：检索阶段确认，立刻刷 UI（此前十几秒无声）
+          if (state.phase !== 'writing') state.phase = 'retrieving'
           this.notify(conversationId)
         }
       )

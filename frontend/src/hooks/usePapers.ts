@@ -26,8 +26,7 @@ export function usePapers() {
       await ongoing
       return
     }
-    let task!: Promise<void>
-    task = (async () => {
+    const task = (async () => {
       setLoadingPapers(true)
       try {
         const list = await loadLocalPapers()

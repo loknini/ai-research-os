@@ -25,6 +25,34 @@ from ..schemas import BatchImportPapersRequest, FetchPapersRequest
 router = APIRouter(prefix="/api/papers", tags=["papers"])
 
 
+def _schedule_paper_index(space_id: str, paper_id: Optional[str] = None,
+                          arxiv_id: Optional[str] = None) -> None:
+    """论文入库/下载后后台索引（fail-open：失败只打日志，绝不阻断论文主流程）。"""
+    try:
+        import asyncio as _asyncio
+
+        async def _run() -> None:
+            try:
+                from .. import rag_runner as _rag_runner
+                _pid = paper_id
+                if not _pid and arxiv_id:
+                    _p = await db.database.get_paper_by_arxiv(arxiv_id, space_id)
+                    _pid = (_p or {}).get("id")
+                if _pid:
+                    await _rag_runner.submit_paper(_pid, space_id)
+            except Exception as _e:  # noqa: BLE001
+                print(f"[papers->rag] index failed: {_e}")
+
+        try:
+            _loop = _asyncio.get_running_loop()
+            _loop.create_task(_run())
+        except RuntimeError:
+            # 非 async 上下文（理论上不会进）：同步跑一次也不阻断
+            pass
+    except Exception:
+        pass
+
+
 @router.get("")
 async def list_papers(
     space_id: str = Depends(get_space_id),
@@ -93,6 +121,7 @@ async def fetch_papers(
         for paper in raw:
             if await db.database.insert_paper(paper, space_id=space_id):
                 inserted += 1
+                _schedule_paper_index(space_id, arxiv_id=paper.get("arxivId"))
         return {
             "success": True,
             "papers": raw,
@@ -125,6 +154,7 @@ async def batch_import_papers(req: BatchImportPapersRequest, space_id: str = Dep
                 continue
             if await db.database.insert_paper(paper, space_id=space_id):
                 imported += 1
+                _schedule_paper_index(space_id, arxiv_id=arxiv_id)
             else:
                 skipped.append({"arxivId": arxiv_id, "reason": "写入失败"})
         return {"success": True, "imported": imported, "skipped": skipped}
@@ -136,6 +166,13 @@ async def batch_import_papers(req: BatchImportPapersRequest, space_id: str = Dep
 async def delete_paper(paper_id: str, space_id: str = Depends(get_space_id)):
     try:
         ok = await db.database.delete_paper(paper_id, space_id=space_id)
+        if ok:
+            # 级联清 RAG 切片（论文 doc_id=paper_id；PDF 块 doc_id=paper_id#pdf）
+            try:
+                await db.database.delete_rag_document(paper_id, space_id)
+                await db.database.delete_rag_document(f"{paper_id}#pdf", space_id)
+            except Exception as _e:  # noqa: BLE001 - RAG 清理失败不影响删除结果
+                print(f"[papers->rag] cleanup failed: {_e}")
         return {"success": ok, "deleted": ok}
     except Exception as exc:
         raise APIError(str(exc), code="DELETE_FAILED")
@@ -161,6 +198,8 @@ async def download_pdf(paper_id: str, space_id: str = Depends(get_space_id)):
         if not local_path:
             raise APIError("PDF download failed", code="DOWNLOAD_FAILED")
         await db.database.update_paper(paper_id, {"localPath": local_path}, space_id=space_id)
+        # PDF 落盘后补索引正文（摘要在入库时已索引，此处补 PDF 全文）
+        _schedule_paper_index(space_id, paper_id=paper_id)
         return {"success": True, "localPath": local_path}
     except APIError:
         raise

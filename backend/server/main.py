@@ -51,10 +51,41 @@ async def lifespan(app: FastAPI):
     # `init_db` applies the aiosqlite WAL pragmas and the idempotent
     # `space_id` column migration for legacy/user tables.
     await db.init_db()
+    # 跨端口重复实例心跳：登记自己 + 发现同 DB 的其它 supervisor。
+    # 双后端共享同一 SQLite 是慢性锁竞争（reindex 500 事故根因），这里只做
+    # 可见性（ERROR 日志 + /api/healthz siblings），不强制单例。
+    import asyncio as _asyncio
+
+    from .health import _INSTANCE_ID
+    from .instance_guard import beat, heartbeat_loop, list_siblings
+    _beat_stop: "asyncio.Event | None" = None
+    try:
+        beat()
+        sibs = list_siblings()
+        if sibs:
+            print(f"[backend] ERROR: 检测到 {len(sibs)} 个其它后端实例共享同一数据库: "
+                  f"{[(s.get('supervisorPid'), s.get('port')) for s in sibs]}"
+                  f"（本实例 {_INSTANCE_ID}）。请只保留一个，否则必然出现 database is locked。")
+        else:
+            print(f"[backend] instance {_INSTANCE_ID} started, no sibling instances.")
+        _beat_stop = _asyncio.Event()
+        _asyncio.create_task(heartbeat_loop(_beat_stop))
+    except Exception as exc:  # noqa: BLE001 - 心跳失败绝不阻断启动
+        print(f"[backend] instance heartbeat disabled: {exc}")
     # 启动 cron 调度器守护线程（多 Worker 各跑一个，靠 DB 原子领取防重）。
     start_scheduler()
     start_development_runner()
-    yield
+    # RAG 索引 dispatcher（P1 单写者：每 worker 一个认领循环，原子认领互斥，
+    # 全局同时只有一个执行者在写库）。
+    from . import rag_runner
+    _rag_stop = _asyncio.Event()
+    _asyncio.create_task(rag_runner.dispatcher(_rag_stop))
+    try:
+        yield
+    finally:
+        if _beat_stop is not None:
+            _beat_stop.set()
+        _rag_stop.set()
 
 
 app = FastAPI(

@@ -271,7 +271,6 @@ async def verify_cron() -> None:
 async def verify_api_and_writes() -> None:
     from fastapi.testclient import TestClient
     from backend.server.main import app
-    from backend.server.routers import formula as formula_router
 
     await database.create_version("note", "linked-note", {"title": "v1"}, space_id="alpha")
     versions = await database.get_versions("note", "linked-note", space_id="alpha")
@@ -301,20 +300,34 @@ async def verify_api_and_writes() -> None:
         })
         missing_delete = client.delete("/api/formula/history/formula-missing", headers=headers)
         deleted = client.delete("/api/formula/history/formula-1", headers=headers)
-        original_run_script = formula_router.run_script
-        formula_router.run_script = lambda *_args, **_kwargs: {
-            "success": False, "updated": False, "error": "UPDATE_FAILED"
-        }
+        original_update_formula = database.update_formula_history_record
+
+        async def _failed_formula_update(*_args, **_kwargs):
+            raise RuntimeError("UPDATE_FAILED")
+
+        database.update_formula_history_record = _failed_formula_update
         try:
             failed_update = client.put("/api/formula/history", headers=headers, json={
                 "id": "formula-1", "note": "db failure"
             })
         finally:
-            formula_router.run_script = original_run_script
+            database.update_formula_history_record = original_update_formula
         check("公式规范平铺更新成功", flat.status_code == 200 and flat.json().get("updated") is True)
-        check("公式旧嵌套更新继续兼容", legacy.status_code == 200 and legacy.json().get("updated") is True)
-        check("公式不存在更新返回 404", missing_update.status_code == 404)
-        check("公式不存在删除返回 404", missing_delete.status_code == 404)
+        check(
+            "公式旧嵌套更新继续兼容",
+            legacy.status_code == 200 and legacy.json().get("updated") is True,
+            f"status={legacy.status_code}, body={legacy.text}",
+        )
+        check(
+            "公式不存在更新返回 404",
+            missing_update.status_code == 404,
+            f"status={missing_update.status_code}, body={missing_update.text}",
+        )
+        check(
+            "公式不存在删除返回 404",
+            missing_delete.status_code == 404,
+            f"status={missing_delete.status_code}, body={missing_delete.text}",
+        )
         check("公式真实删除成功", deleted.status_code == 200 and deleted.json().get("deleted") is True)
 
         check("公式数据库异常不误报 404", failed_update.status_code == 500)
@@ -361,6 +374,13 @@ def verify_startup_dependency_sync() -> None:
         check(
             f"{label} 启动脚本预检 jsonschema",
             "import aiosqlite, dotenv, fastapi, jsonschema" in source,
+        )
+        check(
+            f"{label} 启动脚本真实加载 sqlite-vec",
+            all(token in source for token in (
+                "pymupdf", "sqlite_vec", "enable_load_extension(True)",
+                "vec_version()",
+            )),
         )
 
 

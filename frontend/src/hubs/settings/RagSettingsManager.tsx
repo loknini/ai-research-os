@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { toast } from '@/components/ui/toast'
 import { cn } from '@/utils'
@@ -22,18 +21,23 @@ interface RagSource {
   id: string
   spaceId: string
   name: string
+  kind?: 'local' | 'paper' | 'web'
   targetPaths: string[]
   recursive: boolean
   fileTypes: string[]
   status: 'pending' | 'indexing' | 'ready' | 'partial' | 'failed' | 'cancelled'
   docCount: number
   chunkCount: number
+  progress?: number
+  totalFiles?: number
   embeddingModel: string | null
   embedMode: 'vector' | 'keyword'
   error: string | null
   createdAt: number
   updatedAt: number
 }
+
+const KIND_LABELS: Record<string, string> = { local: '本地', paper: '论文库', web: '网页' }
 
 interface RagDoc {
   id: string
@@ -58,9 +62,12 @@ interface Capabilities {
   embeddingsConfigured: boolean
   embeddingModel: string
   embedProvider: string
+  embedLocalModel?: string
   embedLocalAvailable: boolean
   supportedTypes: string[]
   pdfAvailable: boolean
+  vectorBackend?: string
+  faissAvailable?: boolean
 }
 
 const TYPE_LABELS: Record<string, string> = { pdf: 'PDF', txt: 'TXT', md: 'Markdown' }
@@ -89,10 +96,6 @@ export default function RagSettingsManager() {
   const [pathsText, setPathsText] = useState('')
   const [recursive, setRecursive] = useState(true)
   const [types, setTypes] = useState<Record<string, boolean>>({ pdf: true, txt: true, md: true })
-  const [embedModel, setEmbedModel] = useState('')
-  const [embedProvider, setEmbedProvider] = useState('')
-  const [embedLocalModel, setEmbedLocalModel] = useState('')
-  const [showAdvanced, setShowAdvanced] = useState(false)
   const [indexing, setIndexing] = useState(false)
 
   const [expandedSource, setExpandedSource] = useState<string | null>(null)
@@ -177,7 +180,6 @@ export default function RagSettingsManager() {
           paths,
           recursive,
           fileTypes,
-          embedModel: embedModel.trim() || undefined,
         }),
       })
       const j = await r.json()
@@ -194,7 +196,42 @@ export default function RagSettingsManager() {
     } finally {
       setIndexing(false)
     }
-  }, [pathsText, types, recursive, embedModel, loadSources])
+  }, [pathsText, types, recursive, loadSources])
+
+  // ---------- 网页粘贴 URL 入库（P0：无递归爬取） ----------
+  const [webUrlsText, setWebUrlsText] = useState('')
+  const [webIndexing, setWebIndexing] = useState(false)
+  const submitWebUrls = useCallback(async () => {
+    const urls = webUrlsText.split('\n').map((u) => u.trim()).filter(Boolean)
+    if (urls.length === 0) {
+      toast({ title: '请粘贴至少一个 http(s) 链接', variant: 'error' })
+      return
+    }
+    setWebIndexing(true)
+    try {
+      const r = await fetch('/api/rag/web', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ urls }),
+      })
+      const j = await r.json()
+      if (j.success) {
+        toast({
+          title: '网页索引任务已进入队列，可在下方查看进度',
+          variant: 'success',
+        })
+        setWebUrlsText('')
+        await loadSources()
+      } else {
+        toast({ title: j.message || '提交失败', variant: 'error' })
+      }
+    } catch (e) {
+      console.error(e)
+      toast({ title: '提交请求失败', variant: 'error' })
+    } finally {
+      setWebIndexing(false)
+    }
+  }, [webUrlsText, loadSources])
 
   // ---------- 重新索引 / 取消 / 删除 ----------
   const reindex = useCallback(
@@ -278,6 +315,11 @@ export default function RagSettingsManager() {
           ) : (
             <Badge variant="secondary" className="bg-yellow-500/10 text-yellow-600">PDF 需 pip install PyMuPDF</Badge>
           )}
+          {caps.vectorBackend === 'faiss' ? (
+            <Badge variant="secondary" className="bg-purple-500/10 text-purple-600">向量加速 FAISS</Badge>
+          ) : (
+            <Badge variant="secondary" className="bg-gray-500/10 text-gray-600">向量暴力检索{caps.faissAvailable ? '（已装 FAISS，需 VECTOR_BACKEND=faiss 启用）' : ''}</Badge>
+          )}
         </div>
       )}
 
@@ -330,58 +372,47 @@ export default function RagSettingsManager() {
             </label>
           </div>
 
-          <div>
-            <button
-              className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1"
-              onClick={() => setShowAdvanced((v) => !v)}
-            >
-              <KeyRound className="w-3 h-3" /> 高级（嵌入模型，可选）
-            </button>
-            {showAdvanced && (
-              <div className="mt-2 space-y-2">
-                <div>
-                  <label className="text-xs text-muted-foreground">嵌入 Provider</label>
-                  <select
-                    value={embedProvider}
-                    onChange={(e) => setEmbedProvider(e.target.value)}
-                    className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
-                  >
-                    <option value="">默认（API）</option>
-                    <option value="api">API（走 LLM 服务）</option>
-                    <option value="local">本地模型（离线，需 GPU 或 CPU）</option>
-                  </select>
-                </div>
-                {embedProvider === 'local' && (
-                  <div>
-                    <Input
-                      value={embedLocalModel}
-                      onChange={(e) => setEmbedLocalModel(e.target.value)}
-                      placeholder="如 Qwen/Qwen3-Embedding-0.6B（从 ModelScope 自动下载）"
-                      className="text-sm"
-                    />
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      ModelScope 模型 ID 或本地目录路径。首次使用自动下载到 data/models/（~1.2GB）。
-                    </p>
-                  </div>
-                )}
-                <div>
-                  <Input
-                    value={embedModel}
-                    onChange={(e) => setEmbedModel(e.target.value)}
-                    placeholder="如 BAAI/bge-m3（留空用全局设置）"
-                    className="text-sm"
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    指定用于生成向量的嵌入模型；留空则使用「模型与 API」中的全局嵌入模型。
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
+          <p className="text-xs text-muted-foreground">
+            嵌入模型走「设置 → 模型与 API」中的全局配置（全空间共用同一向量空间）；当前：
+            {caps?.embedProvider === 'local'
+              ? `本地嵌入${caps?.embedLocalModel ? `（${caps.embedLocalModel}）` : ''}`
+              : caps?.embeddingsConfigured
+                ? `API 嵌入${caps?.embeddingModel ? `（${caps.embeddingModel}）` : ''}`
+                : '未配置，将使用关键词检索'}
+          </p>
 
           <Button onClick={submitIndex} disabled={indexing}>
             {indexing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Database className="w-4 h-4 mr-2" />}
             开始索引
+          </Button>
+        </CardContent>
+      </Card>
+
+      {/* 网页粘贴 URL（P0：无递归爬取，仅单页正文抽取） */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-emerald-500/10 rounded-lg">
+              <FolderSearch className="w-5 h-5 text-emerald-500" />
+            </div>
+            <div>
+              <CardTitle>网页收藏</CardTitle>
+              <CardDescription>
+                粘贴 http(s) 链接（每行一个，单次最多 20 个），系统抓取正文并索引；仅公开页面，不处理登录/付费墙。
+              </CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <textarea
+            value={webUrlsText}
+            onChange={(e) => setWebUrlsText(e.target.value)}
+            placeholder={'例如：\nhttps://arxiv.org/abs/2401.00001\nhttps://example.com/blog/post'}
+            className="w-full h-20 resize-y rounded-lg border border-border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/40"
+          />
+          <Button onClick={submitWebUrls} disabled={webIndexing}>
+            {webIndexing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Database className="w-4 h-4 mr-2" />}
+            抓取并索引
           </Button>
         </CardContent>
       </Card>
@@ -422,6 +453,8 @@ export default function RagSettingsManager() {
             <div className="space-y-3">
               {sources.map((src) => {
                 const meta = STATUS_META[src.status] || STATUS_META.pending
+                const kind = src.kind || 'local'
+                const isSystem = kind === 'paper' || kind === 'web' || src.id === '__papers__' || src.id === '__web__'
                 return (
                   <div key={src.id} className="rounded-lg border border-border p-3">
                     <div className="flex items-start justify-between gap-3">
@@ -432,10 +465,16 @@ export default function RagSettingsManager() {
                             {src.status === 'indexing' && <Loader2 className="w-3 h-3 animate-spin" />}
                             {meta.label}
                           </Badge>
+                          <Badge variant="secondary" className="bg-violet-500/10 text-violet-600">
+                            {KIND_LABELS[kind] || kind}
+                          </Badge>
                           {src.embedMode === 'vector' ? (
                             <Badge variant="secondary" className="bg-blue-500/10 text-blue-600">向量</Badge>
                           ) : (
                             <Badge variant="secondary" className="bg-gray-500/10 text-gray-600">关键词</Badge>
+                          )}
+                          {isSystem && (
+                            <Badge variant="secondary" className="bg-gray-500/10 text-gray-500">系统源</Badge>
                           )}
                         </div>
                         <div className="mt-1 text-xs text-muted-foreground break-all">
@@ -447,26 +486,46 @@ export default function RagSettingsManager() {
                             <span className="ml-2 text-red-600">· {src.error}</span>
                           )}
                         </div>
+                        {/* 索引进度条：indexing 时按 2s 轮询推进，替代干转圈 */}
+                        {src.status === 'indexing' && (
+                          <div className="mt-2">
+                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                              <div
+                                className="h-full rounded-full bg-primary transition-[width] duration-500"
+                                style={{ width: `${Math.min(100, Math.max(0, src.progress ?? 0))}%` }}
+                              />
+                            </div>
+                            <div className="mt-1 text-[11px] text-muted-foreground">
+                              索引中 {Math.min(100, Math.max(0, Math.round(src.progress ?? 0)))}%
+                              {src.totalFiles ? ` · ${src.docCount}/${src.totalFiles} 文件` : ''}
+                              {src.chunkCount ? ` · ${src.chunkCount} 切片` : ''}
+                            </div>
+                          </div>
+                        )}
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {src.status === 'indexing' ? (
                           <Button variant="ghost" size="sm" onClick={() => cancelIndex(src.id)}>
                             取消
                           </Button>
+                        ) : isSystem ? (
+                          <span className="text-xs text-muted-foreground px-2">自动维护</span>
                         ) : (
                           <Button variant="ghost" size="sm" onClick={() => reindex(src.id)} title="重新索引">
                             <RefreshCw className="w-3.5 h-3.5" />
                           </Button>
                         )}
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-red-500"
-                          onClick={() => deleteSource(src.id)}
-                          title="删除"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </Button>
+                        {!isSystem && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-red-500"
+                            onClick={() => deleteSource(src.id)}
+                            title="删除"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        )}
                       </div>
                     </div>
 

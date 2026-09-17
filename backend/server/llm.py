@@ -303,20 +303,50 @@ class LLMClient:
                 return vecs
             return self._try_local_embed(texts, eff)
 
+    def embed_exact(
+        self,
+        texts: List[str],
+        *,
+        provider: str,
+        model: str,
+        revision: str = "",
+        is_query: bool = False,
+        query_instruction: str = "",
+    ) -> Optional[List[List[float]]]:
+        """只使用指定嵌入空间；失败返回 None，绝不偷偷切换模型。"""
+        if not texts:
+            return []
+        if provider == "local":
+            eff = self._eff()
+            try:
+                return self._try_local_embed(
+                    texts, eff, model_path=model, revision=revision,
+                    is_query=is_query, query_instruction=query_instruction)
+            except TypeError:
+                # 兼容测试/扩展里仍按旧二参签名 monkeypatch 的实现。
+                return self._try_local_embed(texts, eff)
+        if provider == "api":
+            return self.embed(texts, model=model)
+        return None
+
     def _try_local_embed(
-        self, texts: List[str], eff: Dict[str, Any]
+        self, texts: List[str], eff: Dict[str, Any], *,
+        model_path: str = "", revision: str = "", is_query: bool = False,
+        query_instruction: str = "",
     ) -> Optional[List[List[float]]]:
         """尝试本地嵌入（provider=local 且模型已配置时）。"""
-        model_path = (eff.get("embedLocalModel") or "").strip()
+        model_path = model_path or (eff.get("embedLocalModel") or "").strip()
+        revision = revision or (eff.get("embedLocalRevision") or "").strip()
         if not model_path:
             return None
         try:
             from .local_embed import get_local_embedder
             embedder = get_local_embedder()
-            if not embedder.loaded:
-                if not embedder.load(model_path):
-                    return None
-            return embedder.embed(texts)
+            if not embedder.load(model_path, revision=revision):
+                return None
+            return embedder.embed(
+                texts, is_query=is_query,
+                instruction=query_instruction or (eff.get("embedQueryInstruction") or ""))
         except Exception:
             return None
 

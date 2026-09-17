@@ -42,10 +42,21 @@ interface LLMConfig {
   apiKeyMasked: string
   apiKeyConfigured: boolean
   model: string
+  embedModel?: string
+  embedProvider?: string
+  embedLocalModel?: string
   temperature: number
   maxTokens: number
   timeout: number
   httpPath: string
+}
+
+interface LocalEmbedModel {
+  id: string
+  path: string
+  sizeMB: number
+  downloaded: boolean
+  incomplete?: boolean
 }
 
 type SettingsTab = 'general' | 'integrations' | 'extensions' | 'rag'
@@ -103,6 +114,75 @@ export default function SettingsHub() {
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null)
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
 
+  // ---- 嵌入模型配置（RAG 向量，全局单一；单空间单向量空间，不按源覆盖） ----
+  const [embedProvider, setEmbedProvider] = useState('api')
+  const [apiEmbedModel, setApiEmbedModel] = useState('')
+  const [localModels, setLocalModels] = useState<LocalEmbedModel[]>([])
+  const [localModelSel, setLocalModelSel] = useState('') // 已下载 id 或 '__custom'
+  const [localModelCustom, setLocalModelCustom] = useState('')
+  const [localModelsLoading, setLocalModelsLoading] = useState(false)
+  const [embedResolveInfo, setEmbedResolveInfo] = useState<{ resolvable: boolean; reason: string; loaded: boolean } | null>(null)
+  const [localEmbedError, setLocalEmbedError] = useState('')
+  const [embedConfigured, setEmbedConfigured] = useState('')
+  // ---- 本地模型后台下载状态（状态机：内存/DB 双写，刷新不丢） ----
+  const [dlState, setDlState] = useState<{ state: string; sizeMB: number; error: string } | null>(null)
+  const [dlTarget, setDlTarget] = useState('')
+
+  // 本次下载/保存取用的本地模型 ID（下拉已下载优先，自定义次之）
+  const embedDownloadTarget = useCallback(() => {
+    if (localModelSel && localModelSel !== '__custom') return localModelSel
+    return localModelCustom.trim()
+  }, [localModelSel, localModelCustom])
+
+  const fetchDlStatus = useCallback(async (model: string) => {
+    if (!model) return null
+    try {
+      const r = await fetch(`/api/settings/embed-download-status?model=${encodeURIComponent(model)}`)
+      const j = await r.json()
+      if (j.success) {
+        setDlState({ state: j.state, sizeMB: j.sizeMB || 0, error: j.error || '' })
+        return j.state as string
+      }
+    } catch {
+      /* 轮询失败忽略，下轮继续 */
+    }
+    return null
+  }, [])
+
+  const startEmbedDownload = useCallback(async () => {
+    const target = embedDownloadTarget()
+    if (!target) {
+      toast({ title: '请先选择或填写本地嵌入模型', variant: 'error' })
+      return
+    }
+    setDlTarget(target)
+    setDlState({ state: 'downloading', sizeMB: 0, error: '' })
+    try {
+      const r = await fetch('/api/settings/embed-download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: target }),
+      })
+      const j = await r.json()
+      if (!j.success) {
+        if (j.activeModel) {
+          // 单飞行：转去围观真正的进行中任务
+          setDlTarget(j.activeModel)
+          setDlState({ state: 'downloading', sizeMB: 0, error: '' })
+          toast({ title: `已有下载进行中：${j.activeModel}，已切换查看`, variant: 'success' })
+        } else {
+          setDlState({ state: 'failed', sizeMB: 0, error: j.message || '提交失败' })
+          toast({ title: '下载提交失败', description: j.message, variant: 'error' })
+        }
+      }
+    } catch (e) {
+      console.error(e)
+      setDlState({ state: 'failed', sizeMB: 0, error: '无法连接到后端服务器' })
+    }
+  }, [embedDownloadTarget])
+
+  // 下载中轮询 effect 见 loadLocalModels 定义之后（需引用它，避免 TDZ 报错）
+
   // 设置分类标签（支持 hash 驱动：#/rag → rag tab）
   const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
     const hash = window.location.hash.replace('#', '')
@@ -142,10 +222,112 @@ export default function SettingsHub() {
           setLlmConfig(data.config)
           setLlmBaseUrl(data.config.baseUrl || '')
           setLlmModel(data.config.model || '')
+          setEmbedProvider(data.config.embedProvider || 'api')
+          setApiEmbedModel(data.config.embedModel || '')
+          // 本地模型选中态由 loadLocalModels 按 configured 回填（需等已下载列表）
+          const cfgLocal = (data.config.embedLocalModel || '').trim()
+          if (cfgLocal) setLocalModelCustom((prev) => prev || cfgLocal)
         }
       }
     } catch (error) {
       console.error('Failed to load LLM config:', error)
+    }
+  }, [])
+
+  // 已下载本地嵌入模型列表（只读扫描，不触发下载）
+  const loadLocalModels = useCallback(async () => {
+    setLocalModelsLoading(true)
+    try {
+      const response = await fetch('/api/settings/embed-local-models')
+      if (response.ok) {
+        const data = await response.json()
+        if (data.success) {
+          const list: LocalEmbedModel[] = data.models || []
+          setLocalModels(list)
+          setEmbedConfigured((data.configured || '').trim())
+          setEmbedResolveInfo({ resolvable: !!data.resolvable, reason: data.reason || '', loaded: !!data.loaded })
+          setLocalEmbedError((data.loadError || '').trim())
+          const cfgLocal = (data.configured || '').trim()
+          if (cfgLocal) {
+            setLocalModelCustom((prev) => prev || cfgLocal)
+            if (list.some((m) => m.id === cfgLocal)) setLocalModelSel(cfgLocal)
+            else setLocalModelSel((prev) => prev || '__custom')
+          } else if (list.length > 0) {
+            setLocalModelSel((prev) => prev || list[0].id)
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load local embed models:', error)
+    } finally {
+      setLocalModelsLoading(false)
+    }
+  }, [])
+
+  // 下载中轮询：完成/失败即停并刷新已下载列表。
+  // T2 收敛：后台标签页暂停 + 30s 后退避到 5s（本地小文件 GET，不上 SSE）。
+  useEffect(() => {
+    if (!dlTarget || dlState?.state !== 'downloading') return
+    let stopped = false
+    let busy = false
+    let ticks = 0
+    let timer: ReturnType<typeof setTimeout>
+    const tick = async () => {
+      if (stopped || busy) return
+      if (document.hidden) return // 后台页跳过本轮，重调度（不计数）
+      busy = true
+      try {
+        ticks += 1
+        const st = await fetchDlStatus(dlTarget)
+        if (stopped) return
+        if (st === 'ready') {
+          toast({ title: '模型下载完成', variant: 'success' })
+          loadLocalModels()
+          // 若下载的正是当前配置（或尚未配置），解析提示同步变绿
+          if (!embedConfigured || embedConfigured === dlTarget) {
+            setEmbedResolveInfo((prev) => prev ? { ...prev, resolvable: true, reason: '已下载，可保存使用。' } : prev)
+          }
+          return // 终态：停轮询
+        }
+        if (st === 'failed') {
+          toast({ title: '模型下载失败，可重试', variant: 'error' })
+          return // 终态：停轮询
+        }
+      } finally {
+        busy = false
+      }
+      if (!stopped) timer = setTimeout(tick, ticks >= 15 ? 5000 : 2000)
+    }
+    const onVis = () => {
+      if (!document.hidden) void tick() // 回前台立刻补一次
+    }
+    document.addEventListener('visibilitychange', onVis)
+    void tick()
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+  }, [dlTarget, dlState?.state, embedConfigured, fetchDlStatus, loadLocalModels])
+
+  // T1：切 Hub 回来后恢复下载轮询（组件挂载时查进行中的任务）
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const r = await fetch('/api/settings/embed-download-active')
+        const j = await r.json()
+        if (!cancelled && j.success && j.active) {
+          setDlTarget(j.active.model)
+          setDlState({ state: 'downloading', sizeMB: j.active.sizeMB || 0, error: '' })
+          toast({ title: `下载进行中：${j.active.model}，已恢复进度显示`, variant: 'success' })
+        }
+      } catch {
+        /* 忽略，下载按钮仍可手动触发 */
+      }
+    })()
+    return () => {
+      cancelled = true
     }
   }, [])
 
@@ -183,6 +365,16 @@ export default function SettingsHub() {
       toast({ title: 'Base URL 和模型名称不能为空', variant: 'error' })
       return
     }
+    // 本地嵌入模型取值：下拉已下载优先，自定义次之
+    const effectiveLocalModel = embedProvider === 'local'
+      ? (localModelSel && localModelSel !== '__custom'
+          ? localModelSel
+          : localModelCustom.trim())
+      : ''
+    if (embedProvider === 'local' && !effectiveLocalModel) {
+      toast({ title: '请选择或填写本地嵌入模型', variant: 'error' })
+      return
+    }
     setLlmSaving(true)
     try {
       const response = await fetch('/api/settings/llm', {
@@ -191,7 +383,10 @@ export default function SettingsHub() {
         body: JSON.stringify({
           baseUrl: llmBaseUrl,
           apiKey: llmApiKey, // 空字符串 = 沿用已保存的 key
-          model: llmModel
+          model: llmModel,
+          embedProvider,
+          embedModel: embedProvider === 'api' ? apiEmbedModel : '',
+          embedLocalModel: effectiveLocalModel,
         })
       })
       const data = await response.json()
@@ -200,6 +395,7 @@ export default function SettingsHub() {
         setLlmApiKey('')
         setLlmTestResult(null)
         loadLlmConfig()
+        loadLocalModels()
       } else {
         toast({ title: '保存失败', description: data.message, variant: 'error' })
       }
@@ -326,7 +522,8 @@ export default function SettingsHub() {
     loadConfig()
     loadLlmConfig()
     loadIntegrationConfig()
-  }, [loadConfig, loadLlmConfig, loadIntegrationConfig])
+    loadLocalModels()
+  }, [loadConfig, loadLlmConfig, loadIntegrationConfig, loadLocalModels])
 
   // 测试连接
   const handleTestConnection = async () => {
@@ -657,6 +854,130 @@ export default function SettingsHub() {
                   <p className="text-xs text-muted-foreground">
                     已从接口读取 {llmModels.length} 个模型，点击输入框可查看全量 {llmModels.length} 个（扁平展示，不分组）；也可直接输入其它模型名。
                   </p>
+                )}
+              </div>
+
+              {/* 嵌入模型（RAG 向量，全局单一配置） */}
+              <div className="space-y-3 rounded-lg border border-border/60 p-4">
+                <div>
+                  <label className="text-sm font-medium">嵌入模型（RAG 文档检索用）</label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    全空间共用同一向量空间，切换模型后建议重建索引；随下方「保存配置」一起保存，立即生效。
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-muted-foreground">嵌入 Provider</label>
+                  <select
+                    value={embedProvider}
+                    onChange={(e) => setEmbedProvider(e.target.value)}
+                    className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  >
+                    <option value="api">API（走上方 LLM 服务的 /v1/embeddings）</option>
+                    <option value="local">本地模型（离线，需 GPU 或 CPU）</option>
+                  </select>
+                </div>
+                {embedProvider === 'api' ? (
+                  <div className="space-y-2">
+                    <label className="text-sm text-muted-foreground">API 嵌入模型（可选）</label>
+                    <Input
+                      placeholder="留空则使用上面的对话模型名"
+                      value={apiEmbedModel}
+                      onChange={(e) => setApiEmbedModel(e.target.value)}
+                    />
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <label className="text-sm text-muted-foreground">本地嵌入模型</label>
+                    {localModels.length === 0 ? (
+                      <Input
+                        placeholder="如 Qwen/Qwen3-Embedding-0.6B（保存后可下载到 data/models/，~1.2GB）"
+                        value={localModelCustom}
+                        onChange={(e) => setLocalModelCustom(e.target.value)}
+                        disabled={dlState?.state === 'downloading'}
+                      />
+                    ) : (
+                      <>
+                        <select
+                          value={localModelSel}
+                          onChange={(e) => setLocalModelSel(e.target.value)}
+                          disabled={localModelsLoading || dlState?.state === 'downloading'}
+                          title={dlState?.state === 'downloading' ? '下载进行中，暂勿切换模型' : undefined}
+                          className="w-full h-10 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+                        >
+                          {localModels.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.downloaded && !m.incomplete
+                                ? `${m.id}（已下载，${m.sizeMB} MB）`
+                                : `${m.id}（下载不完整 ${m.sizeMB} MB，可续传）`}
+                            </option>
+                          ))}
+                          <option value="__custom">手动输入 ModelScope ID 或本地目录…</option>
+                        </select>
+                        {localModelSel === '__custom' && (
+                          <Input
+                            placeholder="如 Qwen/Qwen3-Embedding-0.6B（保存后可下载到 data/models/，~1.2GB）"
+                            value={localModelCustom}
+                            onChange={(e) => setLocalModelCustom(e.target.value)}
+                            disabled={dlState?.state === 'downloading'}
+                          />
+                        )}
+                      </>
+                    )}
+                    {embedDownloadTarget() && !(
+                      localModelSel && localModelSel !== '__custom'
+                      && localModels.some((m) => m.id === localModelSel && m.downloaded && !m.incomplete)
+                    ) && (
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={startEmbedDownload}
+                          disabled={dlState?.state === 'downloading' || !embedDownloadTarget()}
+                        >
+                          {dlState?.state === 'downloading' ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                              下载中…{dlState.sizeMB > 0 ? `已下 ${dlState.sizeMB} MB` : ''}（切 Hub 可离开，回来自动续显）
+                            </>
+                          ) : (
+                            <>
+                              <Download className="w-3.5 h-3.5 mr-1.5" />
+                              下载模型
+                            </>
+                          )}
+                        </Button>
+                        {dlState?.state === 'failed' && (
+                          <button
+                            className="text-xs text-primary hover:underline"
+                            onClick={startEmbedDownload}
+                          >
+                            重试
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {embedResolveInfo && (
+                      <p className={cn('text-xs', embedResolveInfo.resolvable ? 'text-green-600' : 'text-yellow-600')}>
+                        {embedResolveInfo.loaded
+                          ? '已加载进内存，可直接使用。'
+                          : dlState?.state === 'failed'
+                            ? `下载失败：${dlState.error || '未知错误'}，可重试或改用首次索引时自动下载。`
+                            : '未下载：可在上方下载，或保存后首次索引时自动下载。'}
+                      </p>
+                    )}
+                    {localEmbedError && (
+                      <div className="rounded-lg bg-red-500/10 p-3 text-xs text-red-600">
+                        <div className="font-medium">本地嵌入加载失败：{localEmbedError}</div>
+                        {/torch|transformers/i.test(localEmbedError) && (
+                          <div className="mt-1 text-red-600/90">
+                            推理依赖缺失。请在项目 .venv 环境中执行：
+                            <code className="rounded bg-black/10 px-1">python -m pip install torch transformers</code>
+                            （Windows 默认即 CPU 版，约 2GB），安装后重建索引即可。
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
 

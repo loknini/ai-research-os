@@ -123,7 +123,7 @@ AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 A
 | 博查 Bocha Key | — | **仅 Agent 联网搜索需要**（不配置则自动降级 Wikipedia） |
 
 > Windows 用户建议使用 PowerShell 运行 `start.ps1`；macOS / Linux 用户使用 `start.sh` 或手动启动。
-> Python 后端依赖见 `backend/requirements.txt`：`fastapi`、`uvicorn[standard]`、`pydantic`、`pydantic-settings`、`python-dotenv`、`requests`、`python-multipart`、`aiosqlite`、`jsonschema`、`pypdf`（**不含 `openai`**）。
+> Python 后端依赖见 `backend/requirements.txt`：`fastapi`、`uvicorn[standard]`、`pydantic`、`pydantic-settings`、`python-dotenv`、`requests`、`python-multipart`、`aiosqlite`、`jsonschema`、`PyMuPDF`、`sqlite-vec`（**不含 `openai`**）。`sqlite-vec` 是默认安装的轻量向量加速层，启动脚本会验证扩展可加载；运行时仍保留 FTS5 + 流式余弦降级。
 
 ---
 
@@ -199,9 +199,11 @@ SQLite 数据库会在后端首次启动时自动建表（`backend/server/db.py:
 .\start.ps1 -SkipFrontend          # 仅启动后端
 .\start.ps1 -SkipBackend           # 仅启动前端（核心功能需另行提供 /api）
 .\start.ps1 -ApiPort 9000          # 自定义后端端口
-.\start.ps1 -ApiWorkers 4          # 指定 worker 数（默认 min(CPU, 8)）
+.\start.ps1 -ApiWorkers 4          # 指定 worker 数（默认 min(CPU, 4)）
 .\start.ps1 -DataDir D:\Sync\airos-data   # 数据目录指向同步盘（双设备单数据源）
 .\start.ps1 -ReuseBackend          # 端口已有健康后端实例时复用，不重启
+.\start.ps1 -Background            # 后台模式：不弹新终端，日志进 logs/，用 .\stop.ps1 停止
+.\stop.ps1                         # 停止后台服务（按 pid 精准杀，无则按端口兜底）
 ```
 
 **macOS / Linux（bash）**
@@ -284,7 +286,7 @@ export DATA_DIR=~/synced/airos-data
 
 打开 **「设置 → 数据备份与迁移」** 卡片：
 
-- **导出备份**：把 `DATA_DIR` 整个打成 zip 下载（自动剔除 `.git` / `.swanlab` / `.cache` / `__pycache__` 等垃圾与缓存目录，并附 `manifest.json` 清单）。
+- **导出备份**：把 `DATA_DIR` 整个打成 zip 下载（SQLite 使用 Online Backup API 生成 WAL 一致性快照；自动剔除缓存、实例心跳及 DB sidecar，并附 `manifest.json` 清单）。
 - **导入备份**：选择旧机器导出的 zip，后端会**先自动备份当前数据到 `<DATA_DIR 同级>/.backup-时间戳`**，再把备份包内容覆盖进 `DATA_DIR`。若导入时应用正占用数据库导致写入失败，会给出明确提示——此时请停止 app 后重新导入 / 重启以加载新数据。
 
 对应接口（供脚本 / 自动化调用）：
@@ -586,7 +588,9 @@ python scripts/qa_verify_space.py                # 空间隔离 26 项
 python scripts/qa_verify_agent_harness.py        # Agent 工程能力 61 项（审批/重放/上下文/插件化）
 python scripts/qa_verify_agent_runner.py         # 后台 runner 19 项
 python scripts/qa_verify_llm_status.py           # LLM 可达性与状态端点（不触网）
-python scripts/qa_verify_rag.py                  # RAG 检索 7 项
+python scripts/qa_verify_rag.py                  # RAG 基础/并发/降级回归
+python scripts/qa_verify_rag_v21.py              # RAG 2.1 代次/隔离/全库召回/安全回归
+python scripts/eval_rag_golden.py gate            # Golden 门禁：Hit@1/5 + 可选 faithfulness
 python scripts/qa_verify_chat_rag.py             # Chat 接地式 RAG 2 项
 python scripts/qa_verify_chat_regenerate_edit.py # 聊天重生成/编辑
 python scripts/qa_verify_chat_branching.py       # 会话分支

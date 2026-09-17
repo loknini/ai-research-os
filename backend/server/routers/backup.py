@@ -22,6 +22,7 @@ from __future__ import annotations
 import io
 import json
 import shutil
+import sqlite3
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -50,10 +51,17 @@ EXCLUDE_FILES = {
     "SOUL.md",
     "TOOLS.md",
     "USER.md",
+    # Runtime coordination state: it is regenerated on startup and may be
+    # concurrently replaced by the instance heartbeat writer on Windows.
+    ".backend_supervisors.json",
+    ".backend_supervisors.json.tmp",
+    ".backend_supervisors.lock",
 }
 
 # Hard cap on uploaded backup size to prevent abuse (500 MB).
 MAX_IMPORT_BYTES = 500 * 1024 * 1024
+MAX_EXTRACT_BYTES = 2 * 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 100_000
 
 
 # ---------------------------------------------------------------------------
@@ -72,38 +80,94 @@ def _timestamp() -> str:
 def _top_entries(data_dir: Path) -> List[str]:
     """Sorted list of top-level entry names inside ``DATA_DIR`` (junk excluded)."""
     return sorted(
-        p.name for p in data_dir.iterdir() if p.name not in EXCLUDE_DIRS
+        p.name
+        for p in data_dir.iterdir()
+        if not _is_excluded(Path(p.name), config.DB_PATH.name)
     )
 
 
-def _safe_add_db(zf: zipfile.ZipFile, source: Path, arcname: str) -> None:
-    """Add the SQLite file to the zip, copying to a temp file first.
+def _is_excluded(rel: Path, db_name: str) -> bool:
+    """Return whether a DATA_DIR-relative path is runtime/cache state."""
+    if any(part in EXCLUDE_DIRS for part in rel.parts):
+        return True
+    if rel.name in EXCLUDE_FILES:
+        return True
+    if rel.name in {f"{db_name}-wal", f"{db_name}-shm", f"{db_name}-journal"}:
+        return True
+    # Defensive: an export implementation may later switch from an in-memory
+    # buffer to a file under DATA_DIR. Never recursively archive that output.
+    return rel.name.startswith("airos-backup-") and rel.suffix.lower() == ".zip"
 
-    The live database may be half-written / locked; copying to a temp file
-    first avoids reading a truncated file.  Falls back to a direct add if the
-    copy fails (e.g. the file is briefly locked).
+
+def _sqlite_snapshot(source: Path, destination: Path) -> None:
+    """Create a transactionally consistent SQLite snapshot.
+
+    Copying only the main file of a live WAL database can silently omit recent
+    commits. SQLite's Online Backup API reads the main DB and WAL coherently.
     """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(str(source), timeout=10)
+    dst = sqlite3.connect(str(destination), timeout=10)
+    try:
+        src.backup(dst)
+        result = dst.execute("PRAGMA integrity_check").fetchone()
+        if not result or str(result[0]).lower() != "ok":
+            raise sqlite3.DatabaseError(f"integrity_check failed: {result!r}")
+    finally:
+        dst.close()
+        src.close()
+
+
+def _safe_add_db(zf: zipfile.ZipFile, source: Path, arcname: str) -> None:
+    """Add a consistent SQLite snapshot to the archive."""
+    tmp_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
             tmp_path = Path(tmp.name)
-        shutil.copyfile(source, tmp_path)
-        try:
-            zf.write(tmp_path, arcname)
-        finally:
+        _sqlite_snapshot(source, tmp_path)
+        zf.write(tmp_path, arcname)
+    except (OSError, sqlite3.Error) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"数据库一致性快照失败，未生成不完整备份：{exc}",
+        ) from exc
+    finally:
+        if tmp_path is not None:
             try:
                 tmp_path.unlink()
             except OSError:
                 pass
-    except (PermissionError, OSError):
-        # Last resort: zip the live file directly (may be inconsistent).
-        zf.write(source, arcname)
+
+
+def _snapshot_data_dir(data_dir: Path, target: Path, db_path: Path) -> None:
+    """Back up current data without copying locks, WAL files, or live DB bytes."""
+    target.mkdir(parents=True, exist_ok=False)
+    db_resolved = db_path.resolve()
+    db_added = False
+    for item in sorted(data_dir.rglob("*")):
+        if not item.is_file():
+            continue
+        rel = item.relative_to(data_dir)
+        if _is_excluded(rel, db_path.name):
+            continue
+        destination = target / rel
+        if item.resolve() == db_resolved:
+            _sqlite_snapshot(item, destination)
+            db_added = True
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, destination)
+    if db_path.is_file() and not db_added:
+        _sqlite_snapshot(db_path, target / db_path.name)
 
 
 def _validate_member_names(names: List[str]) -> None:
     """Reject zip entries that try to escape the extraction root (Zip Slip)."""
     for name in names:
-        parts = name.split("/")
-        if name.startswith("/") or ".." in parts:
+        normalized = name.replace("\\", "/")
+        parts = normalized.split("/")
+        if ("\x00" in normalized or normalized.startswith("/") or ".." in parts
+                or (parts and ":" in parts[0])):
             raise HTTPException(
                 status_code=400, detail="备份包包含非法路径，已拒绝导入"
             )
@@ -136,17 +200,24 @@ async def export_backup() -> StreamingResponse:
             json.dumps(manifest, ensure_ascii=False, indent=2),
         )
 
+        db_added = False
         for item in sorted(data_dir.rglob("*")):
             if not item.is_file():
                 continue
             rel = item.relative_to(data_dir)
-            if rel.parts[0] in EXCLUDE_DIRS or item.name in EXCLUDE_FILES:
+            if _is_excluded(rel, db_path.name):
                 continue
             arcname = str(rel)
             if item.resolve() == db_path.resolve():
                 _safe_add_db(zf, item, arcname)
+                db_added = True
             else:
                 zf.write(item, arcname)
+
+        # DB_PATH may intentionally live outside DATA_DIR. It still belongs in
+        # a portable backup, at the manifest-declared root name.
+        if db_path.is_file() and not db_added:
+            _safe_add_db(zf, db_path, db_path.name)
 
     buf.seek(0)
     headers = {
@@ -195,6 +266,16 @@ async def import_backup(file: UploadFile = File(...)) -> dict:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 names = zf.namelist()
                 _validate_member_names(names)
+                infos = zf.infolist()
+                if len(infos) > MAX_ARCHIVE_MEMBERS:
+                    raise HTTPException(
+                        status_code=413, detail="备份包文件数量过多，已拒绝导入")
+                expanded = sum(max(0, info.file_size) for info in infos)
+                if expanded > MAX_EXTRACT_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="备份包解压后超过 2GB 上限，已拒绝导入",
+                    )
 
                 bad = zf.testzip()
                 if bad is not None:
@@ -228,8 +309,8 @@ async def import_backup(file: UploadFile = File(...)) -> dict:
 
             # 1) 先备份当前数据（避免覆盖丢失）
             try:
-                shutil.copytree(data_dir, backup_path)
-            except (PermissionError, OSError) as exc:
+                _snapshot_data_dir(data_dir, backup_path, config.DB_PATH)
+            except (PermissionError, OSError, sqlite3.Error) as exc:
                 raise HTTPException(
                     status_code=500,
                     detail=f"备份当前数据失败（可能是数据库正被占用）：{exc}。请先停止应用再导入。",
@@ -244,6 +325,7 @@ async def import_backup(file: UploadFile = File(...)) -> dict:
                     and n.split("/")[0] not in EXCLUDE_DIRS
                     and n.split("/")[0] != "manifest.json"
                     and n.split("/")[0] not in EXCLUDE_FILES
+                    and not _is_excluded(Path(n), config.DB_PATH.name)
                 }
             )
             db_write_failed = False
@@ -252,14 +334,22 @@ async def import_backup(file: UploadFile = File(...)) -> dict:
                     continue
                 rel = item.relative_to(extract_dir)
                 top = rel.parts[0]
-                if top in EXCLUDE_DIRS or top == "manifest.json" or top in EXCLUDE_FILES:
+                if (
+                    top in EXCLUDE_DIRS
+                    or top == "manifest.json"
+                    or top in EXCLUDE_FILES
+                    or _is_excluded(rel, config.DB_PATH.name)
+                ):
                     continue
-                target = data_dir / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
                 is_db = top == config.DB_PATH.name and len(rel.parts) == 1
+                target = config.DB_PATH if is_db else data_dir / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    shutil.copyfile(item, target)
-                except (PermissionError, OSError):
+                    if is_db:
+                        _sqlite_snapshot(item, target)
+                    else:
+                        shutil.copyfile(item, target)
+                except (PermissionError, OSError, sqlite3.Error):
                     if is_db:
                         db_write_failed = True
                     # 非数据库文件失败仅跳过，不阻断整体导入

@@ -340,8 +340,8 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/backup/export` | 整个 `DATA_DIR` 打包为 zip 流式返回，含 `manifest.json`；DB 先复制到临时文件再入包；排除 `.git`/`.swanlab`/`.cache`/`__pycache__` |
-| POST | `/api/backup/import` | 上传 zip（字段名 `file`，≤500MB，仅 `.zip`）：校验 manifest `app == ai-research-os` → Zip Slip 防护 → `testzip()` → 先 `copytree` 到 `.backup-<时间戳>` → 再覆盖 |
+| POST | `/api/backup/export` | 整个 `DATA_DIR` 打包为 zip 流式返回，含 `manifest.json`；DB 通过 SQLite Online Backup API 生成 WAL 一致性快照；排除缓存、实例心跳与 DB sidecar |
+| POST | `/api/backup/import` | 上传 zip（字段名 `file`，≤500MB，仅 `.zip`）：校验 manifest `app == ai-research-os` → Zip Slip 防护 → `testzip()` → 先生成一致性回滚快照到 `.backup-<时间戳>` → 再覆盖 |
 
 > 全局操作：**整库覆盖**替换所有空间数据，仅适用于可信内网；内网中任何空间均可触发导出，需注意数据外泄风险。DB 被占用时通过 `note` 字段报告。
 
@@ -349,7 +349,8 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 ## 17. 公式识别 `formula.py` — prefix `/api/formula`
 
-经 `run_script("formula_service.py", ...)`，通过 `SPACE_ID` 环境变量传空间。
+识别、历史读取与统计保留 `formula_service.py` 兼容入口，通过 `SPACE_ID` 传空间；
+更新/删除直接走共享异步数据库层与 busy retry，避免子进程争用 SQLite 写锁。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
@@ -407,10 +408,15 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 | GET | `/api/rag/sources/{source_id}` | 索引源详情 |
 | GET | `/api/rag/documents?sourceId=` | 索引文档列表 |
 | POST | `/api/rag/index` | 后台建立文件/目录索引 |
+| POST | `/api/rag/web` | URL 列表进入统一后台索引队列，返回 `status=queued/jobId` |
+| POST | `/api/rag/papers/{paper_id}/index` | 单篇论文进入统一后台索引队列，返回 `status=queued/jobId` |
 | POST | `/api/rag/sources/{source_id}/reindex` | 重建指定索引源 |
 | POST | `/api/rag/sources/{source_id}/cancel` | 取消进行中的索引 |
 | DELETE | `/api/rag/sources/{source_id}` | 级联删除索引源、文档与切片 |
 | POST | `/api/rag/query` | 检索并返回命中切片；可选生成带引用回答 |
+
+所有写索引接口均为异步入队；客户端通过 `/api/rag/sources` 的 `status/progress`
+观察完成状态。重建期间旧活动代继续可查，成功后一次切换。
 
 ---
 

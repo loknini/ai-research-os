@@ -1,6 +1,6 @@
 # 系统架构
 
-> 核对日期：2026-09-02；事实数字以 `docs/_meta.json` 为准（当前 `hubs=12 / routers=22 / tables=31`）。
+> 核对日期：2026-09-17；事实数字以 `docs/_meta.json` 为准（当前 `hubs=12 / routers=22 / tables=36`）。
 > 索引：[README](./README.md) · [DATA-MODEL](./DATA-MODEL.md) · [API](./API.md) · [AGENT-LLM](./AGENT-LLM.md) · [FRONTEND](./FRONTEND.md) · [OPERATIONS](./OPERATIONS.md)
 
 ## 1. 定位与硬约束
@@ -40,6 +40,15 @@
 
 **Cron**：每 Worker 60s 扫描，单条 `UPDATE ... WHERE next_run=?` 原子领取（旧值作乐观锁），三类 `command/agent_run/arxiv_fetch` 共用 `dispatch_job`。
 
+**RAG 2.1**：local / paper / web 统一写入 `rag_index_jobs`；各 Worker 先竞争
+`rag_worker_lease(index-writer)`，全局仅一个索引写者。local 重建写入新
+`generation_id`，完成后单事务切换 `active_generation_id`，失败或取消时旧代仍可检索。
+检索先从全量 FTS5 与 sqlite-vec 取候选；无 sqlite-vec 时按 rowid 分页扫描完整活动语料，
+只保留有界 top-k heap，不再截断前 3000 条。嵌入由不可变 profile
+（provider/model/revision/dims/normalization/query instruction）隔离，不兼容时只走 sparse。
+`sqlite-vec` 是默认安装的本地轻量加速层，但不是正确性单点：启动脚本会实际加载扩展做冒烟检查，
+运行时若扩展未就绪仍回退 FTS5 + 流式余弦全语料召回。
+
 ## 4. 关键决策
 
 | 决策 | 理由 |
@@ -50,6 +59,7 @@
 | `send()` 暂停而非回调 | 审批语义清晰：`yield __approval_required → gen.send(bool)` |
 | 摘要而非截断 | 截断会切断 `assistant(tool_calls)→tool` 配对；`context.py` 选最近 `user` 边界切分 |
 | `@register_tool` 自动发现 | `tools/` 目录 `pkgutil` 发现，`safe/sensitive/dangerous × auto/manual/strict` 随注册声明 |
+| SQLite-vec 为派生索引 | `rag_chunks` 仍是真源；扩展缺失/未就绪时流式暴力召回，避免维护 FAISS 第二套持久状态 |
 
 ## 5. 外部依赖（可插拔）
 

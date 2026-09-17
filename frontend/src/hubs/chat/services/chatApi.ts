@@ -1,5 +1,19 @@
 import { Conversation, Message, ToolResult, RagSource } from '../types'
 
+// 书签式小 JSON 接口统一 15s 超时：后端抖动时快速失败，由调用方决定降级，
+// 避免 sendMessage 这类关键链路被某个慢请求 hang 住整条流水线。
+const API_TIMEOUT_MS = 15000
+
+const fetchWithTimeout = async (url: string, init?: RequestInit): Promise<Response> => {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 // 调用 FastAPI 后端 /api/chat/completions/stream 进行流式聊天（支持工具调用）
 const streamChatCompletion = async (
   messages: Message[],
@@ -10,7 +24,8 @@ const streamChatCompletion = async (
   onContext?: (ctx: { estimated_tokens: number; limit: number; compressed: boolean }) => void,
   signal?: AbortSignal,
   rag?: { enabled: boolean; sourceIds?: string[] },
-  onRagSources?: (sources: RagSource[], mode: string) => void
+  onRagSources?: (sources: RagSource[], mode: string) => void,
+  onRetrieving?: () => void
 ): Promise<void> => {
   // 从后端 result payload 中提取可读摘要（优先 error，其次 message，再截断 results）
   const summarizeToolResult = (tool: string, raw: any): string => {
@@ -131,6 +146,13 @@ const streamChatCompletion = async (
                 onRagSources?.(parsed.sources as RagSource[], parsed.mode || 'off')
               }
               break
+            case 'retrieving':
+              // 后端开始 RAG 检索（首字节事件）：此前十几秒无声是"以为卡死"的主因
+              onRetrieving?.()
+              break
+            default:
+              // 未知事件类型：忽略（保持与旧后端/未来事件的前向兼容）
+              break
           }
         } catch {
           // 不是 JSON 格式，可能是普通文本
@@ -208,7 +230,7 @@ const createConversationAPI = async (conversation: Conversation): Promise<Conver
 }
 
 const updateConversationAPI = async (id: string, updates: Partial<Conversation>): Promise<boolean> => {
-  const response = await fetch(`/api/conversations/${id}`, {
+  const response = await fetchWithTimeout(`/api/conversations/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(updates)
@@ -226,7 +248,7 @@ const deleteConversationAPI = async (id: string): Promise<boolean> => {
 }
 
 const addMessageAPI = async (conversationId: string, message: Message): Promise<boolean> => {
-  const response = await fetch(`/api/conversations/${conversationId}/messages`, {
+  const response = await fetchWithTimeout(`/api/conversations/${conversationId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

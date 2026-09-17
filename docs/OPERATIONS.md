@@ -12,16 +12,16 @@
 | Node.js | ≥ 22 | 是（仅前端） |
 | Git | 任意 | 使用 Git 项目或新建受管理研发项目时需要；普通目录副本模式可不用 |
 
-后端直接依赖共 10 个包（`backend/requirements.txt`）：
+后端直接依赖共 11 个包（`backend/requirements.txt`）：
 
 ```
 fastapi>=0.110      uvicorn[standard]>=0.29   pydantic>=2.6
 pydantic-settings>=2.2   python-dotenv>=1.0   requests>=2.31
 python-multipart>=0.0.9  aiosqlite>=0.20       jsonschema>=4.22,<5
-pypdf>=4.0
+PyMuPDF>=1.24           sqlite-vec==0.1.9
 ```
 
-`requests` 只给 `scripts/formula_service.py` 用；`python-multipart` 给备份上传用；`jsonschema` 校验专家团队节点的结构化输出；`pypdf` 解析 RAG PDF。**没有 openai SDK**，LLM 客户端是标准库实现。
+`requests` 只给 `scripts/formula_service.py` 用；`python-multipart` 给备份上传用；`jsonschema` 校验专家团队节点的结构化输出；`PyMuPDF` 解析 RAG PDF；`sqlite-vec` 加速本地向量候选检索。**没有 openai SDK**，LLM 客户端是标准库实现。sqlite-vec 扩展缺失时 RAG 仍可回退 FTS5 + 流式余弦，但正式安装将其作为默认依赖并在启动时做扩展加载冒烟检查。
 
 ### 研发工作区安全边界
 
@@ -40,8 +40,9 @@ pypdf>=4.0
 .\start.ps1 -SkipBackend         # 仅前端
 .\start.ps1 -SkipLLM             # 跳过 LLM 可用性校验
 .\start.ps1 -ApiPort 9000        # 自定义后端端口
-.\start.ps1 -ApiWorkers 4        # worker 数；0 = 自动 min(CPU, 8)
+.\start.ps1 -ApiWorkers 4        # worker 数；0 = 自动 min(CPU, 4)
 .\start.ps1 -DataDir D:\Sync\airos-data   # 覆盖数据目录
+.\start.ps1 -Background            # 后台模式：不弹新终端，日志进 logs/，用 .\stop.ps1 停止
 ```
 
 ```bash
@@ -175,7 +176,7 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 
 界面「设置 → 数据备份与迁移」：
 
-- **导出**：整个 `DATA_DIR` 打包 zip 下载，自动剔除 `.git` / `.swanlab` / `.cache` / `__pycache__`，附 `manifest.json`。
+- **导出**：整个 `DATA_DIR` 打包 zip 下载；SQLite 通过 Online Backup API 生成 WAL 一致性快照，自动剔除缓存、实例心跳及 `-wal` / `-shm` sidecar，附 `manifest.json`。
 - **导入**：选择 zip，后端**先自动把当前数据备份到 `<DATA_DIR 同级>/.backup-<时间戳>`**，再覆盖。若应用正占用数据库导致写入失败，响应里会给出明确提示，此时停掉服务重新导入。
 
 ```bash

@@ -21,11 +21,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -102,6 +105,62 @@ def test_http_400_and_exemption() -> None:
         r = client.post("/api/backup/export")
         record("B7 backup 豁免（无 key 非 400）", r.status_code != 400,
                f"status={r.status_code}")
+        if r.status_code == 200:
+            with zipfile.ZipFile(io.BytesIO(r.content), "r") as zf:
+                names = zf.namelist()
+                runtime_files = {
+                    ".backend_supervisors.json",
+                    ".backend_supervisors.json.tmp",
+                    "ai_research_os.db-wal",
+                    "ai_research_os.db-shm",
+                }
+                record(
+                    "B8 backup 排除运行时文件与 WAL sidecar",
+                    runtime_files.isdisjoint(names),
+                    f"names={names}",
+                )
+                db_name = "ai_research_os.db"
+                integrity = "missing"
+                if db_name in names:
+                    check_path = TMP / "qa_export_snapshot.db"
+                    check_path.write_bytes(zf.read(db_name))
+                    conn = sqlite3.connect(check_path)
+                    try:
+                        integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+                    finally:
+                        conn.close()
+                record(
+                    "B9 backup SQLite 快照完整",
+                    integrity.lower() == "ok",
+                    f"integrity_check={integrity}",
+                )
+            restored = client.post(
+                "/api/backup/import",
+                files={"file": ("roundtrip.zip", r.content, "application/zip")},
+            )
+            record(
+                "B10 backup 活动数据库一致性往返导入",
+                restored.status_code == 200 and restored.json().get("success") is True,
+                f"status={restored.status_code}, body={restored.text[:200]}",
+            )
+            if restored.status_code == 200:
+                rollback = Path(restored.json().get("backup_path") or "")
+                if rollback.is_dir() and rollback.parent == TMP.parent:
+                    shutil.rmtree(rollback, ignore_errors=True)
+
+            evil_buf = io.BytesIO()
+            with zipfile.ZipFile(evil_buf, "w") as evil:
+                evil.writestr("manifest.json", '{"app":"ai-research-os"}')
+                evil.writestr("..\\escape.txt", "blocked")
+            rejected = client.post(
+                "/api/backup/import",
+                files={"file": ("evil.zip", evil_buf.getvalue(), "application/zip")},
+            )
+            record(
+                "B11 backup 拒绝反斜杠路径穿越",
+                rejected.status_code == 400,
+                f"status={rejected.status_code}",
+            )
 
 
 # ---------------------------------------------------------------------------

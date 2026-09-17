@@ -203,22 +203,26 @@ async def update_formula_record(record_id: str, updates: Dict[str, Any]) -> Opti
         return False
 
     try:
-        async with database.get_db() as conn:
-            clauses = []
-            values = []
-            for column, value in normalized.items():
-                if column == "tags":
-                    value = json.dumps(value, ensure_ascii=False)
-                elif column == "is_favorite":
-                    value = 1 if value else 0
-                clauses.append(f"{column} = ?")
-                values.append(value)
-            values.extend([record_id, SPACE_ID])
-            cur = await conn.execute(
-                f"UPDATE formula_history SET {', '.join(clauses)} WHERE id = ? AND space_id = ?",
-                values,
-            )
-            return cur.rowcount > 0
+        async def _do_update() -> bool:
+            async with database.get_db(busy_timeout_ms=30000) as conn:
+                clauses = []
+                values = []
+                for column, value in normalized.items():
+                    if column == "tags":
+                        value = json.dumps(value, ensure_ascii=False)
+                    elif column == "is_favorite":
+                        value = 1 if value else 0
+                    clauses.append(f"{column} = ?")
+                    values.append(value)
+                values.extend([record_id, SPACE_ID])
+                cur = await conn.execute(
+                    f"UPDATE formula_history SET {', '.join(clauses)} WHERE id = ? AND space_id = ?",
+                    values,
+                )
+                return cur.rowcount > 0
+        # 子进程默认 5s 锁超时 + 零重试：机器满载（如索引重活）时误报失败。
+        # 与主库 with_busy_retry 同策略。
+        return await database.with_busy_retry(_do_update, what="formula-update")
     except Exception as e:
         print(f"Update formula record error: {e}", file=sys.stderr)
         return None
@@ -227,12 +231,14 @@ async def update_formula_record(record_id: str, updates: Dict[str, Any]) -> Opti
 async def delete_formula_record(record_id: str) -> Optional[bool]:
     """删除公式记录（同时校验空间归属）。"""
     try:
-        async with database.get_db() as conn:
-            cur = await conn.execute(
-                "DELETE FROM formula_history WHERE id = ? AND space_id = ?",
-                (record_id, SPACE_ID)
-            )
-            return cur.rowcount > 0
+        async def _do_delete() -> bool:
+            async with database.get_db(busy_timeout_ms=30000) as conn:
+                cur = await conn.execute(
+                    "DELETE FROM formula_history WHERE id = ? AND space_id = ?",
+                    (record_id, SPACE_ID)
+                )
+                return cur.rowcount > 0
+        return await database.with_busy_retry(_do_delete, what="formula-delete")
     except Exception as e:
         print(f"Delete formula record error: {e}", file=sys.stderr)
         return None
@@ -284,8 +290,10 @@ async def _run_cli() -> None:
 
     action = sys.argv[1]
 
-    # 确保库表与 space_id 列就位（幂等）。
-    await database.init_db()
+    # 独立 CLI 负责建库；由 FastAPI 路由启动时，lifespan 已完成 init_db，
+    # 重复跑整套迁移既浪费时间，也可能与其它 worker 的写事务争锁。
+    if os.environ.get("AIROS_DB_ALREADY_INITIALIZED") != "1":
+        await database.init_db()
 
     if action == "test" and len(sys.argv) > 2:
         image_path = sys.argv[2]

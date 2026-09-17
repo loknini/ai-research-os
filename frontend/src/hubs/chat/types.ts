@@ -61,6 +61,8 @@ interface RagSource {
   pageEnd: number
   snippet: string
   score: number
+  url?: string | null
+  title?: string | null
 }
 
 // 会话类型

@@ -20,6 +20,7 @@ from __future__ import annotations
 import aiosqlite
 import sqlite3
 import json
+import random
 import re
 import os
 import time
@@ -48,9 +49,9 @@ def _clean_text_for_db(text: Optional[str]) -> Optional[str]:
     return text.encode("utf-8", errors="ignore").decode("utf-8")
 
 
-# 需要由通用迁移统一补 space_id 列与索引的用户表（28 张）。
+# 需要由通用迁移统一补 space_id 列与索引的用户表（29 张）。
 # cron_run_history 在建表 DDL 中已原生包含 space_id，因此不进入此迁移列表；
-# 当前数据库合计 29 张业务表，全部按 space_id 隔离。
+# 当前数据库合计 30 张业务表，全部按 space_id 隔离。
 SPACE_TABLES = [
     "papers", "cron_jobs", "software_projects", "tasks", "code_generations",
     "notes", "note_links", "experiments", "experiment_runs", "version_history",
@@ -58,13 +59,13 @@ SPACE_TABLES = [
     "agent_generated_files", "formula_history", "obsidian_vaults", "obsidian_files",
     "agent_runs", "agent_run_events", "agent_tool_approvals", "agent_replay_messages",
     "agent_teams", "agent_role_templates", "agent_run_nodes",
-    "rag_sources", "rag_documents", "rag_chunks",
+    "rag_sources", "rag_documents", "rag_chunks", "rag_index_jobs",
     "development_run_steps", "development_artifacts",
 ]
 
 
 @asynccontextmanager
-async def get_db():
+async def get_db(busy_timeout_ms: int = 5000):
     """获取数据库连接的异步上下文管理器。
 
     每调用一次都会新建一条独立的 aiosqlite 连接（绝不跨协程共享），并在建连后
@@ -74,6 +75,9 @@ async def get_db():
     多 worker 并发启动（uvicorn --workers N）时 journal_mode 变更会因拿不到锁而
     立刻抛 "database is locked"。这里额外对建连 + 初始 PRAGMA 做有限重试，进一步
     吸收启动期的瞬时锁竞争。
+
+    ``busy_timeout_ms``：启动迁移等长事务可传更大的值（如 30000），让瞬时
+    锁竞争自愈而非直接报错；日常请求保持 5000 不变。
     """
     conn = None
     last_err: Optional[Exception] = None
@@ -83,7 +87,7 @@ async def get_db():
             conn = await aiosqlite.connect(str(DB_PATH))
             conn.row_factory = aiosqlite.Row
             # busy_timeout 必须先设：让后续 journal_mode / 写操作在锁竞争时等待而非立刻失败
-            await conn.execute("PRAGMA busy_timeout=5000")
+            await conn.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA synchronous=NORMAL")
             await conn.execute("PRAGMA foreign_keys=ON")
@@ -124,14 +128,67 @@ async def _fetchone(conn: aiosqlite.Connection, query: str, params: tuple = ()) 
     return await cur.fetchone()
 
 
-async def init_db() -> None:
+def _is_locked_error(exc: BaseException) -> bool:
+    """是否为 SQLite 锁竞争错误（database is locked / busy，可重试）。"""
+    if isinstance(exc, sqlite3.OperationalError):
+        msg = str(exc).lower()
+        return "database is locked" in msg or "busy" in msg
+    return False
+
+
+async def with_busy_retry(fn, attempts: int = 5, what: str = "db-op"):
+    """锁错误重试执行异步 callable（指数退避 + 抖动，与 init_db 同策略）。
+
+    多 worker/双进程写竞争下，大批量写（reindex/删源）必然偶发撞锁；
+    调用方把整段幂等写操作包进来即可。非锁错误直接抛出。
+    """
+    last_err: Optional[Exception] = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return await fn()
+        except Exception as e:  # noqa: BLE001 - 仅锁错误重试
+            if not _is_locked_error(e):
+                raise
+            last_err = e
+            delay = 0.3 * (2 ** attempt) + random.uniform(0, 0.3 * (attempt + 1))
+            print(f"[db] {what} locked (attempt {attempt + 1}/{attempts}), retry in {delay:.1f}s")
+            await asyncio.sleep(delay)
+    assert last_err is not None
+    raise last_err
+
+
+async def init_db(max_retries: int = 8) -> None:
     """初始化数据库表（幂等；安全可重复调用）。
 
     1. 用 CREATE TABLE IF NOT EXISTS 保证表结构存在（与既有 DDL 完全一致）。
     2. 为 SPACE_TABLES 中的用户表统一补 `space_id` 列 + 索引（新库 / 老库走同一路径）。
        WHERE 过滤 + 索引保证任意空间查询都是单列过滤，无需 JOIN。
+
+    多 worker 并发启动（uvicorn --workers N）时，多个进程会同时跑整套迁移；
+    整个 init 是一个长写事务，必然撞锁。这里对 "database is locked" / "busy"
+    类错误做指数退避 + 随机抖动重试（错开各 worker），其它错误直接抛出。
     """
-    async with get_db() as conn:
+    last_err: Optional[Exception] = None
+    for attempt in range(max(1, max_retries)):
+        try:
+            await _init_db_once()
+            return
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
+            last_err = e
+            # 指数退避 + 抖动：基址 0.3s，每轮翻倍，抖动错开各 worker 的重试节拍
+            delay = 0.3 * (2 ** attempt) + random.uniform(0, 0.3 * (attempt + 1))
+            print(f"[db] init locked (attempt {attempt + 1}/{max_retries}), retry in {delay:.1f}s: {e}")
+            await asyncio.sleep(delay)
+    assert last_err is not None
+    raise last_err
+
+
+async def _init_db_once() -> None:
+    """单次 init 事务体（见 init_db 的重试说明）。"""
+    async with get_db(busy_timeout_ms=30000) as conn:
         # ---------------- 论文表 ----------------
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS papers (
@@ -667,25 +724,34 @@ async def init_db() -> None:
         # ---------------- RAG 检索表（向量库） ----------------
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS rag_sources (
-                id TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
                 space_id TEXT NOT NULL DEFAULT '__default__',
                 name TEXT,
-                target_paths TEXT,            -- JSON 数组：一个或多个目标路径
+                kind TEXT DEFAULT 'local',    -- local|paper|web：本地路径 / 论文库系统源 / 网页粘贴
+                target_paths TEXT,            -- JSON 数组：一个或多个目标路径（paper/web 源可为空）
                 recursive INTEGER DEFAULT 1,  -- 是否递归子目录
                 file_types TEXT,             -- JSON 数组：如 ["pdf","txt","md"]
                 status TEXT DEFAULT 'pending',   -- pending|indexing|ready|partial|failed|cancelled
                 doc_count INTEGER DEFAULT 0,
                 chunk_count INTEGER DEFAULT 0,
+                progress INTEGER DEFAULT 0,   -- 索引进度 0-100（indexing 时实时更新）
+                total_files INTEGER DEFAULT 0, -- 本次索引发现的文件总数
                 embedding_model TEXT,
+                embedding_provider TEXT,
+                embedding_revision TEXT,
+                embedding_dims INTEGER DEFAULT 0,
+                embedding_profile_id TEXT,
+                active_generation_id TEXT,
                 embed_mode TEXT DEFAULT 'keyword',  -- vector|keyword
                 error TEXT,
                 created_at INTEGER,
-                updated_at INTEGER
+                updated_at INTEGER,
+                PRIMARY KEY (space_id, id)
             )
         ''')
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS rag_documents (
-                id TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
                 space_id TEXT NOT NULL DEFAULT '__default__',
                 source_id TEXT,
                 file_path TEXT,
@@ -695,12 +761,19 @@ async def init_db() -> None:
                 page_count INTEGER,
                 char_count INTEGER,
                 chunk_count INTEGER,
-                created_at INTEGER
+                url TEXT,                     -- web 文档规范化 URL；paper 为 arXiv 链接；local 为空
+                title TEXT,                   -- 文档标题（网页 <title> / 论文标题 / 文件名回退）
+                section TEXT,                 -- 切分用节名（论文 abstract/章节；网页为标题回退）
+                content_hash TEXT,            -- 全文 sha1，用于增量去重
+                fetched_at INTEGER,           -- web 抓取时间戳（ms）；其它为空
+                generation_id TEXT,
+                created_at INTEGER,
+                PRIMARY KEY (space_id, id)
             )
         ''')
         await conn.execute('''
             CREATE TABLE IF NOT EXISTS rag_chunks (
-                id TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
                 space_id TEXT NOT NULL DEFAULT '__default__',
                 source_id TEXT,
                 doc_id TEXT,
@@ -711,8 +784,11 @@ async def init_db() -> None:
                 char_start INTEGER,
                 char_end INTEGER,
                 embedding TEXT,             -- JSON 数组浮点；关键词模式下为 NULL
+                embedding_profile_id TEXT,
+                generation_id TEXT,
                 token_count INTEGER,
-                created_at INTEGER
+                created_at INTEGER,
+                PRIMARY KEY (space_id, id)
             )
         ''')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_rag_sources_space ON rag_sources(space_id)')
@@ -722,6 +798,199 @@ async def init_db() -> None:
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_rag_chunks_space ON rag_chunks(space_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_rag_chunks_source ON rag_chunks(space_id, source_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_rag_chunks_doc ON rag_chunks(space_id, doc_id)')
+
+        # 嵌入空间是索引正确性的边界：provider/model/revision/dims 任一变化都不得混检。
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS rag_embedding_profiles (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                revision TEXT,
+                dims INTEGER NOT NULL,
+                normalized INTEGER NOT NULL DEFAULT 1,
+                query_instruction TEXT,
+                created_at INTEGER
+            )
+        ''')
+        # 2.0 早期版本误把 source id 设为全局主键，导致不同 space 的
+        # __papers__/__web__ 冲突。老库原地重建为 (space_id, id) 复合主键。
+        _src_info = await (await conn.execute("PRAGMA table_info(rag_sources)")).fetchall()
+        _src_pk = [r["name"] for r in sorted(_src_info, key=lambda r: r["pk"]) if r["pk"]]
+        if _src_pk == ["id"]:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS rag_sources_v21 (
+                    id TEXT NOT NULL, space_id TEXT NOT NULL DEFAULT '__default__',
+                    name TEXT, kind TEXT DEFAULT 'local', target_paths TEXT,
+                    recursive INTEGER DEFAULT 1, file_types TEXT, status TEXT DEFAULT 'pending',
+                    doc_count INTEGER DEFAULT 0, chunk_count INTEGER DEFAULT 0,
+                    progress INTEGER DEFAULT 0, total_files INTEGER DEFAULT 0,
+                    embedding_model TEXT, embedding_provider TEXT, embedding_revision TEXT,
+                    embedding_dims INTEGER DEFAULT 0, embedding_profile_id TEXT,
+                    active_generation_id TEXT, embed_mode TEXT DEFAULT 'keyword', error TEXT,
+                    created_at INTEGER, updated_at INTEGER, PRIMARY KEY (space_id, id)
+                )
+            ''')
+            _old_names = {r["name"] for r in _src_info}
+            _new_info = await (await conn.execute("PRAGMA table_info(rag_sources_v21)")).fetchall()
+            _common = [r["name"] for r in _new_info if r["name"] in _old_names]
+            _columns = ", ".join(_common)
+            await conn.execute(
+                f"INSERT OR IGNORE INTO rag_sources_v21 ({_columns}) SELECT {_columns} FROM rag_sources")
+            await conn.execute("DROP TABLE rag_sources")
+            await conn.execute("ALTER TABLE rag_sources_v21 RENAME TO rag_sources")
+        # documents/chunks 同样按空间确定身份；旧表无 FK，重建不会破坏关联。
+        for _table, _ddl in [
+            ("rag_documents", '''CREATE TABLE rag_documents_v21 (
+                id TEXT NOT NULL, space_id TEXT NOT NULL DEFAULT '__default__', source_id TEXT,
+                file_path TEXT, file_name TEXT, file_type TEXT, file_size INTEGER,
+                page_count INTEGER, char_count INTEGER, chunk_count INTEGER, url TEXT,
+                title TEXT, section TEXT, content_hash TEXT, fetched_at INTEGER,
+                generation_id TEXT, created_at INTEGER, PRIMARY KEY (space_id, id))'''),
+            ("rag_chunks", '''CREATE TABLE rag_chunks_v21 (
+                id TEXT NOT NULL, space_id TEXT NOT NULL DEFAULT '__default__', source_id TEXT,
+                doc_id TEXT, chunk_index INTEGER, content TEXT, page_start INTEGER,
+                page_end INTEGER, char_start INTEGER, char_end INTEGER, embedding TEXT,
+                embedding_profile_id TEXT, generation_id TEXT, token_count INTEGER,
+                created_at INTEGER, PRIMARY KEY (space_id, id))'''),
+        ]:
+            _info = await (await conn.execute(f"PRAGMA table_info({_table})")).fetchall()
+            _pk = [r["name"] for r in sorted(_info, key=lambda r: r["pk"]) if r["pk"]]
+            if _pk == ["id"]:
+                _new = _table + "_v21"
+                await conn.execute(f"DROP TABLE IF EXISTS {_new}")
+                await conn.execute(_ddl)
+                _old_names = {r["name"] for r in _info}
+                _new_info = await (await conn.execute(f"PRAGMA table_info({_new})")).fetchall()
+                _common = [r["name"] for r in _new_info if r["name"] in _old_names]
+                _columns = ", ".join(_common)
+                await conn.execute(
+                    f"INSERT OR IGNORE INTO {_new} ({_columns}) SELECT {_columns} FROM {_table}")
+                await conn.execute(f"DROP TABLE {_table}")
+                await conn.execute(f"ALTER TABLE {_new} RENAME TO {_table}")
+
+        # ---------------- RAG 索引任务队列（P1 单写者：重型索引写操作串行化） ----------------
+        # 背景：8 worker 人人直写同一 SQLite，重型索引事务（万级切片）必然撞锁。
+        # 所有 local 索引提交先入队，各 worker 用 claim 原子认领，全局同时只有一个
+        # 执行者；认领走单条 UPDATE...RETURNING，保证跨进程互斥。
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS rag_index_jobs (
+                id TEXT PRIMARY KEY,
+                space_id TEXT NOT NULL DEFAULT '__default__',
+                kind TEXT DEFAULT 'local_index', -- local_index：本地路径索引
+                source_id TEXT,                 -- 关联 rag_sources.id（去重/取消用）
+                dedupe_key TEXT,
+                payload TEXT,                   -- JSON：{paths, recursive, file_types}
+                status TEXT DEFAULT 'pending',  -- pending|claimed|running|done|failed|cancelled
+                claimer TEXT,                   -- 认领者 worker 标识
+                lease_expires_at INTEGER,       -- 租约到期（ms）；过期可被重认领
+                error TEXT,
+                created_at INTEGER,
+                updated_at INTEGER
+            )
+        ''')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_rag_jobs_status ON rag_index_jobs(status, created_at)')
+        await conn.execute('CREATE INDEX IF NOT EXISTS idx_rag_jobs_source ON rag_index_jobs(space_id, source_id, status)')
+
+        # 全进程/多 worker 共享的单写者租约。job 自身的 lease 只负责故障接管，
+        # 不能阻止两个 dispatcher 同时领取两个不同任务。
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS rag_worker_lease (
+                name TEXT PRIMARY KEY,
+                owner TEXT NOT NULL,
+                expires_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        ''')
+
+        # ---------------- RAG 向量存储元信息（P2 sqlite-vec） ----------------
+        # vec0 虚表由 vec_store 懒创建（维度取自首批向量）；这里只存固定 schema 的
+        # 元信息：dims（建表维度）、ready（表内数据是否与主表同步）。
+        await conn.execute('''
+            CREATE TABLE IF NOT EXISTS rag_vec_meta (
+                space_id TEXT PRIMARY KEY,
+                dims INTEGER DEFAULT 0,
+                profile_id TEXT,
+                ready INTEGER DEFAULT 0,
+                updated_at INTEGER
+            )
+        ''')
+
+        # ---- RAG P0 幂等补列（老库升级；必须在 kind/hash/url 索引之前）----
+        for _tbl, _col, _decl in [
+            ("rag_sources", "kind", "TEXT DEFAULT 'local'"),
+            ("rag_sources", "progress", "INTEGER DEFAULT 0"),
+            ("rag_sources", "total_files", "INTEGER DEFAULT 0"),
+            ("rag_documents", "url", "TEXT"),
+            ("rag_documents", "title", "TEXT"),
+            ("rag_documents", "section", "TEXT"),
+            ("rag_documents", "content_hash", "TEXT"),
+            ("rag_documents", "fetched_at", "INTEGER"),
+        ]:
+            try:
+                _cols = await (await conn.execute(f"PRAGMA table_info({_tbl})")).fetchall()
+                if _col not in {r["name"] for r in _cols}:
+                    await conn.execute(f"ALTER TABLE {_tbl} ADD COLUMN {_col} {_decl}")
+            except sqlite3.OperationalError as _e:
+                if "duplicate column" not in str(_e).lower():
+                    raise
+        # 存量 local 源补 kind
+        try:
+            await conn.execute("UPDATE rag_sources SET kind = 'local' WHERE kind IS NULL OR kind = ''")
+        except Exception:
+            pass
+        # 新列索引（补列之后建，老库不再报 no such column）
+        for _idx_sql in [
+            'CREATE INDEX IF NOT EXISTS idx_rag_sources_kind ON rag_sources(space_id, kind)',
+            'CREATE INDEX IF NOT EXISTS idx_rag_docs_hash ON rag_documents(space_id, content_hash)',
+            'CREATE INDEX IF NOT EXISTS idx_rag_docs_url ON rag_documents(space_id, url)',
+        ]:
+            try:
+                await conn.execute(_idx_sql)
+            except sqlite3.OperationalError:
+                pass
+
+        # ---- RAG FTS5（BM25 稀疏索引，SQLite 内置；不可用则检索侧回退 LIKE/词频）----
+        # 2026-09-09 返工：逐行触发器在万级删除下是灾难——chunk_id 列 UNINDEXED，
+        # 每次 DELETE 都触发一次全表扫描（5 万行表 × 2.5 万次删除），且全程持写锁，
+        # 直接导致 reindex/删源在多 worker 下 database is locked。
+        # 改为显式集合维护（insert_rag_chunks / clear_rag_chunks / delete_rag_document
+        # 内批量同步 FTS，无触发器）：批量写是集合操作，无逐行扫描。
+        try:
+            await conn.execute('''
+                CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts
+                USING fts5(content, chunk_id UNINDEXED, space_id UNINDEXED, tokenize = "trigram")
+            ''')
+            await conn.execute('DROP TRIGGER IF EXISTS trg_rag_chunks_fts_ai')
+            await conn.execute('DROP TRIGGER IF EXISTS trg_rag_chunks_fts_ad')
+            # 存量回填（缺失补齐）+ 孤儿清理（触发器时代残留/崩溃中间态）。
+            # 先比行数：稳态下两次 COUNT 都是索引扫描，远比全表操作便宜，
+            # 避免每次启动都扫全表 rag_chunks 长时间持写锁。
+            try:
+                _n_chunks = await (await conn.execute("SELECT COUNT(*) AS n FROM rag_chunks")).fetchone()
+                _n_fts = await (await conn.execute("SELECT COUNT(*) AS n FROM rag_chunks_fts")).fetchone()
+                _nc = (_n_chunks and _n_chunks["n"]) or 0
+                _nf = (_n_fts and _n_fts["n"]) or 0
+                if _nc > _nf:
+                    await conn.execute('''
+                        INSERT INTO rag_chunks_fts(content, chunk_id, space_id)
+                        SELECT c.content, c.id, c.space_id FROM rag_chunks c
+                        LEFT JOIN rag_chunks_fts f
+                          ON f.chunk_id = c.id AND f.space_id = c.space_id
+                        WHERE f.chunk_id IS NULL
+                    ''')
+                elif _nf > _nc:
+                    await conn.execute('''
+                        DELETE FROM rag_chunks_fts
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM rag_chunks c
+                            WHERE c.id = rag_chunks_fts.chunk_id
+                              AND c.space_id = rag_chunks_fts.space_id
+                        )
+                    ''')
+            except Exception:
+                pass
+        except Exception as _fts_e:  # noqa: BLE001 - 无 FTS5 的精简 sqlite 构建仍可启动
+            print(f"[db] FTS5 unavailable, BM25 disabled: {_fts_e}")
 
         # ==================== space_id 幂等迁移 ====================
         # 新库与老库走同一路径：补列 + 建索引，存量行自动打 __default__。
@@ -784,6 +1053,28 @@ async def init_db() -> None:
         await ensure_column("agent_runs", "budget_used_ms", "INTEGER NOT NULL DEFAULT 0")
         await ensure_column("agent_tool_approvals", "node_id", "TEXT")
         await ensure_column("software_projects", "development_config", "TEXT")
+        await ensure_column("rag_sources", "embedding_provider", "TEXT")
+        await ensure_column("rag_sources", "embedding_revision", "TEXT")
+        await ensure_column("rag_sources", "embedding_dims", "INTEGER DEFAULT 0")
+        await ensure_column("rag_sources", "embedding_profile_id", "TEXT")
+        await ensure_column("rag_sources", "active_generation_id", "TEXT")
+        await ensure_column("rag_documents", "generation_id", "TEXT")
+        await ensure_column("rag_chunks", "embedding_profile_id", "TEXT")
+        await ensure_column("rag_chunks", "generation_id", "TEXT")
+        await ensure_column("rag_vec_meta", "profile_id", "TEXT")
+        await ensure_column("rag_index_jobs", "dedupe_key", "TEXT")
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rag_docs_generation "
+            "ON rag_documents(space_id, source_id, generation_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rag_chunks_generation "
+            "ON rag_chunks(space_id, source_id, generation_id)"
+        )
+        await conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rag_chunks_profile "
+            "ON rag_chunks(space_id, embedding_profile_id)"
+        )
 
         # 一次性迁移：papers 表补 bibtex 列（老库无此列，幂等执行）
         cols = await (await conn.execute("PRAGMA table_info(papers)")).fetchall()
@@ -1031,6 +1322,12 @@ async def _maybe_migrate_chat_branching(conn: aiosqlite.Connection) -> None:
 
     # 回填：没有 parent_id 的消息按 conversation + timestamp 排序，前一条即 parent。
     # 同时把每条 conversation 的 current_leaf_id 设为 timestamp 最大的那条消息。
+    # 稳态 fast-path：无待回填行时直接返回，避免逐条 UPDATE 长时间持写锁
+    # （多 worker 启动并发时这正是撞锁的热点）。
+    _pending = await _fetchone(
+        conn, "SELECT COUNT(*) AS n FROM chat_messages WHERE parent_id IS NULL")
+    if not _pending or not _pending["n"]:
+        return
     rows = await _fetchall(
         conn,
         """
@@ -3610,23 +3907,104 @@ async def get_cron_run_history(
         return [dict(row) for row in rows]
 
 
+# ==================== 公式历史 ====================
+async def update_formula_history_record(
+    record_id: str,
+    updates: Dict[str, Any],
+    space_id: str = DEFAULT_SPACE,
+) -> bool:
+    """按空间更新公式记录；返回 False 表示记录不存在或没有有效字段。"""
+    field_mapping = {
+        "latex_code": "latex_code",
+        "latexCode": "latex_code",
+        "is_favorite": "is_favorite",
+        "isFavorite": "is_favorite",
+        "tags": "tags",
+        "note": "note",
+    }
+    normalized = {
+        column: value
+        for key, value in updates.items()
+        if (column := field_mapping.get(key)) is not None
+    }
+    if not normalized:
+        return False
+
+    async def _update() -> bool:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            clauses: List[str] = []
+            values: List[Any] = []
+            for column, value in normalized.items():
+                if column == "tags":
+                    value = json.dumps(value, ensure_ascii=False)
+                elif column == "is_favorite":
+                    value = 1 if value else 0
+                clauses.append(f"{column} = ?")
+                values.append(value)
+            values.extend([record_id, space_id])
+            cur = await conn.execute(
+                f"UPDATE formula_history SET {', '.join(clauses)} "
+                "WHERE id = ? AND space_id = ?",
+                values,
+            )
+            return cur.rowcount > 0
+
+    return await with_busy_retry(_update, what="formula-update")
+
+
+async def delete_formula_history_record(
+    record_id: str,
+    space_id: str = DEFAULT_SPACE,
+) -> bool:
+    """按空间删除公式记录；返回 False 表示记录不存在。"""
+    async def _delete() -> bool:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            cur = await conn.execute(
+                "DELETE FROM formula_history WHERE id = ? AND space_id = ?",
+                (record_id, space_id),
+            )
+            return cur.rowcount > 0
+
+    return await with_busy_retry(_delete, what="formula-delete")
+
+
 # ===========================================================================
 # RAG 检索（向量库）数据访问层
 # ===========================================================================
 def _rag_source_to_dict(row) -> Optional[Dict[str, Any]]:
     if not row:
         return None
+    try:
+        _kind = row["kind"]
+    except Exception:
+        _kind = "local"
+
+    def _col(name: str, default=None):
+        try:
+            v = row[name]
+            return default if v is None else v
+        except Exception:
+            return default
+
     return {
         "id": row["id"],
         "spaceId": row["space_id"],
         "name": row["name"],
+        "kind": _kind or "local",
         "targetPaths": json.loads(row["target_paths"]) if row["target_paths"] else [],
         "recursive": bool(row["recursive"]),
         "fileTypes": json.loads(row["file_types"]) if row["file_types"] else [],
         "status": row["status"],
         "docCount": row["doc_count"],
         "chunkCount": row["chunk_count"],
+        "progress": _col("progress", 0) or 0,
+        "totalFiles": _col("total_files", 0) or 0,
         "embeddingModel": row["embedding_model"],
+        "embeddingProvider": _col("embedding_provider"),
+        "embeddingRevision": _col("embedding_revision"),
+        "embeddingDims": _col("embedding_dims", 0) or 0,
+        "embeddingProfileId": _col("embedding_profile_id"),
+        "activeGenerationId": _col("active_generation_id"),
         "embedMode": row["embed_mode"],
         "error": row["error"],
         "createdAt": row["created_at"],
@@ -3636,18 +4014,20 @@ def _rag_source_to_dict(row) -> Optional[Dict[str, Any]]:
 
 async def create_rag_source(source_id: str, space_id: str, name: str, target_paths: Any,
                             recursive: bool, file_types: Any, embedding_model: str = "",
-                            status: str = "pending") -> bool:
+                            status: str = "pending", kind: str = "local") -> bool:
     """创建一条索引源记录（按空间打标）。target_paths / file_types 为列表。"""
+    if kind not in ("local", "paper", "web"):
+        kind = "local"
     try:
         now = int(time.time() * 1000)
         async with get_db() as conn:
             await conn.execute('''
                 INSERT INTO rag_sources
-                (id, space_id, name, target_paths, recursive, file_types, status,
+                (id, space_id, name, kind, target_paths, recursive, file_types, status,
                  doc_count, chunk_count, embedding_model, embed_mode, error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'keyword', NULL, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 'keyword', NULL, ?, ?)
             ''', (
-                source_id, space_id, name,
+                source_id, space_id, name, kind,
                 json.dumps(target_paths, ensure_ascii=False),
                 1 if recursive else 0,
                 json.dumps(file_types, ensure_ascii=False),
@@ -3662,8 +4042,10 @@ async def create_rag_source(source_id: str, space_id: str, name: str, target_pat
 async def update_rag_source(source_id: str, space_id: str, **fields: Any) -> bool:
     """白名单字段更新 rag_sources（按空间校验）。updated_at 自动刷新。"""
     allowed = {
-        "name", "target_paths", "recursive", "file_types", "status",
-        "doc_count", "chunk_count", "embedding_model", "embed_mode",
+        "name", "kind", "target_paths", "recursive", "file_types", "status",
+        "doc_count", "chunk_count", "progress", "total_files",
+        "embedding_model", "embedding_provider", "embedding_revision",
+        "embedding_dims", "embedding_profile_id", "active_generation_id", "embed_mode",
         "error", "updated_at",
     }
     updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
@@ -3694,6 +4076,95 @@ async def update_rag_source(source_id: str, space_id: str, **fields: Any) -> boo
         return False
 
 
+async def upsert_rag_embedding_profile(profile: Dict[str, Any]) -> bool:
+    """登记不可变嵌入配置。profile id 由调用方按配置内容生成。"""
+    try:
+        async with get_db() as conn:
+            await conn.execute('''
+                INSERT OR IGNORE INTO rag_embedding_profiles
+                (id, provider, model, revision, dims, normalized, query_instruction, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                profile["id"], profile["provider"], profile["model"],
+                profile.get("revision"), int(profile.get("dims") or 0),
+                1 if profile.get("normalized", True) else 0,
+                profile.get("query_instruction"), int(time.time() * 1000),
+            ))
+        return True
+    except Exception as e:
+        print(f"Create rag embedding profile error: {e}")
+        return False
+
+
+async def get_rag_embedding_profile(profile_id: str) -> Optional[Dict[str, Any]]:
+    if not profile_id:
+        return None
+    async with get_db() as conn:
+        row = await _fetchone(
+            conn, "SELECT * FROM rag_embedding_profiles WHERE id = ?", (profile_id,))
+        return dict(row) if row else None
+
+
+async def activate_rag_generation(source_id: str, space_id: str, generation_id: str,
+                                  *, status: str, doc_count: int, chunk_count: int,
+                                  embed_mode: str, profile: Optional[Dict[str, Any]] = None) -> bool:
+    """单事务切换可见代次；切换前旧代始终可检索，切换后新代立即完整可见。"""
+    profile = profile or {}
+    try:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            cur = await conn.execute('''
+                UPDATE rag_sources SET active_generation_id = ?, status = ?, doc_count = ?,
+                    chunk_count = ?, embed_mode = ?, embedding_model = ?,
+                    embedding_provider = ?, embedding_revision = ?, embedding_dims = ?,
+                    embedding_profile_id = ?, progress = 100, error = NULL, updated_at = ?
+                WHERE id = ? AND space_id = ?
+            ''', (
+                generation_id, status, doc_count, chunk_count, embed_mode,
+                profile.get("model"), profile.get("provider"), profile.get("revision"),
+                int(profile.get("dims") or 0), profile.get("id"), int(time.time() * 1000),
+                source_id, space_id,
+            ))
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"Activate rag generation error: {e}")
+        return False
+
+
+async def clear_rag_generation(source_id: str, space_id: str, generation_id: str,
+                               *, keep: bool = False, batch_size: int = 500) -> int:
+    """删除某代，或在 keep=True 时删除该源除指定代外的历史数据。"""
+    total = 0
+    op = "<>" if keep else "="
+    # NULL 表示 2.0 之前的旧代；激活新代后也应一并清掉。
+    gen_clause = f"(generation_id {op} ? OR generation_id IS NULL)" if keep else "generation_id = ?"
+    while True:
+        async def _clear_batch() -> int:
+            async with get_db(busy_timeout_ms=30000) as conn:
+                rows = await _fetchall(
+                    conn,
+                    f"SELECT id FROM rag_chunks WHERE source_id = ? AND space_id = ? AND {gen_clause} LIMIT ?",
+                    (source_id, space_id, generation_id, batch_size))
+                ids = [r["id"] for r in rows]
+                if not ids:
+                    return 0
+                await _vec_delete_for_conn(conn, space_id, ids)
+                await _fts_delete_by_chunk_ids(conn, space_id, ids)
+                placeholders = ",".join("?" for _ in ids)
+                cur = await conn.execute(
+                    f"DELETE FROM rag_chunks WHERE space_id = ? AND id IN ({placeholders})",
+                    [space_id, *ids])
+                return cur.rowcount or 0
+        n = await with_busy_retry(_clear_batch, what=f"rag-generation-clear({source_id[:8]})")
+        total += n
+        if n <= 0:
+            break
+    async with get_db(busy_timeout_ms=30000) as conn:
+        await conn.execute(
+            f"DELETE FROM rag_documents WHERE source_id = ? AND space_id = ? AND {gen_clause}",
+            (source_id, space_id, generation_id))
+    return total
+
+
 async def get_rag_source(source_id: str, space_id: str = DEFAULT_SPACE) -> Optional[Dict[str, Any]]:
     async with get_db() as conn:
         row = await _fetchone(conn, 'SELECT * FROM rag_sources WHERE id = ? AND space_id = ?', (source_id, space_id))
@@ -3707,10 +4178,14 @@ async def get_rag_sources(space_id: str = DEFAULT_SPACE) -> List[Dict[str, Any]]
 
 
 async def delete_rag_source(source_id: str, space_id: str = DEFAULT_SPACE) -> bool:
-    """删除索引源 + 其下全部文档与切片（级联）。"""
+    """删除索引源 + 其下全部文档与切片（级联）。
+
+    切片经 ``clear_rag_chunks`` 分批独立小事务删除，大源单事务全量删持写锁
+    过久，多 worker 下撞锁；整函数幂等，可安全重入。
+    """
     try:
-        async with get_db() as conn:
-            await conn.execute('DELETE FROM rag_chunks WHERE source_id = ? AND space_id = ?', (source_id, space_id))
+        await clear_rag_chunks(source_id, space_id)
+        async with get_db(busy_timeout_ms=30000) as conn:
             await conn.execute('DELETE FROM rag_documents WHERE source_id = ? AND space_id = ?', (source_id, space_id))
             cur = await conn.execute('DELETE FROM rag_sources WHERE id = ? AND space_id = ?', (source_id, space_id))
             return cur.rowcount > 0
@@ -3719,9 +4194,51 @@ async def delete_rag_source(source_id: str, space_id: str = DEFAULT_SPACE) -> bo
         return False
 
 
+async def clear_rag_chunks(source_id: str, space_id: str = DEFAULT_SPACE,
+                           batch_size: int = 500) -> int:
+    """分批清空某源全部切片（每批独立小事务 + 锁重试），返回删除总数。
+
+    单事务全量 DELETE 在万级切片下持写锁过久，多 worker 下必现 database is locked；
+    逐批提交让其它写者插空，重试幂等。FTS 先按 id 集合删（一条语句一次扫描），
+    再删主表（PK 索引，无逐行触发器）。
+    """
+    total = 0
+
+    async def _clear_batch() -> int:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            rows = await _fetchall(
+                conn, 'SELECT id FROM rag_chunks WHERE source_id = ? AND space_id = ? LIMIT ?',
+                (source_id, space_id, batch_size))
+            ids = [r["id"] for r in rows]
+            if not ids:
+                return 0
+            await _vec_delete_for_conn(conn, space_id, ids)
+            await _fts_delete_by_chunk_ids(conn, space_id, ids)
+            placeholders = ",".join("?" for _ in ids)
+            cur = await conn.execute(
+                f"DELETE FROM rag_chunks WHERE space_id = ? AND id IN ({placeholders})",
+                [space_id, *ids])
+            return cur.rowcount or 0
+
+    while True:
+        n = await with_busy_retry(
+            _clear_batch, what=f"rag-clear({str(source_id)[:8]})")
+        total += n
+        if n <= 0:
+            break
+    return total
+
+
 def _rag_document_to_dict(row) -> Optional[Dict[str, Any]]:
     if not row:
         return None
+
+    def _col(name: str, default=None):
+        try:
+            return row[name]
+        except Exception:
+            return default
+
     return {
         "id": row["id"],
         "spaceId": row["space_id"],
@@ -3733,23 +4250,35 @@ def _rag_document_to_dict(row) -> Optional[Dict[str, Any]]:
         "pageCount": row["page_count"],
         "charCount": row["char_count"],
         "chunkCount": row["chunk_count"],
+        "url": _col("url"),
+        "title": _col("title") or row["file_name"],
+        "section": _col("section"),
+        "contentHash": _col("content_hash"),
+        "fetchedAt": _col("fetched_at"),
+        "generationId": _col("generation_id"),
         "createdAt": row["created_at"],
     }
 
 
 async def create_rag_document(doc_id: str, space_id: str, source_id: str, file_path: str,
                               file_name: str, file_type: str, file_size: int = 0,
-                              page_count: int = 0, char_count: int = 0, chunk_count: int = 0) -> bool:
+                              page_count: int = 0, char_count: int = 0, chunk_count: int = 0,
+                              url: Optional[str] = None, title: Optional[str] = None,
+                              section: Optional[str] = None, content_hash: Optional[str] = None,
+                              fetched_at: Optional[int] = None,
+                              generation_id: Optional[str] = None) -> bool:
     try:
         now = int(time.time() * 1000)
         async with get_db() as conn:
             await conn.execute('''
                 INSERT INTO rag_documents
                 (id, space_id, source_id, file_path, file_name, file_type, file_size,
-                 page_count, char_count, chunk_count, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 page_count, char_count, chunk_count, url, title, section,
+                 content_hash, fetched_at, generation_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (doc_id, space_id, source_id, file_path, file_name, file_type,
-                  file_size, page_count, char_count, chunk_count, now))
+                  file_size, page_count, char_count, chunk_count, url, title,
+                  section, content_hash, fetched_at, generation_id, now))
         return True
     except Exception as e:
         print(f"Create rag document error: {e}")
@@ -3760,12 +4289,32 @@ async def get_rag_documents(space_id: str = DEFAULT_SPACE, source_id: Optional[s
     async with get_db() as conn:
         if source_id:
             rows = await _fetchall(conn,
-                'SELECT * FROM rag_documents WHERE space_id = ? AND source_id = ? ORDER BY file_name',
+                'SELECT d.* FROM rag_documents d JOIN rag_sources s '
+                'ON s.id = d.source_id AND s.space_id = d.space_id '
+                'WHERE d.space_id = ? AND d.source_id = ? '
+                'AND (s.active_generation_id IS NULL OR d.generation_id = s.active_generation_id) '
+                'ORDER BY d.file_name',
                 (space_id, source_id))
         else:
             rows = await _fetchall(conn,
-                'SELECT * FROM rag_documents WHERE space_id = ? ORDER BY file_name', (space_id,))
+                'SELECT d.* FROM rag_documents d JOIN rag_sources s '
+                'ON s.id = d.source_id AND s.space_id = d.space_id '
+                'WHERE d.space_id = ? '
+                'AND (s.active_generation_id IS NULL OR d.generation_id = s.active_generation_id) '
+                'ORDER BY d.file_name', (space_id,))
         return [_rag_document_to_dict(r) for r in rows]
+
+
+async def get_rag_source_counts(source_id: str, space_id: str) -> Dict[str, int]:
+    async with get_db() as conn:
+        docs = await _fetchone(
+            conn, "SELECT COUNT(*) AS n FROM rag_documents WHERE space_id = ? AND source_id = ?",
+            (space_id, source_id))
+        chunks = await _fetchone(
+            conn, "SELECT COUNT(*) AS n FROM rag_chunks WHERE space_id = ? AND source_id = ?",
+            (space_id, source_id))
+        return {"docCount": int((docs or {"n": 0})["n"]),
+                "chunkCount": int((chunks or {"n": 0})["n"])}
 
 
 async def get_rag_document(doc_id: str, space_id: str = DEFAULT_SPACE) -> Optional[Dict[str, Any]]:
@@ -3787,61 +4336,209 @@ async def update_rag_document(doc_id: str, space_id: str, chunk_count: Optional[
         return False
 
 
+async def _fts_table_exists(conn: aiosqlite.Connection) -> bool:
+    """FTS 虚表是否存在（无 FTS5 构建上返回 False，调用方静默跳过）。"""
+    try:
+        row = await _fetchone(
+            conn, "SELECT name FROM sqlite_master WHERE type='table' AND name='rag_chunks_fts'")
+        return row is not None
+    except Exception:
+        return False
+
+
+async def _fts_insert_batch(conn: aiosqlite.Connection,
+                            rows: List[Tuple[str, str, str]]) -> None:
+    """批量写入 FTS（集合操作，无逐行扫描；表不存在则跳过）。"""
+    if not rows or not await _fts_table_exists(conn):
+        return
+    await conn.executemany(
+        'INSERT INTO rag_chunks_fts(content, chunk_id, space_id) VALUES (?, ?, ?)', rows)
+
+
+async def _fts_delete_by_chunk_ids(conn: aiosqlite.Connection,
+                                   space_id: str, ids: List[str]) -> None:
+    """按 chunk id 批量删 FTS（每 500 一条语句，避免变量数超限；表不存在则跳过）。"""
+    if not ids or not await _fts_table_exists(conn):
+        return
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        placeholders = ",".join("?" for _ in part)
+        await conn.execute(
+            f"DELETE FROM rag_chunks_fts WHERE space_id = ? "
+            f"AND chunk_id IN ({placeholders})", [space_id, *part])
+
+
 async def insert_rag_chunks(chunks: List[Dict[str, Any]], space_id: str = DEFAULT_SPACE) -> int:
-    """批量写入切片。chunks 元素字段见 rag_chunks 表（embedding 为 list 或 None）。"""
+    """批量写入切片。chunks 元素字段见 rag_chunks 表（embedding 为 list 或 None）。
+
+    FTS 与主表同事务批量同步（无触发器，见 init 迁移注释）。
+    向量双写 vec0（P2）：同事务写入含向量的行；扩展缺失/维度异常时静默跳过，
+    读路径自动回退暴力检索。
+    """
     if not chunks:
         return 0
     now = int(time.time() * 1000)
     try:
+        vec_dims = 0
+        vec_recreated = False
         async with get_db() as conn:
+            fts_rows: List[Tuple[str, str, str]] = []
+            vec_rows: List[Tuple[str, str, str, List[float]]] = []
             for ch in chunks:
                 content = _clean_text_for_db(ch.get("content", ""))
                 await conn.execute('''
                     INSERT INTO rag_chunks
                     (id, space_id, source_id, doc_id, chunk_index, content, page_start, page_end,
-                     char_start, char_end, embedding, token_count, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     char_start, char_end, embedding, embedding_profile_id, generation_id,
+                     token_count, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     ch["id"], space_id, ch["source_id"], ch["doc_id"], ch.get("chunk_index", 0),
                     content, ch.get("page_start"), ch.get("page_end"),
                     ch.get("char_start"), ch.get("char_end"),
                     json.dumps(ch["embedding"], ensure_ascii=False) if ch.get("embedding") else None,
+                    ch.get("embedding_profile_id"), ch.get("generation_id"),
                     ch.get("token_count", 0), now,
                 ))
+                fts_rows.append((content, ch["id"], space_id))
+                if ch.get("embedding") and ch.get("embedding_profile_id"):
+                    vec_rows.append((ch["id"], ch["source_id"],
+                                     ch["embedding_profile_id"], ch["embedding"]))
+            await _fts_insert_batch(conn, fts_rows)
+            vec_dims, vec_recreated = await _vec_dual_write(conn, space_id, vec_rows)
+        if vec_dims:
+            await _vec_meta_maintain(
+                space_id, vec_dims, len(vec_rows), vec_recreated,
+                vec_rows[0][2] if vec_rows else None)
         return len(chunks)
     except Exception as e:
         print(f"Insert rag chunks error: {e}")
         return 0
 
 
+def _vec_store_or_none():
+    """懒取 vec_store（无循环导入：backend.server.__init__ 无副作用；缺包回 None）。"""
+    try:
+        from backend.server import vec_store
+        return vec_store if vec_store.available() else None
+    except Exception:
+        return None
+
+
+async def _vec_dual_write(conn: aiosqlite.Connection, space_id: str,
+                          vec_rows: List[Tuple[str, str, str, List[float]]]
+                          ) -> Tuple[int, bool]:
+    """vec 双写（必须在外层写事务内调用；只碰 vec 表，不开新连接）。
+
+    返回 (dims, recreated)。元信息维护拆到提交后的 _vec_meta_maintain，
+    否则内外两层连接写同一库自死锁（SQLite 锁是库级）。
+    失败静默，读路径回退暴力。
+    """
+    if not vec_rows:
+        return 0, False
+    vs = _vec_store_or_none()
+    if vs is None:
+        return 0, False
+    try:
+        if not await vs.load_extension(conn):
+            return 0, False
+        dims = len(vec_rows[0][3])
+        exists, cur_dims, compatible = await vs.table_state(conn)
+        recreated = bool(exists and (cur_dims != dims or not compatible))
+        await vs.ensure_table(conn, dims)
+        await vs.upsert_batch(conn, space_id, vec_rows)
+        return dims, recreated
+    except Exception:
+        return 0, False
+
+
+async def _vec_meta_maintain(space_id: str, dims: int, n_written: int,
+                             recreated: bool, profile_id: Optional[str] = None) -> None:
+    """提交后在新连接上维护元信息（与写事务分离，避免自死锁）。
+
+    * 重建（模型切换）→ 本空间 + 全空间 ready=False（需重新 backfill）；
+    * 新空间首次写入 → 计一次数判定覆盖度，全覆盖则 ready=True。
+    """
+    if not dims:
+        return
+    try:
+        if recreated:
+            await set_vec_meta(space_id, dims, False, profile_id)
+            try:
+                async with get_db() as _c2:
+                    await _c2.execute(
+                        "UPDATE rag_vec_meta SET ready = 0 WHERE space_id <> ?",
+                        (space_id,))
+            except Exception:
+                pass
+            return
+        meta = await get_vec_meta(space_id)
+        if (meta["dims"] == dims and meta.get("profileId") == profile_id
+                and meta["ready"]):
+            return
+        if meta["dims"] not in (0, dims):
+            await set_vec_meta(space_id, dims, False, profile_id)
+            return
+        try:
+            async with get_db() as _c3:
+                row = await _fetchone(
+                    _c3, "SELECT COUNT(*) AS n FROM rag_chunks"
+                         " WHERE space_id = ? AND embedding IS NOT NULL",
+                    (space_id,))
+                total = row["n"] if row else 0
+            # 本批即全部（新空间）→ 直接就绪；否则等 backfill 收尾
+            await set_vec_meta(space_id, dims, total <= n_written, profile_id)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 async def get_rag_chunks_for_retrieval(space_id: str = DEFAULT_SPACE,
                                        source_ids: Optional[List[str]] = None,
-                                       limit: Optional[int] = None) -> List[Dict[str, Any]]:
+                                       limit: Optional[int] = None,
+                                       after_rowid: int = 0) -> List[Dict[str, Any]]:
     """取某空间（可限定来源）的切片 + 文档元数据，供检索排序。
 
     返回 list[dict]: id, sourceId, docId, content, embedding(list|None),
-    pageStart, pageEnd, fileName, filePath, fileType。`limit` 用于分页防 OOM。
+    pageStart, pageEnd, fileName, filePath, fileType, url, title。`limit` 用于分页防 OOM。
     """
     async with get_db() as conn:
         if source_ids is not None and len(source_ids) == 0:
             return []
+        _has_new_cols = True
+        try:
+            _cols = await (await conn.execute("PRAGMA table_info(rag_documents)")).fetchall()
+            _names = {r["name"] for r in _cols}
+            _has_new_cols = {"url", "title"}.issubset(_names)
+        except Exception:
+            _has_new_cols = False
+        _extra = ", d.url, d.title" if _has_new_cols else ", NULL AS url, NULL AS title"
         if source_ids is not None and len(source_ids) > 0:
             placeholders = ",".join("?" for _ in source_ids)
             query = (
-                "SELECT c.id, c.source_id, c.doc_id, c.content, c.embedding, c.page_start, "
-                "c.page_end, d.file_name, d.file_path, d.file_type "
+                "SELECT c.rowid AS _rowid, c.id, c.source_id, c.doc_id, c.content, c.embedding, "
+                "c.embedding_profile_id, c.generation_id, c.page_start, "
+                f"c.page_end, d.file_name, d.file_path, d.file_type{_extra} "
                 "FROM rag_chunks c LEFT JOIN rag_documents d ON c.doc_id = d.id AND c.space_id = d.space_id "
-                f"WHERE c.space_id = ? AND c.source_id IN ({placeholders})"
+                "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
+                f"WHERE c.space_id = ? AND c.source_id IN ({placeholders}) "
+                "AND c.rowid > ? AND (s.active_generation_id IS NULL "
+                "OR c.generation_id = s.active_generation_id)"
             )
-            params: List[Any] = [space_id, *source_ids]
+            params: List[Any] = [space_id, *source_ids, after_rowid]
         else:
             query = (
-                "SELECT c.id, c.source_id, c.doc_id, c.content, c.embedding, c.page_start, "
-                "c.page_end, d.file_name, d.file_path, d.file_type "
+                "SELECT c.rowid AS _rowid, c.id, c.source_id, c.doc_id, c.content, c.embedding, "
+                "c.embedding_profile_id, c.generation_id, c.page_start, "
+                f"c.page_end, d.file_name, d.file_path, d.file_type{_extra} "
                 "FROM rag_chunks c LEFT JOIN rag_documents d ON c.doc_id = d.id AND c.space_id = d.space_id "
-                "WHERE c.space_id = ?"
+                "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
+                "WHERE c.space_id = ? AND c.rowid > ? AND (s.active_generation_id IS NULL "
+                "OR c.generation_id = s.active_generation_id)"
             )
-            params = [space_id]
+            params = [space_id, after_rowid]
+        query += " ORDER BY c.rowid"
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
@@ -3854,34 +4551,572 @@ async def get_rag_chunks_for_retrieval(space_id: str = DEFAULT_SPACE,
                     emb = json.loads(r["embedding"])
                 except Exception:
                     emb = None
+            try:
+                _url = r["url"]
+            except Exception:
+                _url = None
+            try:
+                _title = r["title"]
+            except Exception:
+                _title = None
             out.append({
                 "id": r["id"],
+                "rowId": r["_rowid"],
                 "sourceId": r["source_id"],
                 "docId": r["doc_id"],
                 "content": r["content"],
                 "embedding": emb,
+                "embeddingProfileId": r["embedding_profile_id"],
+                "generationId": r["generation_id"],
                 "pageStart": r["page_start"],
                 "pageEnd": r["page_end"],
                 "fileName": r["file_name"],
                 "filePath": r["file_path"],
                 "fileType": r["file_type"],
+                "url": _url,
+                "title": _title,
             })
         return out
+
+
+async def get_rag_chunks_by_ids(space_id: str = DEFAULT_SPACE,
+                                chunk_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """按 chunk id 批量取正文 + 文档元数据（P2 KNN 候选回填；PK 索引，不读向量）。
+
+    返回与 get_rag_chunks_for_retrieval 同形（embedding 恒为 None）。
+    """
+    if not chunk_ids:
+        return []
+    try:
+        async with get_db() as conn:
+            try:
+                _cols = await (await conn.execute("PRAGMA table_info(rag_documents)")).fetchall()
+                _has_new_cols = {"url", "title"}.issubset({r["name"] for r in _cols})
+            except Exception:
+                _has_new_cols = False
+            _extra = ", d.url, d.title" if _has_new_cols else ", NULL AS url, NULL AS title"
+            out: List[Dict[str, Any]] = []
+            for i in range(0, len(chunk_ids), 500):
+                part = chunk_ids[i:i + 500]
+                placeholders = ",".join("?" for _ in part)
+                rows = await _fetchall(
+                    conn,
+                    "SELECT c.id, c.source_id, c.doc_id, c.content, c.page_start, "
+                    f"c.page_end, c.embedding_profile_id, c.generation_id, "
+                    f"d.file_name, d.file_path, d.file_type{_extra} "
+                    "FROM rag_chunks c LEFT JOIN rag_documents d"
+                    " ON c.doc_id = d.id AND c.space_id = d.space_id "
+                    "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
+                    f"WHERE c.space_id = ? AND c.id IN ({placeholders}) "
+                    "AND (s.active_generation_id IS NULL OR c.generation_id = s.active_generation_id)",
+                    [space_id, *part])
+                for r in rows:
+                    try:
+                        _url = r["url"]
+                    except Exception:
+                        _url = None
+                    try:
+                        _title = r["title"]
+                    except Exception:
+                        _title = None
+                    out.append({
+                        "id": r["id"],
+                        "sourceId": r["source_id"],
+                        "docId": r["doc_id"],
+                        "content": r["content"],
+                        "embedding": None,
+                        "embeddingProfileId": r["embedding_profile_id"],
+                        "generationId": r["generation_id"],
+                        "pageStart": r["page_start"],
+                        "pageEnd": r["page_end"],
+                        "fileName": r["file_name"],
+                        "filePath": r["file_path"],
+                        "fileType": r["file_type"],
+                        "url": _url,
+                        "title": _title,
+                    })
+            return out
+    except Exception:
+        return []
+
+
+async def get_rag_document_by_hash(content_hash: str, space_id: str = DEFAULT_SPACE,
+                                   source_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """按内容 hash 查找文档（增量去重用）。无 hash 列的老库返回 None。"""
+    if not content_hash:
+        return None
+    try:
+        async with get_db() as conn:
+            try:
+                _cols = await (await conn.execute("PRAGMA table_info(rag_documents)")).fetchall()
+                if "content_hash" not in {r["name"] for r in _cols}:
+                    return None
+            except Exception:
+                return None
+            if source_id:
+                row = await _fetchone(
+                    conn, 'SELECT * FROM rag_documents WHERE space_id = ? AND source_id = ? AND content_hash = ?',
+                    (space_id, source_id, content_hash))
+            else:
+                row = await _fetchone(
+                    conn, 'SELECT * FROM rag_documents WHERE space_id = ? AND content_hash = ?',
+                    (space_id, content_hash))
+            return _rag_document_to_dict(row) if row else None
+    except Exception:
+        return None
+
+
+async def get_rag_document_by_url(url: str, space_id: str = DEFAULT_SPACE) -> Optional[Dict[str, Any]]:
+    """按规范化 URL 查找网页文档（粘贴 URL 去重用）。"""
+    if not url:
+        return None
+    try:
+        async with get_db() as conn:
+            try:
+                _cols = await (await conn.execute("PRAGMA table_info(rag_documents)")).fetchall()
+                if "url" not in {r["name"] for r in _cols}:
+                    return None
+            except Exception:
+                return None
+            row = await _fetchone(
+                conn, 'SELECT * FROM rag_documents WHERE space_id = ? AND url = ?', (space_id, url))
+            return _rag_document_to_dict(row) if row else None
+    except Exception:
+        return None
+
+
+async def delete_rag_document(doc_id: str, space_id: str = DEFAULT_SPACE) -> bool:
+    """删除单文档 + 其切片（论文删除级联用）。FTS/vec 显式同步（无触发器）。"""
+    try:
+        async with get_db() as conn:
+            rows = await _fetchall(
+                conn, 'SELECT id FROM rag_chunks WHERE doc_id = ? AND space_id = ?',
+                (doc_id, space_id))
+            ids = [r["id"] for r in rows]
+            await _vec_delete_for_conn(conn, space_id, ids)
+            await _fts_delete_by_chunk_ids(conn, space_id, ids)
+            await conn.execute('DELETE FROM rag_chunks WHERE doc_id = ? AND space_id = ?', (doc_id, space_id))
+            cur = await conn.execute('DELETE FROM rag_documents WHERE id = ? AND space_id = ?', (doc_id, space_id))
+            return cur.rowcount > 0
+    except Exception as e:
+        print(f"Delete rag document error: {e}")
+        return False
+
+
+async def _vec_delete_for_conn(conn: aiosqlite.Connection,
+                               space_id: str, ids: List[str]) -> None:
+    """同连接删 vec 行（失败静默；读路径以主表为准，孤儿由回填/清理兜底）。"""
+    if not ids:
+        return
+    vs = _vec_store_or_none()
+    if vs is None:
+        return
+    try:
+        if await vs.load_extension(conn):
+            await vs.delete_by_chunk_ids(conn, space_id, ids)
+    except Exception:
+        pass
+
+
+async def ensure_rag_source(source_id: str, space_id: str, name: str, kind: str = "local",
+                            target_paths: Any = None, recursive: bool = True,
+                            file_types: Any = None) -> Dict[str, Any]:
+    """获取或创建系统源（论文库 `__papers__` / 网页 `__web__` 用）。幂等。"""
+    if kind not in ("local", "paper", "web"):
+        kind = "local"
+    existing = await get_rag_source(source_id, space_id)
+    if existing:
+        return existing
+    ok = await create_rag_source(
+        source_id, space_id, name, target_paths or [], recursive, file_types or [],
+        embedding_model="", status="ready", kind=kind)
+    if not ok:
+        # 并发创建时另一 worker 已写入，回读即可
+        existing = await get_rag_source(source_id, space_id)
+        if existing:
+            return existing
+        raise RuntimeError(f"创建 RAG 系统源失败: {source_id}")
+    created = await get_rag_source(source_id, space_id)
+    assert created is not None
+    return created
+
+
+def _compile_fts_query(query: str) -> str:
+    """把自然语言查询编译为宽松的 FTS5 OR 查询，避免整句精确短语导致零召回。"""
+    query = (query or "")[:200]
+    latin = re.findall(r"[A-Za-z0-9_]{2,}", query.lower())
+    cjk_runs = re.findall(r"[\u3400-\u9fff]+", query)
+    terms: List[str] = list(latin)
+    for run in cjk_runs:
+        if len(run) <= 3:
+            terms.append(run)
+        else:
+            terms.extend(run[i:i + 3] for i in range(len(run) - 2))
+    # 去重且限制表达式大小；所有 token 都强制 quote，杜绝 FTS 操作符注入。
+    unique = list(dict.fromkeys(t for t in terms if t))[:32]
+    return " OR ".join('"' + t.replace('"', '""') + '"' for t in unique)
+
+
+async def fts_search_chunk_ids(space_id: str, query: str, limit: int = 50,
+                               source_ids: Optional[List[str]] = None) -> List[str]:
+    """FTS5 BM25 粗排：返回命中的 chunk_id 列表（按 bm25 排序）。无 FTS5 返回 [] 由调用方回退。"""
+    query = (query or "").strip()
+    if not query:
+        return []
+    try:
+        async with get_db() as conn:
+            try:
+                row = await _fetchone(
+                    conn, "SELECT name FROM sqlite_master WHERE type='table' AND name='rag_chunks_fts'")
+                if not row:
+                    return []
+            except Exception:
+                return []
+            match_q = _compile_fts_query(query)
+            if not match_q:
+                return []
+            source_sql = ""
+            params: List[Any] = [match_q, space_id]
+            if source_ids is not None:
+                if not source_ids:
+                    return []
+                placeholders = ",".join("?" for _ in source_ids)
+                source_sql = f" AND c.source_id IN ({placeholders})"
+                params.extend(source_ids)
+            params.append(limit)
+            rows = await _fetchall(
+                conn,
+                "SELECT f.chunk_id FROM rag_chunks_fts f "
+                "JOIN rag_chunks c ON c.id = f.chunk_id AND c.space_id = f.space_id "
+                "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
+                "WHERE rag_chunks_fts MATCH ? AND f.space_id = ? "
+                "AND (s.active_generation_id IS NULL OR c.generation_id = s.active_generation_id)"
+                + source_sql + " ORDER BY rank LIMIT ?",
+                params)
+            return [r["chunk_id"] for r in rows]
+    except Exception:
+        return []
+
+
+async def has_rag_vectors(space_id: str = DEFAULT_SPACE,
+                          source_ids: Optional[List[str]] = None) -> bool:
+    """某空间（可限定来源）是否存在带向量的切片（EXISTS 语义，命中即停）。
+
+    供检索入口做 any_vec 门：零向量时直接跳过问题嵌入，省 API token 与
+    本地模型加载（vec0 行只可能来自含向量的切片，同一门适用）。
+    """
+    try:
+        async with get_db() as conn:
+            if source_ids:
+                placeholders = ",".join("?" for _ in source_ids)
+                row = await _fetchone(
+                    conn, "SELECT 1 AS ok FROM rag_chunks WHERE space_id = ?"
+                          f" AND source_id IN ({placeholders})"
+                          " AND embedding IS NOT NULL LIMIT 1",
+                    [space_id, *source_ids])
+            else:
+                row = await _fetchone(
+                    conn, "SELECT 1 AS ok FROM rag_chunks WHERE space_id = ?"
+                          " AND embedding IS NOT NULL LIMIT 1",
+                    [space_id])
+            return row is not None
+    except Exception:
+        return True  # 判定失败不阻断，按老路走（宁可多调一次）
+
+
+async def get_rag_retrieval_profile(space_id: str = DEFAULT_SPACE,
+                                    source_ids: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """仅当活动语料全部落在同一个已登记向量空间时返回该 profile。"""
+    try:
+        async with get_db() as conn:
+            params: List[Any] = [space_id]
+            source_sql = ""
+            if source_ids is not None:
+                if not source_ids:
+                    return None
+                placeholders = ",".join("?" for _ in source_ids)
+                source_sql = f" AND c.source_id IN ({placeholders})"
+                params.extend(source_ids)
+            rows = await _fetchall(
+                conn,
+                "SELECT DISTINCT c.embedding_profile_id AS profile_id FROM rag_chunks c "
+                "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
+                "WHERE c.space_id = ? AND c.embedding IS NOT NULL "
+                "AND c.embedding_profile_id IS NOT NULL "
+                "AND (s.active_generation_id IS NULL OR c.generation_id = s.active_generation_id)"
+                + source_sql + " LIMIT 2",
+                params)
+            ids = [r["profile_id"] for r in rows if r["profile_id"]]
+            if len(rows) != 1 or len(ids) != 1:
+                return None
+            row = await _fetchone(
+                conn, "SELECT * FROM rag_embedding_profiles WHERE id = ?", (ids[0],))
+            return dict(row) if row else None
+    except Exception:
+        return None
 
 
 async def get_rag_stats(space_id: str = DEFAULT_SPACE) -> Dict[str, int]:
     async with get_db() as conn:
         src = await _fetchone(conn, 'SELECT COUNT(*) AS n FROM rag_sources WHERE space_id = ?', (space_id,))
-        docs = await _fetchone(conn, 'SELECT COUNT(*) AS n FROM rag_documents WHERE space_id = ?', (space_id,))
-        chunks = await _fetchone(conn, 'SELECT COUNT(*) AS n FROM rag_chunks WHERE space_id = ?', (space_id,))
+        docs = await _fetchone(conn,
+            'SELECT COUNT(*) AS n FROM rag_documents d JOIN rag_sources s '
+            'ON s.id=d.source_id AND s.space_id=d.space_id WHERE d.space_id = ? '
+            'AND (s.active_generation_id IS NULL OR d.generation_id=s.active_generation_id)', (space_id,))
+        chunks = await _fetchone(conn,
+            'SELECT COUNT(*) AS n FROM rag_chunks c JOIN rag_sources s '
+            'ON s.id=c.source_id AND s.space_id=c.space_id WHERE c.space_id = ? '
+            'AND (s.active_generation_id IS NULL OR c.generation_id=s.active_generation_id)', (space_id,))
         vecs = await _fetchone(conn,
-            "SELECT COUNT(*) AS n FROM rag_chunks WHERE space_id = ? AND embedding IS NOT NULL", (space_id,))
+            "SELECT COUNT(*) AS n FROM rag_chunks c JOIN rag_sources s "
+            "ON s.id=c.source_id AND s.space_id=c.space_id WHERE c.space_id = ? "
+            "AND c.embedding IS NOT NULL AND (s.active_generation_id IS NULL "
+            "OR c.generation_id=s.active_generation_id)", (space_id,))
         return {
             "sourceCount": src["n"] if src else 0,
             "docCount": docs["n"] if docs else 0,
             "chunkCount": chunks["n"] if chunks else 0,
             "vectorCount": vecs["n"] if vecs else 0,
         }
+
+
+# ===========================================================================
+# RAG 索引任务队列（P1 单写者串行化）
+# ===========================================================================
+def _rag_job_to_dict(row) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    try:
+        payload = json.loads(row["payload"]) if row["payload"] else {}
+    except Exception:
+        payload = {}
+    return {
+        "id": row["id"],
+        "spaceId": row["space_id"],
+        "kind": row["kind"],
+        "sourceId": row["source_id"],
+        "dedupeKey": row["dedupe_key"] if "dedupe_key" in row.keys() else None,
+        "payload": payload,
+        "status": row["status"],
+        "claimer": row["claimer"],
+        "leaseExpiresAt": row["lease_expires_at"],
+        "error": row["error"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+async def enqueue_rag_index(space_id: str, source_id: str, paths: List[str],
+                            recursive: bool, file_types: Any) -> str:
+    """本地索引任务入队（同源已有 pending/claimed/running 任务则复用，不重复入队）。
+
+    返回 job_id。调用方（rag_runner.submit_index）入队即返，前端照旧轮询
+    rag_sources 状态；真正的执行由各 worker 的 dispatcher 认领后推进。
+    """
+    return await enqueue_rag_job(
+        space_id, source_id, "local_index",
+        {"paths": list(paths or []), "recursive": bool(recursive),
+         "file_types": list(file_types or [])},
+        dedupe_key=f"local:{source_id}",
+    )
+
+
+async def enqueue_rag_job(space_id: str, source_id: str, kind: str,
+                          payload: Dict[str, Any], *, dedupe_key: Optional[str] = None) -> str:
+    """统一持久队列入口。local/paper/web 均由同一个单写者消费。"""
+    if kind not in ("local_index", "paper_index", "web_index"):
+        raise ValueError(f"unsupported RAG job kind: {kind}")
+    now = int(time.time() * 1000)
+    dedupe_key = dedupe_key or f"{kind}:{source_id}:{json.dumps(payload, sort_keys=True)}"
+    try:
+        async with get_db() as conn:
+            row = await _fetchone(
+                conn, "SELECT * FROM rag_index_jobs WHERE space_id = ? AND dedupe_key = ?"
+                      " AND status IN ('pending','claimed','running')"
+                      " ORDER BY created_at DESC LIMIT 1",
+                (space_id, dedupe_key))
+            if row:
+                return row["id"]
+            job_id = str(uuid.uuid4())
+            await conn.execute('''
+                INSERT INTO rag_index_jobs
+                (id, space_id, kind, source_id, dedupe_key, payload, status,
+                 claimer, lease_expires_at, error, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?)
+            ''', (job_id, space_id, kind, source_id, dedupe_key,
+                  json.dumps(payload or {}, ensure_ascii=False),
+                  now, now))
+            return job_id
+    except Exception as e:
+        print(f"Enqueue rag index error: {e}")
+        raise
+
+
+async def acquire_rag_worker_lease(worker_id: str, lease_sec: int = 300) -> bool:
+    now = int(time.time() * 1000)
+    expires = now + lease_sec * 1000
+    try:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            cur = await conn.execute('''
+                INSERT INTO rag_worker_lease(name, owner, expires_at, updated_at)
+                VALUES ('index-writer', ?, ?, ?)
+                ON CONFLICT(name) DO UPDATE SET owner=excluded.owner,
+                    expires_at=excluded.expires_at, updated_at=excluded.updated_at
+                WHERE rag_worker_lease.owner = excluded.owner
+                   OR rag_worker_lease.expires_at < excluded.updated_at
+            ''', (worker_id, expires, now))
+            return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+async def release_rag_worker_lease(worker_id: str) -> bool:
+    try:
+        async with get_db() as conn:
+            cur = await conn.execute(
+                "DELETE FROM rag_worker_lease WHERE name = 'index-writer' AND owner = ?",
+                (worker_id,))
+            return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+async def claim_rag_index_job(worker_id: str, lease_sec: int = 7200) -> Optional[Dict[str, Any]]:
+    """原子认领一个待执行任务（单条 UPDATE...RETURNING，跨进程互斥）。
+
+    可认领：pending，或 claimed/running 但租约已过期（执行者崩溃后可被接管）。
+    同一时刻全局只有一个认领者拿到任务 → 单写者串行化。
+    """
+    now = int(time.time() * 1000)
+    try:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            cur = await conn.execute('''
+                UPDATE rag_index_jobs SET status = 'claimed', claimer = ?,
+                       lease_expires_at = ?, updated_at = ?
+                WHERE id = (
+                    SELECT id FROM rag_index_jobs
+                    WHERE status = 'pending'
+                       OR ((status = 'claimed' OR status = 'running')
+                           AND (lease_expires_at IS NULL OR lease_expires_at < ?))
+                    ORDER BY created_at ASC LIMIT 1
+                ) RETURNING *
+            ''', (worker_id, now + lease_sec * 1000, now, now))
+            row = await cur.fetchone()
+            return _rag_job_to_dict(row) if row else None
+    except Exception as e:
+        # 锁竞争下认领失败 = 别的 worker 正在认领，本轮空转等待下轮
+        if _is_locked_error(e):
+            return None
+        print(f"Claim rag index error: {e}")
+        return None
+
+
+async def mark_rag_job_running(job_id: str, space_id: str) -> bool:
+    """任务置 running（执行线程启动后调用，区别“已认领未开工”）。"""
+    try:
+        async with get_db() as conn:
+            cur = await conn.execute(
+                "UPDATE rag_index_jobs SET status = 'running', updated_at = ?"
+                " WHERE id = ? AND space_id = ? AND status = 'claimed'",
+                (int(time.time() * 1000), job_id, space_id))
+            return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+async def get_rag_index_job(job_id: str, space_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        async with get_db() as conn:
+            row = await _fetchone(
+                conn, "SELECT * FROM rag_index_jobs WHERE id = ? AND space_id = ?",
+                (job_id, space_id))
+            return _rag_job_to_dict(row) if row else None
+    except Exception:
+        return None
+
+
+async def renew_rag_job_lease(job_id: str, space_id: str, lease_sec: int = 7200) -> bool:
+    """续租（执行中定期调用；任务被取消/改写后返回 False，执行者应停工）。"""
+    try:
+        async with get_db() as conn:
+            cur = await conn.execute(
+                "UPDATE rag_index_jobs SET lease_expires_at = ?, updated_at = ?"
+                " WHERE id = ? AND space_id = ? AND status IN ('claimed','running')",
+                (int(time.time() * 1000) + lease_sec * 1000,
+                 int(time.time() * 1000), job_id, space_id))
+            return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+async def finish_rag_index_job(job_id: str, space_id: str, status: str,
+                               error: Optional[str] = None) -> bool:
+    """任务落终态（done|failed|cancelled）。"""
+    if status not in ("done", "failed", "cancelled"):
+        status = "failed"
+    try:
+        async with get_db() as conn:
+            cur = await conn.execute(
+                "UPDATE rag_index_jobs SET status = ?, error = ?, updated_at = ?"
+                " WHERE id = ? AND space_id = ?"
+                " AND (status != 'cancelled' OR ? = 'cancelled')",
+                (status, error, int(time.time() * 1000), job_id, space_id, status))
+            return cur.rowcount > 0
+    except Exception:
+        return False
+
+
+async def cancel_rag_index_jobs(space_id: str, source_id: str) -> int:
+    """取消某源尚未完成的任务（pending/claimed/running → cancelled），返回条数。
+
+    执行中的认领者通过续租失败或状态轮询感知取消并停工（见 rag_runner）。
+    """
+    try:
+        async with get_db() as conn:
+            cur = await conn.execute(
+                "UPDATE rag_index_jobs SET status = 'cancelled', updated_at = ?"
+                " WHERE space_id = ? AND source_id = ?"
+                " AND status IN ('pending','claimed','running')",
+                (int(time.time() * 1000), space_id, source_id))
+            return cur.rowcount or 0
+    except Exception:
+        return 0
+
+
+# ===========================================================================
+# RAG 向量存储元信息（P2 sqlite-vec vec0）
+# ===========================================================================
+async def get_vec_meta(space_id: str = DEFAULT_SPACE) -> Dict[str, Any]:
+    """取某空间向量存储元信息（无记录回默认值 ready=0，即暴力检索）。"""
+    try:
+        async with get_db() as conn:
+            row = await _fetchone(
+                conn, 'SELECT dims, profile_id, ready, updated_at FROM rag_vec_meta WHERE space_id = ?',
+                (space_id,))
+            if not row:
+                return {"dims": 0, "profileId": None, "ready": False, "updatedAt": 0}
+            return {"dims": row["dims"] or 0, "ready": bool(row["ready"]),
+                    "profileId": row["profile_id"],
+                    "updatedAt": row["updated_at"] or 0}
+    except Exception:
+        return {"dims": 0, "profileId": None, "ready": False, "updatedAt": 0}
+
+
+async def set_vec_meta(space_id: str = DEFAULT_SPACE, dims: int = 0,
+                       ready: bool = False, profile_id: Optional[str] = None) -> bool:
+    """写向量存储元信息（backfill 收尾置 ready=1；维度变化置 ready=0）。"""
+    try:
+        async with get_db() as conn:
+            now = int(time.time() * 1000)
+            await conn.execute(
+                'INSERT INTO rag_vec_meta (space_id, dims, profile_id, ready, updated_at)'
+                ' VALUES (?, ?, ?, ?, ?)'
+                ' ON CONFLICT(space_id) DO UPDATE SET dims=excluded.dims,'
+                ' profile_id=excluded.profile_id, ready=excluded.ready, updated_at=excluded.updated_at',
+                (space_id, dims, profile_id, 1 if ready else 0, now))
+            return True
+    except Exception:
+        return False
 
 
 # ==================== 全局配置（热更新） ====================

@@ -15,7 +15,7 @@
 #   - 与 Windows 版 start.ps1 行为对齐；兼容 bash 3.2（macOS 默认 /bin/bash）。
 #   - 仅使用 POSIX + bash 3.2 特性（无关联数组 / readarray / bash4 专属语法）。
 #   - FastAPI 后端（uvicorn backend.server.main:app）为核心，默认启动。
-#   - 后端以多 worker 进程运行（--workers N，默认 min(CPU, 8)），提升并发与健壮性；
+#   - 后端以多 worker 进程运行（--workers N，默认 min(CPU, 4)），提升并发与健壮性；
 #     不使用 --reload（生产式常驻）。
 #   - 前端开发服务器通过 Vite 反代 /api -> 后端（默认 :8000）。
 #   - LLM 配置：在前端「设置 → LLM API 配置」中填写，写入项目根 .env。
@@ -32,7 +32,7 @@ FRONTEND_PORT=5173
 SKIP_FRONTEND=""
 SKIP_BACKEND=""
 DATA_DIR_ARG=""
-API_WORKERS=""   # 手动指定的 worker 数；留空则自动探测 min(cpu_count, 8)
+API_WORKERS=""   # 手动指定的 worker 数；留空则自动探测 min(cpu_count, 4)
 RESTART=""       # 重启模式：结束后端+前端旧进程后以最新代码重新启动
 
 # ---- 帮助信息 ----
@@ -50,7 +50,7 @@ AI-Research-OS 启动脚本（macOS / Linux）
   -s, --skip-frontend        不启动前端开发服务器（仅起后端）。
   -b, --skip-backend         不启动后端（仅起前端；核心功能需另行提供 /api）。
   -p, --api-port <port>      后端端口（默认 8000）。
-  -w, --api-workers <n>      FastAPI worker 进程数（默认自动探测 min(CPU, 8)）。
+  -w, --api-workers <n>      FastAPI worker 进程数（默认自动探测 min(CPU, 4)）。
   -f, --frontend-port <port> 前端端口（默认 5173）。
   -r, --restart              重启模式：结束后端+前端（如正在运行）后以最新代码重新启动。
   -h, --help                 显示本帮助并退出。
@@ -145,7 +145,7 @@ REQUIREMENTS_HASH=$("$VENV_PYTHON" -c 'import hashlib, pathlib, sys; print(hashl
 INSTALLED_REQUIREMENTS_HASH=$(cat "$REQUIREMENTS_STAMP" 2>/dev/null || true)
 BACKEND_IMPORTS_READY=""
 if [ "$REQUIREMENTS_HASH" = "$INSTALLED_REQUIREMENTS_HASH" ] && \
-   "$VENV_PYTHON" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pypdf, requests, uvicorn" >/dev/null 2>&1; then
+   "$VENV_PYTHON" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pymupdf, requests, sqlite3, sqlite_vec, uvicorn; c=sqlite3.connect(':memory:'); c.enable_load_extension(True); sqlite_vec.load(c); assert c.execute('select vec_version()').fetchone()[0]" >/dev/null 2>&1; then
   BACKEND_IMPORTS_READY=1
 fi
 if [ -z "$BACKEND_IMPORTS_READY" ]; then
@@ -154,7 +154,7 @@ if [ -z "$BACKEND_IMPORTS_READY" ]; then
     echo "后端依赖安装失败，请手动执行: $VENV_PYTHON -m pip install -r backend/requirements.txt" >&2
     exit 1
   }
-  "$VENV_PYTHON" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pypdf, requests, uvicorn" >/dev/null 2>&1 || {
+  "$VENV_PYTHON" -c "import aiosqlite, dotenv, fastapi, jsonschema, multipart, pydantic, pydantic_settings, pymupdf, requests, sqlite3, sqlite_vec, uvicorn; c=sqlite3.connect(':memory:'); c.enable_load_extension(True); sqlite_vec.load(c); assert c.execute('select vec_version()').fetchone()[0]" >/dev/null 2>&1 || {
     echo "后端依赖安装后仍无法导入，请检查上方 pip 输出" >&2
     exit 1
   }
@@ -272,11 +272,13 @@ fi
 echo ""
 echo "启动服务..."
 
-# 多 worker：优先使用 --api-workers，否则自动探测 min(cpu_count, 8)
+# 多 worker：优先使用 --api-workers，否则自动探测 min(cpu_count, 4)。
+# 4 是 I/O 型负载的甜点：更多 workers 只增加 SQLite 锁竞争与内存
+# （本地嵌入模型每进程独立加载一份），吞吐几乎无提升。
 if [ -n "$API_WORKERS" ]; then
   WORKERS="$API_WORKERS"
 else
-  WORKERS=$( "$VENV_PYTHON" -c "import os; print(min(os.cpu_count() or 1, 8))" )
+  WORKERS=$( "$VENV_PYTHON" -c "import os; print(min(os.cpu_count() or 1, 4))" )
 fi
 
 # 启动 FastAPI 后端（使用 .venv 解释器，多 worker 常驻）

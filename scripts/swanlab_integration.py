@@ -6,6 +6,7 @@ SwanLab 数据拉取集成模块
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import List, Dict, Optional, Any
 from datetime import datetime
@@ -44,7 +45,9 @@ class SwanLabIntegration:
                 else:
                     self._api = OpenApi()
             except ImportError:
-                raise ImportError("请安装 swanlab: pip install swanlab")
+                raise ImportError(
+                    f"请安装 swanlab：{sys.executable} -m pip install swanlab "
+                    "（或 pip install -r backend/requirements-optional.txt）")
         return self._api
     
     def test_connection(self) -> Dict[str, Any]:

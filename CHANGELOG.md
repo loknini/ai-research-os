@@ -4,6 +4,22 @@
 
 ---
 
+## [Unreleased] - 2026-09-17 · RAG 2.1 正确性与可恢复性
+
+- 嵌入向量按 provider/model/revision/dims/query instruction 指纹隔离；批处理中禁止 API/本地模型静默互换，配置不兼容时降级 FTS5。
+- local 重建采用 generation staging + 原子激活，构建失败、取消或进程崩溃不再先删除可用旧索引。
+- local/paper/web 统一进入持久队列；新增数据库全局 writer lease，修复多 Worker 可同时认领不同任务及跨线程 event loop 续租失效。
+- 检索改为全语料候选优先：FTS5/sqlite-vec top-N，扩展缺失时 keyset 分页 + 有界 heap；移除 3000 切片截断。
+- RAG 三张核心表迁移为 `(space_id,id)` 复合主键；FTS 写删与主表同事务，查询只见活动代。
+- sqlite-vec 派生表使用空间+切片的内部复合键，FTS/vec 批量删除同时限定 `space_id`，避免不同空间同 ID 时覆盖或误删。
+- 网页索引增加 DNS/重定向逐跳 SSRF 防护；本地模型关闭 `trust_remote_code`、只加载 safetensors，并区分 query instruction 与 document embedding。
+- `sqlite-vec==0.1.9` 进入默认后端依赖；启动预检会实际加载扩展并查询版本，避免安装成功但扩展不可加载时延迟到检索阶段才失败，运行时仍保留 FTS5/流式余弦降级。
+- 备份导出改用 SQLite Online Backup API 生成 WAL 一致性快照，排除实例心跳、WAL/SHM 与备份输出；导入前的回滚快照采用同一规则，修复 Windows 文件占用导致的导出失败。
+- 公式历史更新/删除收回共享异步数据库层，不再通过子进程争用 SQLite 写锁；只读 CLI 子进程跳过后端已完成的重复迁移，修复请求偶发卡满 60 秒并误报 500，独立 CLI 仍自动初始化数据库。
+- 新增 `qa_verify_rag_v21.py`，覆盖旧库迁移、空间隔离、原子换代、单写者、3000+ 全库召回与 SSRF。
+
+---
+
 ## [0.5.0] - 2026-08-28 · 实际 Agent 研发工作区
 
 - 新增内置软件研发团队与固定“分析 → 实现 → 测试 → 审查”流程；角色提示词、模型和参数可配置，静态 DAG 与旧 roles 接口保持兼容。

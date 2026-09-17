@@ -1,15 +1,13 @@
 """Formula (OCR) integration routes.
 
-``recognize`` shells out to ``scripts/formula_service.py`` (visual model);
-the other endpoints operate on the local ``formula_history`` table via the
-same script's CLI actions.  All requests resolve ``space_id`` and forward it to
-the subprocess via the ``SPACE_ID`` environment variable so formula history
-stays isolated per space.
+``recognize`` shells out to ``scripts/formula_service.py`` (visual model).
+History reads/stats retain the compatible CLI path; writes use the shared
+async database layer directly, avoiding a subprocess/SQLite lock inversion.
+All operations remain isolated by ``space_id``.
 """
 from __future__ import annotations
 
 import base64
-import json
 import os
 import tempfile
 from typing import List, Optional
@@ -18,11 +16,16 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .. import config
+from .. import config, db
 from ..deps import get_space_id
 from ..helpers import run_script
 
 router = APIRouter(prefix="/api/formula", tags=["formula"])
+
+
+def _script_env(space_id: str) -> dict[str, str]:
+    """Child-process context; app lifespan has already initialized the DB."""
+    return {"SPACE_ID": space_id, "AIROS_DB_ALREADY_INITIALIZED": "1"}
 
 
 class RecognizeRequest(BaseModel):
@@ -73,7 +76,7 @@ async def recognize(req: RecognizeRequest, space_id: str = Depends(get_space_id)
         turbo_flag = "true" if req.useTurbo else "false"
         return run_script(
             "formula_service.py", "test", image_path, req.token or "", turbo_flag,
-            env_extra={"SPACE_ID": space_id},
+            env_extra=_script_env(space_id),
         )
     except Exception as exc:
         return {"success": False, "error": "RECOGNIZE_FAILED", "message": str(exc)}
@@ -89,7 +92,8 @@ async def recognize(req: RecognizeRequest, space_id: str = Depends(get_space_id)
 async def history(favorites: bool = False, limit: int = 100, space_id: str = Depends(get_space_id)):
     fav_flag = "true" if favorites else "false"
     return run_script(
-        "formula_service.py", "history", str(limit), fav_flag, env_extra={"SPACE_ID": space_id}
+        "formula_service.py", "history", str(limit), fav_flag,
+        env_extra=_script_env(space_id)
     )
 
 
@@ -117,32 +121,54 @@ async def update_history(req: HistoryUpdate, space_id: str = Depends(get_space_i
                 "message": "at least one supported update field is required",
             },
         )
-    result = run_script(
-        "formula_service.py", "history_update", record_id, json.dumps(updates),
-        env_extra={"SPACE_ID": space_id},
-    )
-    if result.get("notFound") is True:
-        return JSONResponse(status_code=404, content={**result, "error": "NOT_FOUND"})
-    if result.get("success") is False:
-        return JSONResponse(status_code=500, content=result)
-    return result
+    try:
+        updated = await db.database.update_formula_history_record(
+            record_id, updates, space_id)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "updated": False, "error": str(exc)},
+        )
+    if not updated:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "success": False,
+                "updated": False,
+                "notFound": True,
+                "error": "NOT_FOUND",
+            },
+        )
+    return {"success": True, "updated": True}
 
 
 @router.delete("/history/{record_id}")
 async def delete_history(record_id: str, space_id: str = Depends(get_space_id)):
-    result = run_script(
-        "formula_service.py", "history_delete", record_id, env_extra={"SPACE_ID": space_id}
-    )
-    if result.get("notFound") is True:
-        return JSONResponse(status_code=404, content={**result, "error": "NOT_FOUND"})
-    if result.get("success") is False:
-        return JSONResponse(status_code=500, content=result)
-    return result
+    try:
+        deleted = await db.database.delete_formula_history_record(
+            record_id, space_id)
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "deleted": False, "error": str(exc)},
+        )
+    if not deleted:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "success": False,
+                "deleted": False,
+                "notFound": True,
+                "error": "NOT_FOUND",
+            },
+        )
+    return {"success": True, "deleted": True}
 
 
 @router.get("/stats")
 async def stats(space_id: str = Depends(get_space_id)):
-    return run_script("formula_service.py", "stats", env_extra={"SPACE_ID": space_id})
+    return run_script(
+        "formula_service.py", "stats", env_extra=_script_env(space_id))
 
 
 __all__ = ["router"]

@@ -28,6 +28,7 @@ import {
   Image,
   MoreHorizontal,
   PanelLeft,
+  Square,
 } from 'lucide-react'
 import { Conversation, Message, ReasoningStep, RagSource, ChatContentPart } from './types'
 import {
@@ -40,6 +41,7 @@ import {
   switchBranchAPI,
 } from './services/chatApi'
 import { chatGenerationManager } from './services/chatGenerationManager'
+import type { GenPhase } from './services/chatGenerationManager'
 import MessageContent from './components/MessageContent'
 import { ContextRing } from './components/ContextRing'
 import { useAppStore } from '@/stores/appStore'
@@ -362,6 +364,25 @@ export default function ChatHub() {
   // 是否正在生成回复
   const [isGenerating, setIsGenerating] = useState(false)
 
+  // 生成阶段（retrieving/working/writing）+ 已耗时秒数：解决"长检索无声像卡死"
+  const [genPhase, setGenPhase] = useState<GenPhase | null>(null)
+  const [genElapsed, setGenElapsed] = useState(0)
+  const genStartRef = useRef<number>(0)
+
+  // 生成开始/结束时起停计时器（1s 一跳；unmount/结束即清）
+  useEffect(() => {
+    if (!isGenerating) {
+      setGenElapsed(0)
+      return
+    }
+    genStartRef.current = Date.now()
+    setGenElapsed(0)
+    const t = setInterval(() => {
+      setGenElapsed(Math.floor((Date.now() - genStartRef.current) / 1000))
+    }, 1000)
+    return () => clearInterval(t)
+  }, [isGenerating])
+
   // 当前流式内容
   const [streamingContent, setStreamingContent] = useState('')
 
@@ -474,7 +495,7 @@ export default function ChatHub() {
   // 知识增强（原 RAG 文档检索）：按会话持久化（存 conversation.metadata.rag 兼容旧键，显示为“知识增强”）
   const [ragEnabled, setRagEnabled] = useState(false)
   const [ragSourceIds, setRagSourceIds] = useState<string[]>([])
-  const [ragSourcesList, setRagSourcesList] = useState<{ id: string; name: string }[]>([])
+  const [ragSourcesList, setRagSourcesList] = useState<{ id: string; name: string; kind?: string }[]>([])
   const [ragPickerOpen, setRagPickerOpen] = useState(false)
 
   // 切换知识增强开关（持久化由 persist effect 自动处理）
@@ -492,7 +513,7 @@ export default function ChatHub() {
     fetch('/api/rag/sources')
       .then((res) => res.json())
       .then((data) => {
-        const list = (data.sources || []).map((s: any) => ({ id: s.id, name: s.name }))
+        const list = (data.sources || []).map((s: any) => ({ id: s.id, name: s.name, kind: s.kind || 'local' }))
         setRagSourcesList(list)
         // 迁移旧数据：空数组曾表示“全选”，新逻辑空=零选，自动转为全选显式列表
         if (list.length > 0) {
@@ -640,9 +661,11 @@ export default function ChatHub() {
       const g = chatGenerationManager.getActive(currentConversationId)
       if (!g) {
         setIsGenerating(false)
+        setGenPhase(null)
         return
       }
       setIsGenerating(g.status === 'running')
+      setGenPhase(g.status === 'running' ? g.phase : null)
       setStreamingContent(g.streamingContent)
       setReasoningSteps(g.reasoningSteps)
       setStreamingRagSources(g.ragSources || [])
@@ -659,6 +682,7 @@ export default function ChatHub() {
           setStreamingContent('')
           setReasoningSteps([])
           setIsGenerating(false)
+          setGenPhase(null)
           setStreamPanelOpen(true)
           chatGenerationManager.clear(currentConversationId)
           flushing = false
@@ -862,73 +886,109 @@ export default function ChatHub() {
     [currentConversationId, ragEnabled, ragSourceIds]
   )
 
+  // 发送防重入锁：state 异步atch不上同 tick 连击（manager 锁只保生成不保气泡），
+  // 用 ref 做同步互斥；发起生成后即放行，由 isGenerating + manager 锁接管后续。
+  const sendingRef = useRef(false)
+
   // 发送消息
   const sendMessage = useCallback(async () => {
+    if (sendingRef.current) return
     const text = input.trim()
     if ((!text && pendingImages.length === 0) || isGenerating) return
+    sendingRef.current = true
+    // 乐观置位：按钮立刻禁用 + 思考提示秒出，不再等首个 SSE 事件
+    setIsGenerating(true)
 
     // 没有当前会话时，在同一次发送动作中创建并继续发送首条消息。
     let targetId = currentConversationId
     let targetConversation = currentConversation
-    if (!targetId) {
-      const created = await createNewConversation()
-      if (!created) return
-      targetId = created.id
-      targetConversation = created
-    }
-    if (!targetConversation || targetConversation.id !== targetId) {
-      targetConversation = await fetchConversationDetail(targetId)
-      if (!targetConversation) {
-        showToast('会话详情尚未加载，请重试', 'error')
-        return
+    try {
+      if (!targetId) {
+        const created = await createNewConversation()
+        if (!created) return
+        targetId = created.id
+        targetConversation = created
+      }
+      if (!targetConversation || targetConversation.id !== targetId) {
+        targetConversation = await fetchConversationDetail(targetId)
+        if (!targetConversation) {
+          showToast('会话详情尚未加载，请重试', 'error')
+          return
+        }
+      }
+
+      // 构造多模态 content：有图片时组装 [text?, ...image_url]，无图时保持纯文本（向后兼容）
+      const content: string | ChatContentPart[] =
+        pendingImages.length > 0
+          ? [...(text ? [{ type: 'text' as const, text }] : []), ...pendingImages]
+          : text
+
+      const userMessage: Message = {
+        id: generateId(),
+        role: 'user',
+        content,
+        timestamp: Date.now(),
+      }
+
+      // 保存用户消息到后端：失败只警告（15s 超时），照常进入生成；
+      // 生成结束落库 assistant 消息，本地气泡不受影响。
+      try {
+        await addMessageAPI(targetId, userMessage)
+      } catch (e) {
+        console.error('addMessage failed, continue generation anyway:', e)
+        showToast('消息存档失败，仍继续生成（刷新后该条可能缺失）', 'error')
+      }
+
+      // 更新本地状态
+      const updatedMessages = [...(targetConversation?.messages || []), userMessage]
+      setCurrentConversation({ ...targetConversation, messages: updatedMessages })
+
+      // 如果是第一条用户消息，更新标题：fire-and-forget，不阻塞生成启动
+      // （历史事故：后端慢时该请求 hang 住整条发送链，表现为气泡已出、输入框没清、生成没开始）。
+      const isFirstUserMessage = updatedMessages.filter((m) => m.role === 'user').length === 1
+      if (isFirstUserMessage) {
+        const titleBase = text || '图片消息'
+        const newTitle = titleBase.slice(0, 20) + (titleBase.length > 20 ? '...' : '')
+        updateConversationAPI(targetId, { title: newTitle }).then((ok) => {
+          if (ok) {
+            setConversations((prev) =>
+              prev.map((c) => (c.id === targetId ? { ...c, title: newTitle } : c))
+            )
+          }
+        }).catch((e) => console.error('update title failed:', e))
+      }
+
+      setInput('')
+      setPendingImages([])
+
+      // 复用核心流式生成逻辑；四宫格新建时优先用新建会话的 metadata（已同步全量源），避免首条无增强
+      let rag: { enabled: boolean; sourceIds: string[] } | undefined
+      const metaRag = (targetConversation as any)?.metadata?.rag
+      if (metaRag?.enabled) {
+        rag = { enabled: true, sourceIds: metaRag.sourceIds || [] }
+      } else if (ragEnabled) {
+        rag = { enabled: true, sourceIds: ragSourceIds }
+      }
+      const startPromise = chatGenerationManager.start(updatedMessages, targetId, rag)
+      // 发起即放行 ref（后续由 isGenerating + manager 锁接管），再等待生成结束
+      sendingRef.current = false
+      await startPromise
+    } finally {
+      sendingRef.current = false
+      // 生成根本没启动起来（start 抛错）才兜底复位；正常生成中由订阅同步保持 true
+      const g = chatGenerationManager.getActive(targetId ?? '')
+      if (!g || g.status !== 'running') {
+        setIsGenerating(false)
+        setGenPhase(null)
       }
     }
-
-    // 构造多模态 content：有图片时组装 [text?, ...image_url]，无图时保持纯文本（向后兼容）
-    const content: string | ChatContentPart[] =
-      pendingImages.length > 0
-        ? [...(text ? [{ type: 'text' as const, text }] : []), ...pendingImages]
-        : text
-
-    const userMessage: Message = {
-      id: generateId(),
-      role: 'user',
-      content,
-      timestamp: Date.now(),
-    }
-
-    // 保存用户消息到后端
-    await addMessageAPI(targetId, userMessage)
-
-    // 更新本地状态
-    const updatedMessages = [...(targetConversation?.messages || []), userMessage]
-    setCurrentConversation({ ...targetConversation, messages: updatedMessages })
-
-    // 如果是第一条用户消息，更新标题
-    const isFirstUserMessage = updatedMessages.filter((m) => m.role === 'user').length === 1
-    if (isFirstUserMessage) {
-      const titleBase = text || '图片消息'
-      const newTitle = titleBase.slice(0, 20) + (titleBase.length > 20 ? '...' : '')
-      await updateConversationAPI(targetId, { title: newTitle })
-      setConversations((prev) =>
-        prev.map((c) => (c.id === targetId ? { ...c, title: newTitle } : c))
-      )
-    }
-
-    setInput('')
-    setPendingImages([])
-
-    // 复用核心流式生成逻辑；四宫格新建时优先用新建会话的 metadata（已同步全量源），避免首条无增强
-    let rag: { enabled: boolean; sourceIds: string[] } | undefined
-    const metaRag = (targetConversation as any)?.metadata?.rag
-    if (metaRag?.enabled) {
-      rag = { enabled: true, sourceIds: metaRag.sourceIds || [] }
-    } else if (ragEnabled) {
-      rag = { enabled: true, sourceIds: ragSourceIds }
-    }
-    await chatGenerationManager.start(updatedMessages, targetId, rag)
   }, [input, pendingImages, isGenerating, currentConversationId, currentConversation,
     createNewConversation, ragEnabled, ragSourceIds, showToast])
+
+  // 取消当前生成（发送键在生成中变为 Stop；manager  abort 流并丢弃半成品）
+  const handleCancel = useCallback(() => {
+    if (currentConversationId) chatGenerationManager.cancel(currentConversationId)
+  }, [currentConversationId])
 
   // 进入/退出某条消息的内联编辑态（仅用于「编辑最新提问」）
   const startEditMessage = useCallback((message: Message) => {
@@ -1285,6 +1345,18 @@ export default function ChatHub() {
             <h2 className="font-semibold">
               {currentConversation?.title || 'AI 助手'}
             </h2>
+            {/* 会话内新建对话：免去点开列表再新建（旧生成在后台继续跑，由全局观察器提醒） */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              title="新建对话"
+              onClick={() => {
+                void createNewConversation().then(() => inputRef.current?.focus())
+              }}
+            >
+              <Plus className="w-4 h-4" />
+            </Button>
             {branchTip && (
               <span
                 className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary"
@@ -1367,6 +1439,9 @@ export default function ChatHub() {
                                     }}
                                   />
                                   <span className="truncate">{s.name}</span>
+                                  <span className="ml-auto text-[10px] text-muted-foreground shrink-0">
+                                    {s.kind === 'paper' ? '论文库' : s.kind === 'web' ? '网页' : '本地'}
+                                  </span>
                                 </label>
                               )
                             })}
@@ -1646,7 +1721,15 @@ export default function ChatHub() {
                       !reasoningSteps.length && (
                         <div className="flex items-center gap-3 h-10 px-4 rounded-2xl bg-muted/80 max-w-[80%]">
                           <Loader2 className="w-4 h-4 animate-spin text-primary" />
-                          <span className="text-sm text-muted-foreground">AI 正在思考</span>
+                          <span className="text-sm text-muted-foreground">
+                            {genPhase === 'retrieving'
+                              ? '正在检索文档'
+                              : genPhase === 'working'
+                                ? '正在调用工具'
+                                : 'AI 正在思考'}
+                            …{genElapsed}s
+                            {genElapsed >= 60 && '（仍在处理，可取消）'}
+                          </span>
                           <span className="flex gap-0.5">
                             <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '0ms' }} />
                             <span className="w-1.5 h-1.5 rounded-full bg-primary/60 animate-bounce" style={{ animationDelay: '120ms' }} />
@@ -1727,13 +1810,14 @@ export default function ChatHub() {
                 }}
               />
               <Button
-                onClick={sendMessage}
-                disabled={(!input.trim() && pendingImages.length === 0) || isGenerating}
+                onClick={isGenerating ? handleCancel : sendMessage}
+                disabled={!isGenerating && (!input.trim() && pendingImages.length === 0)}
                 size="icon"
                 className="h-8 w-8 flex-shrink-0"
+                title={isGenerating ? '停止生成' : '发送'}
               >
                 {isGenerating ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <Square className="w-4 h-4" />
                 ) : (
                   <Send className="w-4 h-4" />
                 )}

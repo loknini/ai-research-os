@@ -1,6 +1,6 @@
 {
   "version": "0.5.0",
-  "tables": 32,
+  "tables": 36,
   "tableList": [
     "papers",
     "cron_jobs",
@@ -33,9 +33,13 @@
     "rag_sources",
     "rag_documents",
     "rag_chunks",
+    "rag_embedding_profiles",
+    "rag_index_jobs",
+    "rag_worker_lease",
+    "rag_vec_meta",
     "global_config"
   ],
-  "spaceTables": 30,
+  "spaceTables": 31,
   "routers": 22,
   "routerList": [
     "agent",
