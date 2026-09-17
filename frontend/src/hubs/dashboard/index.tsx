@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useMemo, useState, useEffect, useCallback } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { Header } from '@/components/layout/header'
@@ -87,11 +88,11 @@ export default function Dashboard() {
   const loadData = useCallback(async () => {
     try {
       const [tasksRes, projectsRes, notesRes, swanlabCacheRes, agentRunsRes] = await Promise.all([
-        fetch('/api/tasks'),
-        fetch('/api/projects'),
-        fetch('/api/notes'),
-        fetch('/api/swanlab/cache'),
-        fetch('/api/agent/runs?limit=5'),
+        apiRequest('/api/tasks'),
+        apiRequest('/api/projects'),
+        apiRequest('/api/notes'),
+        apiRequest('/api/swanlab/cache'),
+        apiRequest('/api/agent/runs?limit=5'),
       ])
 
       if (tasksRes.ok) {

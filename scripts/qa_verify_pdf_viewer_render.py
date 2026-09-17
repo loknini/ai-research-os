@@ -11,7 +11,7 @@
   2026-08-26 (2): Vite dev 模式 worker 加载失败（改用 public/ 静态资源，由 worker QA 覆盖）
   2026-08-26 (1): `<Document>` 被 `!loading` 条件渲染挡住 → 死循环
 
-跑法：python scripts/qa_verify_pdf_viewer_render.py
+跑法：python -m scripts.qa_verify_pdf_viewer_render
 """
 from __future__ import annotations
 

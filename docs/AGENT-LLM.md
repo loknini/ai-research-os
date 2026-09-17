@@ -227,7 +227,7 @@ backend/skills/
 name: arxiv_reader
 description: 从 arXiv 抓取论文，返回结构化元数据。
 type: tool                      # tool | instruction
-command: ["python", "scripts/fetch_arxiv.py"]
+command: ["python", "-m", "scripts.fetch_arxiv"]
 timeout: 60
 enabled: true
 parameters: {"type":"object","properties":{...},"required":[]}

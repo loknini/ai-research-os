@@ -19,8 +19,6 @@ from pathlib import Path
 TMP = Path(tempfile.mkdtemp(prefix="qa_convid_"))
 os.environ["DATA_DIR"] = str(TMP)  # 必须在 import app 之前设置
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from fastapi.testclient import TestClient  # noqa: E402
 from scripts import database  # noqa: E402
 database.configure_paths(data_dir=TMP, db_path=TMP / "ai_research_os.db")  # noqa: E402

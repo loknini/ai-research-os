@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useEffect, useMemo, useState } from 'react'
 import { AgentWorkflow } from './agent-workflow'
 import { Button } from '@/components/ui/button'
@@ -29,7 +30,7 @@ export function TeamContextRunDialog({
   const ids = useMemo(() => Array.from(selected).slice(0, 20), [selected])
 
   useEffect(() => {
-    fetch('/api/agent/teams').then(response => response.json()).then(data => {
+    apiRequest('/api/agent/teams').then(response => response.json()).then(data => {
       setTeams((data.teams || []).filter((team: TeamOption) => team.acceptedContexts?.includes(kind)))
     }).catch(() => setTeams([]))
   }, [kind])

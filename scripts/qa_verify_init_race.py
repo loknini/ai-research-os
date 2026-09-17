@@ -3,7 +3,7 @@
 Spawns N processes that each call scripts.database.init_db() concurrently
 against a FRESH temp DATA_DIR, mirroring uvicorn --workers N startup.
 
-Usage: .venv/Scripts/python.exe scripts/qa_verify_init_race.py
+Usage: .venv/Scripts/python.exe -m scripts.qa_verify_init_race
 """
 import os
 import sys
@@ -11,7 +11,6 @@ import tempfile
 import multiprocessing as mp
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
 # 固定共享目录：Windows spawn 子进程会重新执行本模块顶层代码，若用 mkdtemp 每个
 # worker 会拿到独立 DB，无法复现锁竞争。固定路径确保所有进程复用同一 DB。
 SHARED_DIR = os.path.join(tempfile.gettempdir(), "airos_init_race_shared")

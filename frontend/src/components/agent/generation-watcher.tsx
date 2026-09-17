@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useEffect, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useGenerationStore, type RunStatus } from '@/stores/generationStore'
@@ -48,7 +49,7 @@ export function GenerationWatcher() {
         // agent 类需要轮询后端；chat 类状态由前端在流结束时写入，无需轮询
         if (gen.type === 'agent') {
           try {
-            const resp = await fetch(`/api/agent/runs/${id}`)
+            const resp = await apiRequest(`/api/agent/runs/${id}`)
             if (!resp.ok) continue
             const data = await resp.json()
             const s: RunStatus = data?.run?.status

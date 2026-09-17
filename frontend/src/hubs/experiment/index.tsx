@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Header } from '@/components/layout/header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -94,7 +95,7 @@ export default function ExperimentHub({ embedded = false }: { embedded?: boolean
   const loadCachedData = useCallback(async () => {
     setIsLoading(true)
     try {
-      const response = await fetch('/api/swanlab/cache')
+      const response = await apiRequest('/api/swanlab/cache')
       if (response.ok) {
         const data = await response.json()
         if (data.success && data.data) {
@@ -115,7 +116,7 @@ export default function ExperimentHub({ embedded = false }: { embedded?: boolean
   // 检查 SwanLab 状态
   const checkStatus = useCallback(async () => {
     try {
-      const response = await fetch('/api/swanlab/status')
+      const response = await apiRequest('/api/swanlab/status')
       if (response.ok) {
         const data = await response.json()
         if (data.success) {
@@ -140,7 +141,7 @@ export default function ExperimentHub({ embedded = false }: { embedded?: boolean
 
     setIsFetching(true)
     try {
-      const response = await fetch('/api/swanlab/fetch', {
+      const response = await apiRequest('/api/swanlab/fetch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})

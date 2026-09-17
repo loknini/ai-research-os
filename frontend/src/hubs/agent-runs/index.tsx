@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Header } from '@/components/layout/header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -181,7 +182,7 @@ export default function AgentRunsHub() {
   const loadRuns = useCallback(async () => {
     setLoading(true)
     try {
-      const resp = await fetch('/api/agent/runs?limit=100')
+      const resp = await apiRequest('/api/agent/runs?limit=100')
       const data = await resp.json()
       if (data.success) setRuns(data.runs || [])
     } catch {
@@ -205,7 +206,7 @@ export default function AgentRunsHub() {
   // 拉取运行详情（不重置 tab 状态，供自动刷新复用）
   const fetchDetail = useCallback(async (id: string) => {
     try {
-      const resp = await fetch(`/api/agent/runs/${id}`)
+      const resp = await apiRequest(`/api/agent/runs/${id}`)
       const data = await resp.json()
       if (data.success) {
         setDetail({ run: data.run, events: data.events || [], nodes: data.nodes || [], primaryOutput: data.primaryOutput })
@@ -239,7 +240,7 @@ export default function AgentRunsHub() {
   const loadApprovals = useCallback(async (id: string) => {
     setApprovalsLoading(true)
     try {
-      const resp = await fetch(`/api/agent/runs/${id}/approvals`)
+      const resp = await apiRequest(`/api/agent/runs/${id}/approvals`)
       const data = await resp.json()
       if (data.success) setApprovals(data.approvals || [])
     } catch {
@@ -254,7 +255,7 @@ export default function AgentRunsHub() {
     if (replayLoaded) return
     setReplayLoading(true)
     try {
-      const resp = await fetch(`/api/agent/runs/${id}/replay`)
+      const resp = await apiRequest(`/api/agent/runs/${id}/replay`)
       const data = await resp.json()
       if (data.success) {
         setReplay(data.replay || [])
@@ -272,7 +273,7 @@ export default function AgentRunsHub() {
   // 工具审批决策
   const decideApproval = useCallback(async (runId: string, approvalId: string, approved: boolean) => {
     try {
-      const resp = await fetch(`/api/agent/runs/${runId}/approvals/${approvalId}`, {
+      const resp = await apiRequest(`/api/agent/runs/${runId}/approvals/${approvalId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ approved })
@@ -300,7 +301,7 @@ export default function AgentRunsHub() {
 
   const cancelRun = useCallback(async (id: string) => {
     try {
-      await fetch(`/api/agent/runs/${id}/cancel`, { method: 'POST' })
+      await apiRequest(`/api/agent/runs/${id}/cancel`, { method: 'POST' })
       toast({ title: '已发送取消请求', variant: 'info' })
       loadRuns()
     } catch {
@@ -314,7 +315,7 @@ export default function AgentRunsHub() {
     setSavingNote(true)
     try {
       const parsed = parsePrimaryOutput(detail.primaryOutput)
-      const resp = await fetch('/api/notes', {
+      const resp = await apiRequest('/api/notes', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

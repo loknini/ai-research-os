@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
@@ -165,7 +166,7 @@ export function CommandPalette({ isGlobal = true }: CommandPaletteProps) {
 
     setIsSearching(true)
     try {
-      const response = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&limit=20`)
+      const response = await apiRequest(`/api/search?q=${encodeURIComponent(searchQuery)}&limit=20`)
       const data = await response.json()
 
       if (data.success) {

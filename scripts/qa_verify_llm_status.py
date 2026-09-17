@@ -10,16 +10,11 @@
 from __future__ import annotations
 
 import asyncio
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
-
-from backend.server import health  # noqa: E402
-from backend.server.llm import LLMClient  # noqa: E402
+from backend.server import health
+from backend.server.llm import LLMClient
 
 
 def make_settings(base_url: str = "https://example.test/v1", api_key: str = "secret"):
@@ -36,21 +31,26 @@ def make_settings(base_url: str = "https://example.test/v1", api_key: str = "sec
 
 
 def main() -> None:
-    client = LLMClient(make_settings())
-    assert callable(getattr(client, "_reachable", None))
+    # 隔离本机 .env/数据库中的真实配置，强制使用测试 settings。
+    with patch(
+        "backend.server.llm.config.get_effective_llm_settings",
+        side_effect=RuntimeError("isolated QA settings"),
+    ):
+        client = LLMClient(make_settings())
+        assert callable(getattr(client, "_reachable", None))
 
-    fake_socket = MagicMock()
-    with patch("backend.server.llm.socket.create_connection", return_value=fake_socket) as connect:
-        assert client._reachable() is True
-        assert client.is_available() is True
-        assert client.status()["reachable"] is True
-        connect.assert_called_with(("example.test", 443), timeout=3)
+        fake_socket = MagicMock()
+        with patch("backend.server.llm.socket.create_connection", return_value=fake_socket) as connect:
+            assert client._reachable() is True
+            assert client.is_available() is True
+            assert client.status()["reachable"] is True
+            connect.assert_called_with(("example.test", 443), timeout=3)
 
-    invalid = LLMClient(make_settings(base_url="not-a-url"))
-    assert invalid._reachable() is False
+        invalid = LLMClient(make_settings(base_url="not-a-url"))
+        assert invalid._reachable() is False
 
-    with patch("backend.server.llm.socket.create_connection", side_effect=OSError("offline")):
-        assert client._reachable() is False
+        with patch("backend.server.llm.socket.create_connection", side_effect=OSError("offline")):
+            assert client._reachable() is False
 
     # 端点处理函数使用全局 client；打桩探测本身并清空 TTL 缓存，确保不触网。
     health._reach_cache.update(ts=0.0, val=False)

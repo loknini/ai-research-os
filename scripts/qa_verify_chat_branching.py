@@ -13,7 +13,6 @@ import sys
 import tempfile
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
 
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="airos_branch_")
 os.environ.setdefault("PYTHONUTF8", "1")

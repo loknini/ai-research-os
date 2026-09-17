@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Code2, Loader2, Play, RefreshCw, Square, GitCompare } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -66,7 +67,7 @@ export function DevelopmentWorkspace({ project, defaultTeamId, autoOpen = false 
     if (!open) return
     void validateWorkspace(project.id).then(setWorkspace).catch(error =>
       toast({ title: '工作区不可用', description: String(error), variant: 'error' }))
-    void fetch('/api/agent/teams').then(response => response.json()).then(data =>
+    void apiRequest('/api/agent/teams').then(response => response.json()).then(data =>
       setTeams((data.teams || []).filter((team: TeamOption) =>
         team.workflowType === 'development' && team.acceptedContexts?.includes('software_project'))))
     void refreshRuns()

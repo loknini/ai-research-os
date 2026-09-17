@@ -19,10 +19,11 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime
 from pathlib import Path
 
-# 添加父目录到路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if __package__ in (None, ""):
+    print("请从项目根目录运行：python -m scripts.formula_service <action> [params]", file=sys.stderr)
+    raise SystemExit(2)
 
-import database
+from scripts import database
 
 # 当前空间（由后端 router 经环境变量注入；缺省走默认空间，保持向后兼容）。
 SPACE_ID = os.environ.get("SPACE_ID", database.DEFAULT_SPACE)

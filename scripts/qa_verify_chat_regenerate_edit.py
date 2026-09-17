@@ -15,7 +15,6 @@ import sys
 import tempfile
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
 
 # isolated temp data dir so the user's real DB is untouched
 os.environ["DATA_DIR"] = tempfile.mkdtemp(prefix="airos_regen_")

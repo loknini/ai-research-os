@@ -2,7 +2,7 @@
 """P2 向量存储验证（隔离库，零网络）：双写回填 / KNN 与暴力一致 /
 删除同步 / 维度失配回退 / 源过滤 /读路径切换。
 
-运行：python scripts/qa_verify_vec.py
+运行：python -m scripts.qa_verify_vec
 """
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ import tempfile
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT))
 
 TMP = Path(tempfile.mkdtemp(prefix="vec_qa_"))
 import scripts.database as database  # noqa: E402
@@ -195,14 +194,7 @@ async def test_retrieve_switch() -> None:
 
 
 async def test_backfill() -> None:
-    import sys as _sys
-    sys.path.insert(0, str(PROJECT / "scripts"))
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(
-        "backfill_vec", str(PROJECT / "scripts" / "backfill_vec.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    from scripts import backfill_vec as mod
     # 模拟存量：清空 vec 表但保留 JSON（维度一致时 backfill 应补回）
     from backend.server import vec_store
 

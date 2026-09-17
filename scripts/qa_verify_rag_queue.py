@@ -2,7 +2,7 @@
 """RAG 索引单写者队列验证（P1）：入队去重 / 原子认领互斥 / 租约接管 /
 取消停工 / dispatcher 端到端（隔离库，零网络）。
 
-运行：python scripts/qa_verify_rag_queue.py
+运行：python -m scripts.qa_verify_rag_queue
 """
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ import time
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT))
 
 TMP = Path(tempfile.mkdtemp(prefix="rag_q_"))
 import scripts.database as database  # noqa: E402

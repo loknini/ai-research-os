@@ -7,7 +7,7 @@
   * 切片落库与向量写入
   * 检索 + 带引用回答（向量 / 关键词双路）
   * 源 CRUD 与级联删除
-运行：python scripts/qa_verify_rag.py
+运行：python -m scripts.qa_verify_rag
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ import tempfile
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT))
 
 TMP = Path(tempfile.mkdtemp(prefix="rag_qa_"))
 

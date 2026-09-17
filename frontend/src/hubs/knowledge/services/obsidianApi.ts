@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 // Obsidian Vault / file API service for the Knowledge Hub.
 // Extracted from the original monolithic index.tsx (fetch calls inside
 // loadObsidianVaults / loadObsidianFiles / handleScanVault / handleAddVault at
@@ -29,7 +30,7 @@ export interface AddVaultResult {
 
 /** Fetch all registered Obsidian Vaults. */
 export async function fetchVaults(): Promise<ObsidianVault[]> {
-  const response = await fetch('/api/obsidian/vaults')
+  const response = await apiRequest('/api/obsidian/vaults')
   if (response.ok) {
     const data = await response.json()
     if (data.success) return data.vaults as ObsidianVault[]
@@ -39,7 +40,7 @@ export async function fetchVaults(): Promise<ObsidianVault[]> {
 
 /** Fetch the files belonging to a given vault. */
 export async function fetchVaultFiles(vaultId: number): Promise<ObsidianFile[]> {
-  const response = await fetch(`/api/obsidian/vaults/${vaultId}/files`)
+  const response = await apiRequest(`/api/obsidian/vaults/${vaultId}/files`)
   if (response.ok) {
     const data = await response.json()
     if (data.success) return data.files as ObsidianFile[]
@@ -49,7 +50,7 @@ export async function fetchVaultFiles(vaultId: number): Promise<ObsidianFile[]> 
 
 /** Trigger a scan of the given vault. Returns `null` when the response is not OK. */
 export async function scanVault(vaultId: number): Promise<ScanResult | null> {
-  const response = await fetch(`/api/obsidian/vaults/${vaultId}/scan`, {
+  const response = await apiRequest(`/api/obsidian/vaults/${vaultId}/scan`, {
     method: 'POST'
   })
   if (!response.ok) return null
@@ -58,7 +59,7 @@ export async function scanVault(vaultId: number): Promise<ScanResult | null> {
 
 /** Register a new vault. Returns `null` when the response is not OK. */
 export async function addVault(name: string, path: string): Promise<AddVaultResult | null> {
-  const response = await fetch('/api/obsidian/vaults', {
+  const response = await apiRequest('/api/obsidian/vaults', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, path })

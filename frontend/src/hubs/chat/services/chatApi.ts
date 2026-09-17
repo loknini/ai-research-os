@@ -1,3 +1,4 @@
+import { apiRequest, openEventStream } from '@/services/api'
 import { Conversation, Message, ToolResult, RagSource } from '../types'
 
 // 书签式小 JSON 接口统一 15s 超时：后端抖动时快速失败，由调用方决定降级，
@@ -8,7 +9,7 @@ const fetchWithTimeout = async (url: string, init?: RequestInit): Promise<Respon
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS)
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
+    return await apiRequest(url, { ...init, signal: controller.signal, timeoutMs: null })
   } finally {
     clearTimeout(timer)
   }
@@ -48,7 +49,7 @@ const streamChatCompletion = async (
         content: m.content,
       }))
 
-    const response = await fetch('/api/chat/completions/stream', {
+    const response = await openEventStream('/api/chat/completions/stream', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -174,7 +175,7 @@ const streamChatCompletion = async (
 
 // API 函数
 const fetchConversations = async (): Promise<Conversation[]> => {
-  const response = await fetch('/api/conversations')
+  const response = await apiRequest('/api/conversations')
   const data = await response.json()
   if (data.success) {
     return data.conversations.map((c: any) => ({
@@ -186,7 +187,7 @@ const fetchConversations = async (): Promise<Conversation[]> => {
 }
 
 const fetchConversationDetail = async (id: string): Promise<Conversation | null> => {
-  const response = await fetch(`/api/conversations/${id}`)
+  const response = await apiRequest(`/api/conversations/${id}`)
   const data = await response.json()
   if (data.success && data.conversation) {
     return {
@@ -206,7 +207,7 @@ const fetchConversationDetail = async (id: string): Promise<Conversation | null>
 }
 
 const createConversationAPI = async (conversation: Conversation): Promise<Conversation | null> => {
-  const response = await fetch('/api/conversations', {
+  const response = await apiRequest('/api/conversations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(conversation)
@@ -240,7 +241,7 @@ const updateConversationAPI = async (id: string, updates: Partial<Conversation>)
 }
 
 const deleteConversationAPI = async (id: string): Promise<boolean> => {
-  const response = await fetch(`/api/conversations/${id}`, {
+  const response = await apiRequest(`/api/conversations/${id}`, {
     method: 'DELETE'
   })
   const data = await response.json()
@@ -265,7 +266,7 @@ const addMessageAPI = async (conversationId: string, message: Message): Promise<
 }
 
 const updateMessageAPI = async (conversationId: string, messageId: string, content: string): Promise<boolean> => {
-  const response = await fetch(`/api/conversations/${conversationId}/messages/${messageId}`, {
+  const response = await apiRequest(`/api/conversations/${conversationId}/messages/${messageId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content })
@@ -275,7 +276,7 @@ const updateMessageAPI = async (conversationId: string, messageId: string, conte
 }
 
 const deleteMessagesAfterAPI = async (conversationId: string, messageId: string): Promise<boolean> => {
-  const response = await fetch(`/api/conversations/${conversationId}/messages/delete-after`, {
+  const response = await apiRequest(`/api/conversations/${conversationId}/messages/delete-after`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ messageId })
@@ -285,7 +286,7 @@ const deleteMessagesAfterAPI = async (conversationId: string, messageId: string)
 }
 
 const switchBranchAPI = async (conversationId: string, messageId: string): Promise<Conversation | null> => {
-  const response = await fetch(`/api/conversations/${conversationId}/switch-branch/${messageId}`, {
+  const response = await apiRequest(`/api/conversations/${conversationId}/switch-branch/${messageId}`, {
     method: 'POST',
   })
   const data = await response.json()

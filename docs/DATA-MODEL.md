@@ -256,16 +256,16 @@ job lease 负责故障接管，全局 writer lease 保证多进程仅一个索�
 
 ```bash
 # 空间隔离验收（26 项：跨空间隔离、400 校验、20 路并发、WAL、连接不共享、表结构等）
-python scripts/qa_verify_space.py
+python -m scripts.qa_verify_space
 
 # 后台 Agent runner 验收（19 项）
-python scripts/qa_verify_agent_runner.py
+python -m scripts.qa_verify_agent_runner
 
 # LLM 可达性与状态端点（不触网）
-python scripts/qa_verify_llm_status.py
+python -m scripts.qa_verify_llm_status
 
 # 显式迁移账本、幂等、校验和、未来版本拒绝与事务回滚
-python scripts/qa_verify_migrations.py
+python -m scripts.qa_verify_migrations
 ```
 
 两个脚本都使用隔离的临时 `DATA_DIR` + 真实 aiosqlite + `TestClient`，不会污染现有数据库。运行需要 `aiosqlite / fastapi / httpx / uvicorn`。

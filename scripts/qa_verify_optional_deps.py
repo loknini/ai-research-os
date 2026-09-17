@@ -5,7 +5,7 @@
   * MuPDF C 层 stderr 噪声抑制（残缺 PDF 警告不刷屏，且 fd 2 正确恢复）
   * local_embed 加载失败留痕（last_error，供设置页提示安装 torch 等）
   * SwanLab 缺失时返回 venv 感知的友好提示（而非 traceback）
-运行：python scripts/qa_verify_optional_deps.py
+运行：python -m scripts.qa_verify_optional_deps
 """
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from pathlib import Path
 from unittest import mock
 
 PROJECT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT))
 
 from backend.server import local_embed as _le  # noqa: E402
 from backend.server import rag_service  # noqa: E402

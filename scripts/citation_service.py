@@ -15,10 +15,11 @@ import urllib.parse
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
-# 添加父目录到路径
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+if __package__ in (None, ""):
+    print("请从项目根目录运行：python -m scripts.citation_service <action> [params]", file=sys.stderr)
+    raise SystemExit(2)
 
-from database import get_db, init_db
+from scripts.database import get_db, init_db
 
 # Crossref API 配置
 CROSSREF_API_BASE = "https://api.crossref.org"

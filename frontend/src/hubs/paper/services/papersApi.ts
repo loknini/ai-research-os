@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 /**
  * Paper Hub 的 API 服务封装。
  * 原 monolith 中各内联 fetch 调用（37–47、141–143、185–187、216–218、279、417）
@@ -9,7 +10,7 @@ import type { Paper } from '@/types'
 /** 加载本地论文数据（GET /api/papers）。网络错误时返回空数组，不抛出。 */
 export async function loadLocalPapers(): Promise<Paper[]> {
   try {
-    const response = await fetch('/api/papers')
+    const response = await apiRequest('/api/papers')
     if (!response.ok) throw new Error('Failed to load papers')
     const data = await response.json()
     return (data.papers as Paper[]) || []
@@ -48,7 +49,7 @@ export async function fetchPapers(params: FetchPapersParams & { dryRun?: boolean
     searchParams.append('dry_run', 'true')
   }
 
-  const response = await fetch(`/api/papers/fetch?${searchParams.toString()}`, {
+  const response = await apiRequest(`/api/papers/fetch?${searchParams.toString()}`, {
     method: 'POST'
   })
 
@@ -72,7 +73,7 @@ export interface ImportPapersResult {
 
 /** 批量导入预览中勾选的论文（POST /api/papers/batch），逐篇跳过并报告数。 */
 export async function importPapers(papers: Paper[]): Promise<ImportPapersResult> {
-  const response = await fetch('/api/papers/batch', {
+  const response = await apiRequest('/api/papers/batch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ papers }),
@@ -91,7 +92,7 @@ export async function importPapers(papers: Paper[]): Promise<ImportPapersResult>
 export async function summarizePaper(
   id: string
 ): Promise<{ success: boolean; summary?: string; message?: string }> {
-  const response = await fetch(`/api/papers/${id}/summarize`, { method: 'POST' })
+  const response = await apiRequest(`/api/papers/${id}/summarize`, { method: 'POST' })
   const result = await response.json()
   return {
     success: response.ok && !!result.success,
@@ -102,7 +103,7 @@ export async function summarizePaper(
 
 /** 删除单篇论文（DELETE /api/papers/:id），返回是否成功。 */
 export async function deletePaperApi(id: string): Promise<boolean> {
-  const response = await fetch(`/api/papers/${id}`, { method: 'DELETE' })
+  const response = await apiRequest(`/api/papers/${id}`, { method: 'DELETE' })
   return response.ok
 }
 
@@ -116,7 +117,7 @@ export async function batchDeletePapers(ids: string[]): Promise<number> {
   let successCount = 0
   for (const paperId of ids) {
     try {
-      const response = await fetch(`/api/papers/${paperId}`, { method: 'DELETE' })
+      const response = await apiRequest(`/api/papers/${paperId}`, { method: 'DELETE' })
       if (response.ok) {
         successCount++
       }

@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import type { Task, TaskStatus, SoftwareProject } from '@/types'
 
 /**
@@ -5,7 +6,7 @@ import type { Task, TaskStatus, SoftwareProject } from '@/types'
  * 网络错误会向上抛出，由调用方统一处理；HTTP 非 2xx 或业务失败返回空数组。
  */
 export async function fetchTasks(): Promise<Task[]> {
-  const response = await fetch('/api/tasks')
+  const response = await apiRequest('/api/tasks')
   if (!response.ok) return []
   const data = await response.json()
   if (!data?.success) return []
@@ -16,7 +17,7 @@ export async function fetchTasks(): Promise<Task[]> {
  * 拉取项目列表（用于任务关联项目）。
  */
 export async function fetchProjects(): Promise<SoftwareProject[]> {
-  const response = await fetch('/api/projects')
+  const response = await apiRequest('/api/projects')
   if (!response.ok) return []
   const data = await response.json()
   if (!data?.success) return []
@@ -35,7 +36,7 @@ export async function saveTask(formData: Partial<Task>, editingTask: Task | null
   const url = editingTask ? `/api/tasks/${editingTask.id}` : '/api/tasks'
   const method = editingTask ? 'PUT' : 'POST'
 
-  const response = await fetch(url, {
+  const response = await apiRequest(url, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
@@ -47,7 +48,7 @@ export async function saveTask(formData: Partial<Task>, editingTask: Task | null
  * 更新已有任务（PUT /api/tasks/:id）。
  */
 export async function updateTask(taskId: string, payload: Partial<Task>): Promise<boolean> {
-  const response = await fetch(`/api/tasks/${taskId}`, {
+  const response = await apiRequest(`/api/tasks/${taskId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, tags: payload.tags || [] })
@@ -59,7 +60,7 @@ export async function updateTask(taskId: string, payload: Partial<Task>): Promis
  * 删除任务（DELETE /api/tasks/:id）。
  */
 export async function deleteTaskApi(taskId: string): Promise<boolean> {
-  const response = await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' })
+  const response = await apiRequest(`/api/tasks/${taskId}`, { method: 'DELETE' })
   return response.ok
 }
 
@@ -71,7 +72,7 @@ export async function updateTaskStatus(
   status: TaskStatus,
   completedAt: number | null
 ): Promise<boolean> {
-  const response = await fetch(`/api/tasks/${taskId}`, {
+  const response = await apiRequest(`/api/tasks/${taskId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status, completedAt })

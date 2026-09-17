@@ -22,8 +22,6 @@ if hasattr(sys.stderr, "reconfigure"):
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TMP_DIR = Path(tempfile.mkdtemp(prefix="qa_correctness_"))
 os.environ["DATA_DIR"] = str(TMP_DIR)
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import database  # noqa: E402
 

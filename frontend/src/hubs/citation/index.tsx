@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { Header } from '@/components/layout/header'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -143,7 +144,7 @@ export default function CitationHub({
       setSelectedPaper(null)
       setCitations({})
       try {
-        const response = await fetch(`/api/citation/search?q=${encodeURIComponent(trimmed)}`)
+        const response = await apiRequest(`/api/citation/search?q=${encodeURIComponent(trimmed)}`)
         const result = await response.json()
         if (result.success) {
           setSearchResults(result.papers || [])
@@ -217,7 +218,7 @@ export default function CitationHub({
       // 1) 尝试 resolve（Crossref DOI / arXiv / Crossref 标题关键词兜底）
       let resolved: Paper | null = null
       try {
-        const resp = await fetch('/api/citation/resolve', {
+        const resp = await apiRequest('/api/citation/resolve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -240,7 +241,7 @@ export default function CitationHub({
 
       // 2) 生成引用
       try {
-        const resp = await fetch('/api/citation/generate', {
+        const resp = await apiRequest('/api/citation/generate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ paper: target }),
@@ -314,7 +315,7 @@ export default function CitationHub({
     setSelectedPaper(paper)
     
     try {
-      const response = await fetch('/api/citation/generate', {
+      const response = await apiRequest('/api/citation/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ paper })

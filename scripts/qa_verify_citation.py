@@ -24,10 +24,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT))  # 把项目根加入 sys.path（backend/server 是它的子包）
-sys.path.insert(0, str(ROOT / "scripts"))
 
-import citation_service  # noqa: E402
+from scripts import citation_service  # noqa: E402
 
 
 # ---------- 构造假响应 ----------

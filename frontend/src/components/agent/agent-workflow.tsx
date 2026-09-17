@@ -1,3 +1,4 @@
+import { apiRequest, openEventStream } from '@/services/api'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useLocation } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
@@ -337,7 +338,7 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
     let submitRes: Response
     let submitData: Record<string, any>
     try {
-      submitRes = await fetch('/api/agent/runs', {
+      submitRes = await apiRequest('/api/agent/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ requirement, projectId, teamId, context })
@@ -371,7 +372,7 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
     // 2) 订阅后台运行的 SSE 事件流（后台线程逐帧落库，此处轮询式消费）
     let response: Response
     try {
-      response = await fetch(`/api/agent/runs/${rid}/stream`)
+      response = await openEventStream(`/api/agent/runs/${rid}/stream`)
     } catch {
       addMessage({ agentRole: 'user', messageType: 'error', content: '无法订阅运行事件', stepName: '错误' })
       setCurrentPhase('failed')
@@ -440,7 +441,7 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
   const cancelRun = useCallback(async () => {
     if (!runId) return
     try {
-      await fetch(`/api/agent/runs/${runId}/cancel`, { method: 'POST' })
+      await apiRequest(`/api/agent/runs/${runId}/cancel`, { method: 'POST' })
     } catch {
       // 忽略网络错误；最终状态由 SSE 的 run_cancelled 事件驱动
     }
@@ -450,7 +451,7 @@ export function AgentWorkflow({ projectId, requirement, teamId, context, onCompl
   const decideApproval = useCallback(async (approvalId: string, approved: boolean) => {
     if (!runId) return
     try {
-      await fetch(`/api/agent/runs/${runId}/approvals/${approvalId}`, {
+      await apiRequest(`/api/agent/runs/${runId}/approvals/${approvalId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ approved })

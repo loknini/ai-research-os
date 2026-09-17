@@ -450,16 +450,16 @@ curl "http://localhost:8000/api/cron/jobs/<JOB_ID>/history"
 
 ```bash
 # 抓取最近 1 天的 cs.CV 论文（最多 10 篇，不下载 PDF）
-python scripts/fetch_arxiv.py fetch --max 10 --days 1
+python -m scripts.fetch_arxiv fetch --max 10 --days 1
 
 # 带关键词抓取并自动下载 PDF
-python scripts/fetch_arxiv.py fetch --keywords "vision transformer" --max 20 --download
+python -m scripts.fetch_arxiv fetch --keywords "vision transformer" --max 20 --download
 
 # 列出已存论文（前 50 篇）
-python scripts/fetch_arxiv.py list --limit 50
+python -m scripts.fetch_arxiv list --limit 50
 
 # AI 总结单篇论文（需配置 LLM）
-python scripts/summarize_paper.py <arxiv_id>
+python -m scripts.summarize_paper <arxiv_id>
 ```
 
 > 脚本通过环境变量 `DATA_DIR` 定位数据库；不设置时默认使用 `<项目根>/data`。后端在启动时会自动注入该变量。
@@ -588,22 +588,22 @@ python -m uvicorn backend.server.main:app --port 8000 --workers 4   # 启动后�
 python -m compileall -q backend scripts                             # Python 全量语法检查
 
 # 回归验证（QA 脚本，改动后跑对应项；均在 managed/venv 环境运行）
-python scripts/qa_verify_space.py                # 空间隔离 26 项
-python scripts/qa_verify_agent_harness.py        # Agent 工程能力 61 项（审批/重放/上下文/插件化）
-python scripts/qa_verify_agent_runner.py         # 后台 runner 19 项
-python scripts/qa_verify_llm_status.py           # LLM 可达性与状态端点（不触网）
-python scripts/qa_verify_rag.py                  # RAG 基础/并发/降级回归
-python scripts/qa_verify_rag_v21.py              # RAG 2.1 代次/隔离/全库召回/安全回归
-python scripts/eval_rag_golden.py gate            # Golden 门禁：Hit@1/5 + 可选 faithfulness
-python scripts/qa_verify_chat_rag.py             # Chat 接地式 RAG 2 项
-python scripts/qa_verify_chat_regenerate_edit.py # 聊天重生成/编辑
-python scripts/qa_verify_chat_branching.py       # 会话分支
-python scripts/qa_verify_conversation_id.py      # 会话 ID 一致性
-python scripts/qa_verify_init_race.py            # 初始化竞态
-python scripts/qa_verify_correctness.py           # 已确认正确性问题 32 项（迁移/Cron/API/CLI）
+python -m scripts.qa_verify_space                # 空间隔离 26 项
+python -m scripts.qa_verify_agent_harness        # Agent 工程能力 61 项（审批/重放/上下文/插件化）
+python -m scripts.qa_verify_agent_runner         # 后台 runner 19 项
+python -m scripts.qa_verify_llm_status           # LLM 可达性与状态端点（不触网）
+python -m scripts.qa_verify_rag                  # RAG 基础/并发/降级回归
+python -m scripts.qa_verify_rag_v21              # RAG 2.1 代次/隔离/全库召回/安全回归
+python -m scripts.eval_rag_golden gate            # Golden 门禁：Hit@1/5 + 可选 faithfulness
+python -m scripts.qa_verify_chat_rag             # Chat 接地式 RAG 2 项
+python -m scripts.qa_verify_chat_regenerate_edit # 聊天重生成/编辑
+python -m scripts.qa_verify_chat_branching       # 会话分支
+python -m scripts.qa_verify_conversation_id      # 会话 ID 一致性
+python -m scripts.qa_verify_init_race            # 初始化竞态
+python -m scripts.qa_verify_correctness           # 已确认正确性问题 32 项（迁移/Cron/API/CLI）
 ```
 
-Python 脚本无需构建，直接 `python scripts/xxx.py` 运行。
+Python 脚本无需构建，直接 `python -m scripts.xxx` 运行。
 
 ---
 
@@ -631,18 +631,18 @@ Python 脚本无需构建，直接 `python scripts/xxx.py` 运行。
 ### 验证清单（提交前逐项确认）
 
 ```bash
-# 前端：lint 零警告 + 类型检查 + 构建通过
+# 前端：lint、Vitest、架构边界、类型检查与构建
 cd frontend
-npm run lint && npm run build
+npm run verify
 
 # 后端：语法检查 + 相关 QA 回归（按改动面选择）
 python -m compileall -q backend scripts
-python scripts/qa_verify_space.py            # 动了数据层 / 路由必跑
-python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必跑
+python -m scripts.qa_verify_space            # 动了数据层 / 路由必跑
+python -m scripts.qa_verify_agent_harness    # 动了 Agent / 工具 / 审批必跑
 # 其余 qa_verify_*.py 按改动面补跑（见「开发命令」）
 ```
 
-> 项目已使用 Git 管理，但尚未引入 pytest/vitest 等统一测试框架；当前 `qa_verify_*.py` / `.mjs` 脚本即事实上的回归测试，新增功能请同步补充对应 QA。
+> 前端已引入 Vitest；后端尚未统一迁入 pytest，当前 `qa_verify_*.py` / `.mjs` 脚本仍是后端事实上的回归测试，新增功能请同步补充对应 QA。
 
 ### 代码规范
 
@@ -661,7 +661,7 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
   - **更新语义**：写操作返回 `rowcount > 0`，不要跨空间返回 True。
   - **新增工具 = 新模块**：用 `@register_tool` 装饰器写在 `backend/server/tools/<name>.py`（自动发现），不要在 Agent 主循环里硬编码工具分支；策略标注 `safe`（只读）/ `sensitive`（写库）/ `dangerous`（不可逆）。
   - 模块导入用正规包导入（`from . import x` / `from scripts import database`），**无 `sys.path` hack**。
-  - 脚本入口采用 `python scripts/xxx.py <command> [--options]` 风格，输出 JSON 供后端解析。
+  - 脚本入口采用 `python -m scripts.xxx <command> [--options]` 风格，输出 JSON 供后端解析。
 - **提交**
   - 一个大功能拆成多个小 PR 更易 Review。
   - 不提交 `data/`、`node_modules/`、`*.db`、`.env`、`credentials/` 等（已在 `.gitignore`）。
@@ -710,4 +710,4 @@ python scripts/qa_verify_agent_harness.py    # 动了 Agent / 工具 / 审批必
 
 ---
 
-**最后更新**：2026-09-02 · 数字以 `docs/_meta.json` 为准（`python scripts/gen_docs_meta.py` 生成）
+**最后更新**：2026-09-02 · 数字以 `docs/_meta.json` 为准（`python -m scripts.gen_docs_meta` 生成）

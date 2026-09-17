@@ -19,33 +19,14 @@
 
 ### T10. 无统一测试框架与 CI 门禁
 
-- **现状**：没有 `tests/`、`frontend/tests/`、`backend/tests/`、`.github/workflows/`、`pytest.ini` 或 Vitest 配置；
-  `frontend/package.json` 没有 `test` 脚本。当前有 27 个 `scripts/qa_verify_*` 脚本，仍依赖人工选择和执行。
+- **现状**：前端已为统一 HTTP transport 引入 Vitest 与 `npm test`，但仓库仍没有统一的后端测试入口、
+  `.github/workflows/` 或 `pytest.ini`。当前 25 个 `scripts/qa_verify_*` 脚本仍依赖人工选择和执行。
 - **补充问题**：RAG 黄金集门禁未接入自动流程；`eval_rag_golden.py` 使用手写 `sys.argv`，未知命令和 `--help`
   会落入评测执行路径。黄金集由当前业务数据合成，适合作为回归基线，但不能替代独立人工标注集。
 - **影响**：数据库迁移、多 Worker 抢锁、空间隔离、备份恢复、向量代际切换等关键回归容易漏跑；不同脚本的退出码和夹具纪律难统一。
 - **建议**：逐步迁入 `pytest`/Vitest，先建立一个调用现有脚本的统一 `test` 入口，再接入 GitHub Actions；
   所有测试继续使用独立 `DATA_DIR`，RAG 门禁增加固定、评审过的脱敏夹具。
 - **验收**：一条后端命令和一条前端命令可跑完核心回归；CI 对失败返回非零并阻止合并；测试不读写真实用户数据。
-
-### T12. 前端 Hub 巨石，API 客户端统一尚未落地
-
-- **现状**：`ChatHub.tsx` 约 1835 行、`settings/index.tsx` 约 1484 行；当前有 14 个 Hub 范围内的 TS/TSX 文件超过 400 行，
-  `any` 约 89 处。虽然已抽出部分 Chat 组件和服务，但侧边栏、消息列表、输入、RAG 选择与流程状态仍集中在 `ChatHub`。
-- **API 现状**：`frontend/src/services/api.ts` 定义了 `apiFetch`，当前业务调用点为 0；前端仍约有 132 个直接 `fetch()` 调用。
-  `X-Space-Key` 主要依赖 `apiMonitor.ts` 对全局 `fetch` 的 monkey patch 注入，错误解析、超时和响应类型没有真正统一。
-- **影响**：页面状态和网络副作用难隔离测试；不同模块的错误处理不一致；全局 monkey patch 隐式改变第三方或未来请求行为。
-- **建议**：先让新代码只使用统一客户端，再按 Hub 迁移；为 SSE、文件下载和普通 JSON 请求提供明确的客户端适配层；
-  续拆 `ChatSidebar`、`MessageList`、`InputBar`、RAG source selector，并用 `unknown` + 类型守卫替代边界层 `any`。
-- **验收**：除统一客户端内部及明确豁免的流式/下载适配器外，不再直接调用 `fetch`；移除全局 monkey patch 后功能和空间隔离测试仍通过。
-
-### T15. 正规包导入约定未完全落实
-
-- **现状**：`backend/` 与 `scripts/` 已是正规包，但仓库仍有约 31 处 `sys.path.insert/append`；其中 4 处位于正式业务脚本：
-  `fetch_arxiv.py`、`citation_service.py`、`formula_service.py`、`summarize_paper.py`，其余主要分布在 QA、评测和回填脚本。
-- **影响**：模块执行与文件直跑可能加载不同模块，遮蔽导入错误；测试环境与生产启动方式不一致。
-- **建议**：业务入口统一使用 `python -m scripts.<module>` 和 `from scripts import database`；QA 由统一测试入口提供项目根路径，删除脚本内注入。
-- **验收**：业务代码无 `sys.path` 修改；模块方式和受支持的 CLI 入口均通过；错误启动方式给出明确用法提示。
 
 ---
 
@@ -75,5 +56,11 @@ T5 `frontend/api-server.js` / `pdf-lib` 死代码、T6 原伪债、T7 路由懒�
 `database.py` 缩为兼容门面；`schema_migrations` 记录版本、名称、校验和、时间与耗时，迁移由跨进程锁串行执行，
 并新增幂等、历史篡改、未来版本拒绝和事务回滚测试。T13 已通过“本机免登录、远程 `ADMIN_TOKEN`”管理边界解决；
 T14 已通过同盘完整暂存、原子替换、跨 Worker 互斥、持久导入日志和失败/崩溃自动恢复解决。
+T12 已建立唯一 HTTP transport（空间键、管理员令牌、连接状态、错误、超时、JSON/FormData/Blob/SSE），
+删除全局 `fetch` monkey patch，并将 Chat 的侧栏、顶部控制、消息列表、输入区和消息渲染，以及 Settings 的通用、集成、扩展、RAG 面板拆开；
+`ChatHub.tsx` 与 `settings/index.tsx` 已缩为编排入口。ESLint 与 `check:architecture` 会阻止业务代码重新直接调用 `fetch` 或入口文件重新膨胀。
+T15 已移除业务、QA、评测与回填脚本中的 `sys.path` 注入；后端子进程统一通过项目根目录下的
+`python -m scripts.<module>` 启动，不再设置 `PYTHONPATH`。README、运维文档和内置 Skill 命令已同步为模块入口，
+公开 CLI 被错误地按文件执行时会给出明确的正确命令提示。
 
 历史治理提交可参考 `5c03c5a`、`26ecf0e`；RAG 2.1 与本次初始审计基线为 `dd6a4dd`。

@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 // Notes API service for the Knowledge Hub.
 // Extracted from the original monolithic index.tsx (fetch calls inside loadData /
 // handleSaveNote / handleDeleteNote at lines 87, 257-264, 287).
@@ -15,7 +16,7 @@ import type { Note } from '@/types'
  * (matching the container's initial `[]` state so a failed load is a no-op).
  */
 export async function fetchNotes(): Promise<Note[]> {
-  const response = await fetch('/api/notes')
+  const response = await apiRequest('/api/notes')
   if (response.ok) {
     const data = await response.json()
     if (data.success) return data.notes as Note[]
@@ -25,7 +26,7 @@ export async function fetchNotes(): Promise<Note[]> {
 
 /** Create a new note. Returns whether the request succeeded (response.ok). */
 export async function saveNote(formData: Partial<Note>): Promise<boolean> {
-  const response = await fetch('/api/notes', {
+  const response = await apiRequest('/api/notes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(formData)
@@ -35,7 +36,7 @@ export async function saveNote(formData: Partial<Note>): Promise<boolean> {
 
 /** Update an existing note. Returns whether the request succeeded (response.ok). */
 export async function updateNote(id: string, formData: Partial<Note>): Promise<boolean> {
-  const response = await fetch(`/api/notes/${id}`, {
+  const response = await apiRequest(`/api/notes/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(formData)
@@ -45,6 +46,6 @@ export async function updateNote(id: string, formData: Partial<Note>): Promise<b
 
 /** Delete a note by id. Returns whether the request succeeded (response.ok). */
 export async function deleteNoteApi(id: string): Promise<boolean> {
-  const response = await fetch(`/api/notes/${id}`, { method: 'DELETE' })
+  const response = await apiRequest(`/api/notes/${id}`, { method: 'DELETE' })
   return response.ok
 }

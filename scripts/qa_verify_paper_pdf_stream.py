@@ -25,7 +25,6 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT))
 
 # 在 import database / backend 之前把数据库重定向到临时位置，避免污染真实 data
 _TMP_DB_DIR = Path(tempfile.mkdtemp(prefix="qa_paper_pdf_"))
@@ -94,7 +93,6 @@ async def _seed_paper(tmpdir: Path, space_id: str, arxiv_id: str, *, with_local:
 
 
 def _get_app():
-    sys.path.insert(0, str(ROOT))
     from backend.server.main import app
     return app
 

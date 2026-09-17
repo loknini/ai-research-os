@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useEffect, useCallback } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -22,7 +23,7 @@ export default function MemoryManager() {
 
   const loadMemory = useCallback(async () => {
     try {
-      const resp = await fetch('/api/memory')
+      const resp = await apiRequest('/api/memory')
       const data = await resp.json()
       if (data.success) {
         setContent(data.content || '')
@@ -43,7 +44,7 @@ export default function MemoryManager() {
   const handleSave = async () => {
     setSaving(true)
     try {
-      const resp = await fetch('/api/memory', {
+      const resp = await apiRequest('/api/memory', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content }),
@@ -69,7 +70,7 @@ export default function MemoryManager() {
       return
     }
     try {
-      const resp = await fetch('/api/memory/observe', {
+      const resp = await apiRequest('/api/memory/observe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ entry }),
@@ -111,7 +112,7 @@ export default function MemoryManager() {
     if (!messages.length) return
     setExtracting(true)
     try {
-      const resp = await fetch('/api/memory/extract', {
+      const resp = await apiRequest('/api/memory/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ messages }),

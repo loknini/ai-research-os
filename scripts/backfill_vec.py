@@ -5,7 +5,7 @@
 缺失的批量 upsert；收尾为每个覆盖完整的空间置 ready=1。
 
 用法：
-    python scripts/backfill_vec.py [space] [batch]
+    python -m scripts.backfill_vec [space] [batch]
 
 无 space 参数时遍历全部有切片的空间。sqlite-vec 未安装直接退出（读路径
 会自动回退暴力，无需回填）。
@@ -18,9 +18,12 @@ import sys
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT))
 
-from scripts import database as db  # noqa: E402
+if __package__ in (None, ""):
+    print("请从项目根目录运行：python -m scripts.backfill_vec [space] [batch]", file=sys.stderr)
+    raise SystemExit(2)
+
+from scripts import database as db
 
 BATCH = 500
 

@@ -11,7 +11,6 @@ from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT))
 TMP = Path(tempfile.mkdtemp(prefix="rag_v21_qa_"))
 os.environ["DATA_DIR"] = str(TMP)
 

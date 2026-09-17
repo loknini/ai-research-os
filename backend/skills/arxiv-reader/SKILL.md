@@ -2,7 +2,7 @@
 name: arxiv_reader
 description: 从 arXiv 抓取论文（给定 arxiv_id/URL 或关键词），返回结构化元数据（标题、作者、摘要、PDF 链接、分类、发表日期）。用于论文检索与精读前的素材获取；深度阅读与总结由调用方 Agent 基于返回内容完成。
 type: tool
-command: ["python", "scripts/fetch_arxiv.py"]
+command: ["python", "-m", "scripts.fetch_arxiv"]
 timeout: 60
 enabled: true
 parameters: {"type":"object","properties":{"arxiv_id":{"type":"string","description":"arXiv ID 或 URL，如 1706.03762 或 https://arxiv.org/abs/1706.03762；指定时优先于 query"},"query":{"type":"string","description":"搜索关键词或标题片段，如 'attention is all you need'"},"max_results":{"type":"integer","description":"搜索返回条数","default":3}},"required":[]}

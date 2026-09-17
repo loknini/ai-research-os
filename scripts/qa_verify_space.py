@@ -13,7 +13,7 @@
   D. 向后兼容：存量无 space_id 数据归 __default__ 且可访问；cron JSON 仅迁移一次
   E. WAL：连接后 journal_mode = wal
   F. aiosqlite 连接不跨协程共享（get_db 每次新建连接）
-  G. 前端 X-Space-Key 注入唯一性（仅 apiMonitor.ts 真正注入请求头）
+  G. 前端 X-Space-Key 注入唯一性（仅统一 API transport 注入请求头）
   H. 结构：SPACE_TABLES 中 25 张迁移表均含 space_id 列 + 索引
 
 最小侵入：脚本置于 scripts/，不影响主流程；使用隔离临时 DATA_DIR，不触碰真实 data/。
@@ -39,14 +39,6 @@ PROJECT_ROOT = SCRIPT_DIR.parent                      # .../ai-research-os
 
 TMP = Path(tempfile.mkdtemp(prefix="qa_space_"))
 os.environ["DATA_DIR"] = str(TMP)                      # 隔离测试库，不污染真实 data/
-
-# 仅把项目根与 scripts 目录加入 sys.path。
-# 注意：不要把 backend/ 单独加入 sys.path —— 否则 `import scripts` 会被 backend/scripts/
-# （同样叫 scripts 的包）遮蔽，导致 `from scripts import database` 解析到 backend/scripts。
-# PROJECT_ROOT 在路径上即可同时解析 `backend.server`（包）与 `scripts`（包）。
-for _p in (str(PROJECT_ROOT), str(SCRIPT_DIR)):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
 
 import aiosqlite  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -554,6 +546,9 @@ def test_frontend_injection_unique() -> None:
 
     for p in frontend_src.rglob("*"):
         if p.suffix in (".ts", ".tsx", ".js", ".jsx") and p.is_file():
+            # 测试夹具会构造/断言请求头，不属于生产环境的注入实现。
+            if p.name.endswith((".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx")):
+                continue
             try:
                 text = p.read_text(encoding="utf-8", errors="ignore")
             except Exception:
@@ -568,10 +563,7 @@ def test_frontend_injection_unique() -> None:
     print(f"    真正注入请求头的文件:   {assign_files}")
 
     assign_norm = [f.replace("\\", "/") for f in assign_files]
-    expected = {
-        "frontend/src/services/api.ts",       # 未来统一客户端（当前尚未迁移调用方）
-        "frontend/src/services/apiMonitor.ts",  # 当前全局运行时注入点
-    }
+    expected = {"frontend/src/services/api.ts"}
     only_api_layer = set(assign_norm) == expected
     record("G1 注入实现仅位于 API 基础层", only_api_layer,
            f"assign_files={assign_files}")

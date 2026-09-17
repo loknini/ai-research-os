@@ -19,6 +19,13 @@ module.exports = {
   ],
   ignorePatterns: ['dist/', 'node_modules/', 'public/pdf.worker.min.mjs'],
   rules: {
+    'no-restricted-globals': [
+      'error',
+      {
+        name: 'fetch',
+        message: 'Use the typed transport in @/services/api so isolation, admin access and connectivity stay consistent.',
+      },
+    ],
     'no-unused-vars': 'off',
     'no-constant-condition': ['error', { checkLoops: false }],
     '@typescript-eslint/no-explicit-any': 'off',
@@ -35,4 +42,10 @@ module.exports = {
     // style variants; changing those public APIs is outside this bug-fix pass.
     'react-refresh/only-export-components': 'off',
   },
+  overrides: [
+    {
+      files: ['src/services/api.ts'],
+      rules: { 'no-restricted-globals': 'off' },
+    },
+  ],
 }

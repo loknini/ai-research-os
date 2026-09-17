@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 /**
  * Paper Hub 容器组件。
  * 原 monolith index.tsx 拆分后的组合根：保留全部 useState / useEffect、
@@ -113,7 +114,7 @@ export default function PaperHub() {
   const handleSaveBibtex = useCallback(
     async (paperId: string, bibtex: string) => {
       try {
-        const response = await fetch(`/api/papers/${paperId}/bibtex`, {
+        const response = await apiRequest(`/api/papers/${paperId}/bibtex`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ bibtex }),
@@ -746,7 +747,7 @@ export default function PaperHub() {
             const report = output as { title?: string; markdown?: string; tags?: string[] }
             const sources = entityIds.map(id => papers.find(paper => paper.id === id)).filter(Boolean)
               .map(paper => `- ${paper!.title}${paper!.arxivId ? ` (arXiv:${paper!.arxivId})` : ''}`).join('\n')
-            const response = await fetch('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            const response = await apiRequest('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ title: report.title || '论文研读报告',
                 content: `${report.markdown || JSON.stringify(output, null, 2)}\n\n## 来源论文\n${sources}`,
                 type: 'summary', tags: report.tags || ['AI研读'], aiGenerated: true }) })

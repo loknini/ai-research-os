@@ -2,9 +2,9 @@
 """RAG golden 评测基线（P0 门禁）：确定性合成 + 落盘复用 + LLM judge（可选）。
 
 用法：
-    python scripts/eval_rag_golden.py build [space]   # 生成 data/eval/golden_rag.json（默认 50 条）
-    python scripts/eval_rag_golden.py run [space]     # 跑评测，写 data/eval/report_rag_golden.json
-    python scripts/eval_rag_golden.py gate [space]    # 同 run，并按固定阈值返回非零退出码
+    python -m scripts.eval_rag_golden build [space]   # 生成 data/eval/golden_rag.json（默认 50 条）
+    python -m scripts.eval_rag_golden run [space]     # 跑评测，写 data/eval/report_rag_golden.json
+    python -m scripts.eval_rag_golden gate [space]    # 同 run，并按固定阈值返回非零退出码
 
 指标：
     * hit@1 / hit@5：gold_keys 任一命中即算（大小写不敏感，纯检索，无需 LLM）
@@ -23,9 +23,12 @@ import sys
 import time
 
 PROJECT = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT))
 
-from scripts import database as db  # noqa: E402
+if __package__ in (None, ""):
+    print("请从项目根目录运行：python -m scripts.eval_rag_golden <build|run|gate> [space]", file=sys.stderr)
+    raise SystemExit(2)
+
+from scripts import database as db
 
 GOLDEN_PATH = PROJECT / "data" / "eval" / "golden_rag.json"
 REPORT_PATH = PROJECT / "data" / "eval" / "report_rag_golden.json"

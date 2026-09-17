@@ -15,12 +15,15 @@ from datetime import datetime, timedelta
 from xml.etree import ElementTree as ET
 from pathlib import Path
 
+if __package__ in (None, ""):
+    print("请从项目根目录运行：python -m scripts.fetch_arxiv <command> [options]", file=sys.stderr)
+    raise SystemExit(2)
+
 # 导入数据库模块（已改为 aiosqlite 异步；此处仅取常量与协程函数，调用处 await）。
-sys.path.insert(0, str(Path(__file__).parent))
-import database
+from scripts import database
 
 # 归档命名空间：PDF 落到 data/papers/<space_id>/pdfs/（见 space-key 软隔离约定）。
-from database import DEFAULT_SPACE
+from scripts.database import DEFAULT_SPACE
 
 # Constants
 ARXIV_API_URL = "https://export.arxiv.org/api/query"
@@ -313,7 +316,7 @@ async def main():
         print(json.dumps(result, indent=2))
 
     elif command == "list":
-        from database import get_all_papers
+        from scripts.database import get_all_papers
 
         limit = 20
         for i, arg in enumerate(sys.argv[2:], 2):

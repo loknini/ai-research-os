@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Header } from '@/components/layout/header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -94,7 +95,7 @@ export default function FormulaHub({
   // 加载历史记录
   const loadHistory = useCallback(async () => {
     try {
-      const response = await fetch(`/api/formula/history?favorites=${showFavoritesOnly}`)
+      const response = await apiRequest(`/api/formula/history?favorites=${showFavoritesOnly}`)
       const result = await response.json()
       if (result.success) {
         setHistory(result.records ?? [])
@@ -107,7 +108,7 @@ export default function FormulaHub({
   // 加载统计
   const loadStats = useCallback(async () => {
     try {
-      const response = await fetch('/api/formula/stats')
+      const response = await apiRequest('/api/formula/stats')
       const result = await response.json()
       if (result.success) {
         setStats(result.stats ?? { total: 0, favorites: 0, today: 0 })
@@ -178,7 +179,7 @@ export default function FormulaHub({
     setIsRecognizing(true)
     
     try {
-      const response = await fetch('/api/formula/recognize', {
+      const response = await apiRequest('/api/formula/recognize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -223,7 +224,7 @@ export default function FormulaHub({
   // 切换收藏
   const toggleFavorite = useCallback(async (record: FormulaRecord) => {
     try {
-      const response = await fetch('/api/formula/history', {
+      const response = await apiRequest('/api/formula/history', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -245,7 +246,7 @@ export default function FormulaHub({
   // 删除记录
   const deleteRecord = useCallback(async (id: string) => {
     try {
-      const response = await fetch(`/api/formula/history/${id}`, {
+      const response = await apiRequest(`/api/formula/history/${id}`, {
         method: 'DELETE'
       })
       
@@ -268,7 +269,7 @@ export default function FormulaHub({
     if (!selectedRecord) return
     
     try {
-      const response = await fetch('/api/formula/history', {
+      const response = await apiRequest('/api/formula/history', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -10,7 +10,7 @@ const MIN_KEY_LEN = 4
  * - 未选择空间时渲染全屏弹层，拦截应用渲染（保证正常流程不会向后端发出缺失
  *   X-Space-Key 的请求）。
  * - 解析 URL `?space=` 参数，分享链接可直达进入对应空间。
- * - 选择后写入并持久化 spaceKey（由 apiMonitor 统一归一化为 X-Space-Key 透传）。
+ * - 选择后写入并持久化 spaceKey（由统一 API transport 归一化为 X-Space-Key 透传）。
  */
 export function SpaceGate({ children }: { children: ReactNode }) {
   const spaceKey = useAppStore((s) => s.spaceKey)

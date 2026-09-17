@@ -1,9 +1,7 @@
 """Shared helpers for the FastAPI backend.
 
-``run_script`` is a thin, reusable wrapper around ``subprocess`` that executes a
-legacy ``scripts/*.py`` CLI exactly the way the old Vite middleware did
-(``spawn('python', ['scripts/x.py', <command>, <json>])``) and parses the JSON
-it prints to stdout.
+``run_script`` is a thin, reusable wrapper around ``subprocess`` that executes
+the requested ``scripts`` package module and parses the JSON it prints to stdout.
 
 Per the agreed decision, the *external* integrations (swanlab / citation /
 obsidian / formula) keep these lightweight subprocess calls instead of being
@@ -47,11 +45,10 @@ def run_script(
     if not script_path.exists():
         return {"success": False, "error": f"Script not found: {script_name}"}
 
-    cmd = [sys.executable, str(script_path), *[str(a) for a in args]]
+    module_name = f"scripts.{script_path.stem}"
+    cmd = [sys.executable, "-m", module_name, *[str(a) for a in args]]
     env = os.environ.copy()
     env["DATA_DIR"] = str(config.DATA_DIR)
-    # Ensure the script can import its sibling modules (database, etc.).
-    env["PYTHONPATH"] = str(config.SCRIPTS_DIR) + os.pathsep + env.get("PYTHONPATH", "")
     if env_extra:
         env.update(env_extra)
 
@@ -62,6 +59,7 @@ def run_script(
             text=True,
             timeout=timeout,
             env=env,
+            cwd=str(config.PROJECT_ROOT),
         )
     except subprocess.TimeoutExpired:
         return {"success": False, "error": f"Script timed out after {timeout}s: {script_name}"}

@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { DragEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background, Controls, MiniMap, ReactFlow, ReactFlowProvider,
@@ -93,7 +94,7 @@ const emptyRole = (): RoleTemplate => ({
 })
 
 async function requestJson(url: string, init?: RequestInit) {
-  const response = await fetch(url, init)
+  const response = await apiRequest(url, init)
   const data = await response.json()
   if (!response.ok || data.success === false) throw new Error(data.message || '请求失败')
   return data
@@ -524,7 +525,7 @@ export default function TeamsHub() {
   const clone = async (id: string) => { await requestJson(`/api/agent/teams/${id}/clone`, { method: 'POST' }); await load() }
   const remove = async (id: string) => { if (window.confirm('确定删除这个团队？')) { await requestJson(`/api/agent/teams/${id}`, { method: 'DELETE' }); await load() } }
   const exportTeam = async (team: AgentTeam) => {
-    const response = await fetch(`/api/agent/teams/${team.id}/export`)
+    const response = await apiRequest(`/api/agent/teams/${team.id}/export`)
     if (!response.ok) {
       window.alert('导出团队失败')
       return

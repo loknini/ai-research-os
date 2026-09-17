@@ -11,8 +11,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TMP = Path(tempfile.mkdtemp(prefix="qa_migrations_"))
 os.environ["DATA_DIR"] = str(TMP)
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts import database  # noqa: E402
 from scripts.db.migrations import Migration, MigrationError, run_migrations  # noqa: E402

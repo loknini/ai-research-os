@@ -24,7 +24,6 @@ os.environ["DATA_DIR"] = _TMP
 os.environ.setdefault("LLM_BASE_URL", "http://127.0.0.1:9/none")  # 不应被用到（已打桩）
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 import backend.server as _bs  # noqa: F401  确保 backend 包已导入（不再依赖 sys.path 注入）
 from backend.server import agent_service  # backend/server/agent_service.py（正规包导入）

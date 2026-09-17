@@ -11,9 +11,12 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 
+if __package__ in (None, ""):
+    print("请从项目根目录运行：python -m scripts.summarize_paper <paper_id>", file=sys.stderr)
+    raise SystemExit(2)
+
 # 导入数据库模块（已迁移到 aiosqlite 异步；此处按需在协程中调用）
-sys.path.insert(0, str(Path(__file__).parent))
-import database
+from scripts import database
 
 # 可配置 LLM 客户端（后端 llm.py）；独立 CLI 运行且无法导入后端时回退为 None
 try:

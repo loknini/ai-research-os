@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useEffect, useState } from 'react'
 import { Users } from 'lucide-react'
 import { AgentWorkflow } from '@/components/agent/agent-workflow'
@@ -42,7 +43,7 @@ export function IdeaFormDialog({
   const [draft, setDraft] = useState<ProjectDraft | null>(null)
 
   useEffect(() => {
-    fetch('/api/agent/teams')
+    apiRequest('/api/agent/teams')
       .then(response => response.json())
       .then(data => setTeams((data.teams || []).filter((team: TeamOption) =>
         team.acceptedContexts?.includes('software_idea'))))

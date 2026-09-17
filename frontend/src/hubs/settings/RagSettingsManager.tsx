@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useCallback, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -104,7 +105,7 @@ export default function RagSettingsManager() {
   // ---------- 拉取能力 / 源列表 ----------
   const loadCapabilities = useCallback(async () => {
     try {
-      const r = await fetch('/api/rag/capabilities')
+      const r = await apiRequest('/api/rag/capabilities')
       const j = await r.json()
       if (j.success) setCaps(j)
     } catch {
@@ -114,7 +115,7 @@ export default function RagSettingsManager() {
 
   const loadSources = useCallback(async () => {
     try {
-      const r = await fetch('/api/rag/sources')
+      const r = await apiRequest('/api/rag/sources')
       const j = await r.json()
       if (j.success) {
         setSources(j.sources || [])
@@ -127,7 +128,7 @@ export default function RagSettingsManager() {
 
   const loadDocs = useCallback(async (sourceId: string) => {
     try {
-      const r = await fetch(`/api/rag/documents?sourceId=${encodeURIComponent(sourceId)}`)
+      const r = await apiRequest(`/api/rag/documents?sourceId=${encodeURIComponent(sourceId)}`)
       const j = await r.json()
       if (j.success) {
         setDocsBySource((prev) => ({ ...prev, [sourceId]: j.documents || [] }))
@@ -173,7 +174,7 @@ export default function RagSettingsManager() {
 
     setIndexing(true)
     try {
-      const r = await fetch('/api/rag/index', {
+      const r = await apiRequest('/api/rag/index', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -209,7 +210,7 @@ export default function RagSettingsManager() {
     }
     setWebIndexing(true)
     try {
-      const r = await fetch('/api/rag/web', {
+      const r = await apiRequest('/api/rag/web', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ urls }),
@@ -237,7 +238,7 @@ export default function RagSettingsManager() {
   const reindex = useCallback(
     async (sourceId: string) => {
       try {
-        const r = await fetch(`/api/rag/sources/${sourceId}/reindex`, { method: 'POST' })
+        const r = await apiRequest(`/api/rag/sources/${sourceId}/reindex`, { method: 'POST' })
         const j = await r.json()
         if (j.success) {
           toast({ title: '已重新提交索引', variant: 'success' })
@@ -253,7 +254,7 @@ export default function RagSettingsManager() {
   const cancelIndex = useCallback(
     async (sourceId: string) => {
       try {
-        await fetch(`/api/rag/sources/${sourceId}/cancel`, { method: 'POST' })
+        await apiRequest(`/api/rag/sources/${sourceId}/cancel`, { method: 'POST' })
         await loadSources()
       } catch {
         /* ignore */
@@ -265,7 +266,7 @@ export default function RagSettingsManager() {
   const deleteSource = useCallback(
     async (sourceId: string) => {
       try {
-        const r = await fetch(`/api/rag/sources/${sourceId}`, { method: 'DELETE' })
+        const r = await apiRequest(`/api/rag/sources/${sourceId}`, { method: 'DELETE' })
         const j = await r.json()
         if (j.success) {
           toast({ title: '已删除索引源', variant: 'success' })

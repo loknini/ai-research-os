@@ -13,8 +13,6 @@ import tempfile
 
 # 把项目根目录加到 sys.path（脚本在 scripts/ 下，需能 import ``scripts`` 与 ``backend`` 包）。
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
 
 TMP = tempfile.mkdtemp(prefix="qa_chat_rag_")
 os.environ["DATA_DIR"] = TMP

@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useEffect, useCallback } from 'react'
 import { Header, HeaderAction } from '@/components/layout/header'
 import { Card, CardContent } from '@/components/ui/card'
@@ -66,7 +67,7 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
       const [projectsRes, tasksRes, runsRes] = await Promise.all([
         fetchProjects(),
         fetchTasks(),
-        fetch('/api/agent/runs?limit=200')
+        apiRequest('/api/agent/runs?limit=200')
       ])
 
       if (projectsRes.ok) {
@@ -96,7 +97,7 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
   useEffect(() => {
     if (!developmentRuns.some(run => run.status === 'pending' || run.status === 'running')) return
     const timer = window.setInterval(() => {
-      fetch('/api/agent/runs?limit=200').then(response => response.json()).then(data => {
+      apiRequest('/api/agent/runs?limit=200').then(response => response.json()).then(data => {
         if (data.success) setDevelopmentRuns((data.runs || []).filter((run: { runKind?: string }) => run.runKind === 'development'))
       }).catch(() => undefined)
     }, 3000)
@@ -105,7 +106,7 @@ export default function SoftwareHub({ embedded = false }: { embedded?: boolean }
 
   useEffect(() => {
     const refresh = () => {
-      fetch('/api/agent/runs?limit=200').then(response => response.json()).then(data => {
+      apiRequest('/api/agent/runs?limit=200').then(response => response.json()).then(data => {
         if (data.success) setDevelopmentRuns((data.runs || []).filter((run: { runKind?: string }) => run.runKind === 'development'))
       }).catch(() => undefined)
     }

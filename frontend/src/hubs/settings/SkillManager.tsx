@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useEffect, useCallback } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -37,7 +38,7 @@ export default function SkillManager() {
   const loadSkills = useCallback(async () => {
     setLoading(true)
     try {
-      const resp = await fetch('/api/skills')
+      const resp = await apiRequest('/api/skills')
       const data = await resp.json()
       if (data.success && Array.isArray(data.skills)) {
         setSkills(data.skills)
@@ -58,7 +59,7 @@ export default function SkillManager() {
 
   const handleReload = async () => {
     try {
-      const resp = await fetch('/api/skills/reload', { method: 'POST' })
+      const resp = await apiRequest('/api/skills/reload', { method: 'POST' })
       const data = await resp.json()
       if (data.success) {
         toast({ title: '已重新扫描技能目录', description: `生效技能 ${data.count} 个`, variant: 'success' })
@@ -73,7 +74,7 @@ export default function SkillManager() {
   const handleToggle = async (name: string, enabled: boolean) => {
     setToggling(name)
     try {
-      const resp = await fetch(`/api/skills/${encodeURIComponent(name)}/enabled`, {
+      const resp = await apiRequest(`/api/skills/${encodeURIComponent(name)}/enabled`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled }),
@@ -113,7 +114,7 @@ export default function SkillManager() {
     setRunning(name)
     setResults((prev) => ({ ...prev, [name]: undefined }))
     try {
-      const resp = await fetch(`/api/skills/${encodeURIComponent(name)}/run`, {
+      const resp = await apiRequest(`/api/skills/${encodeURIComponent(name)}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ params }),

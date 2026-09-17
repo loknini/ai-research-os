@@ -1,24 +1,25 @@
+import { apiRequest } from '@/services/api'
 import type { SoftwareProject } from '@/types'
 
 /**
  * 获取项目列表（对应原 loadData 中的 fetch('/api/projects')）
  */
 export async function fetchProjects(): Promise<Response> {
-  return fetch('/api/projects')
+  return apiRequest('/api/projects')
 }
 
 /**
  * 获取任务列表（对应原 loadData 中的 fetch('/api/tasks')）
  */
 export async function fetchTasks(): Promise<Response> {
-  return fetch('/api/tasks')
+  return apiRequest('/api/tasks')
 }
 
 /**
  * 新建项目（对应原 handleSaveProject 中的 POST 段）
  */
 export async function saveProject(formData: Partial<SoftwareProject>): Promise<Response> {
-  return fetch('/api/projects', {
+  return apiRequest('/api/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(formData)
@@ -32,7 +33,7 @@ export async function updateProject(
   id: string,
   formData: Partial<SoftwareProject>
 ): Promise<Response> {
-  return fetch(`/api/projects/${id}`, {
+  return apiRequest(`/api/projects/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(formData)
@@ -50,7 +51,7 @@ export async function createDefaultTasks(projectId: string): Promise<void> {
   ]
 
   for (const task of defaultTasks) {
-    await fetch('/api/tasks', {
+    await apiRequest('/api/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -68,11 +69,11 @@ export async function createDefaultTasks(projectId: string): Promise<void> {
  * 删除项目（对应原 handleDeleteProject 中的 DELETE 段）
  */
 export async function deleteProjectApi(id: string): Promise<Response> {
-  return fetch(`/api/projects/${id}`, { method: 'DELETE' })
+  return apiRequest(`/api/projects/${id}`, { method: 'DELETE' })
 }
 
 export async function validateWorkspace(id: string): Promise<any> {
-  const response = await fetch(`/api/projects/${id}/workspace/validate`, {
+  const response = await apiRequest(`/api/projects/${id}/workspace/validate`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
   })
   const data = await response.json()
@@ -81,14 +82,14 @@ export async function validateWorkspace(id: string): Promise<any> {
 }
 
 export async function fetchDevelopmentRuns(id: string): Promise<any[]> {
-  const response = await fetch(`/api/projects/${id}/development-runs`)
+  const response = await apiRequest(`/api/projects/${id}/development-runs`)
   const data = await response.json()
   if (!response.ok) throw new Error(data.message || '运行历史加载失败')
   return data.runs || []
 }
 
 export async function createDevelopmentRun(id: string, payload: Record<string, unknown>): Promise<string> {
-  const response = await fetch(`/api/projects/${id}/development-runs`, {
+  const response = await apiRequest(`/api/projects/${id}/development-runs`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
   })
   const data = await response.json()
@@ -97,26 +98,26 @@ export async function createDevelopmentRun(id: string, payload: Record<string, u
 }
 
 export async function fetchDevelopmentRun(id: string): Promise<any> {
-  const response = await fetch(`/api/development/runs/${id}`)
+  const response = await apiRequest(`/api/development/runs/${id}`)
   const data = await response.json()
   if (!response.ok) throw new Error(data.message || '研发运行加载失败')
   return data
 }
 
 export async function fetchDevelopmentDiff(id: string): Promise<any> {
-  const response = await fetch(`/api/development/runs/${id}/diff`)
+  const response = await apiRequest(`/api/development/runs/${id}/diff`)
   const data = await response.json()
   if (!response.ok) throw new Error(data.message || '差异加载失败')
   return data
 }
 
 export async function cancelDevelopmentRun(id: string): Promise<void> {
-  const response = await fetch(`/api/development/runs/${id}/cancel`, { method: 'POST' })
+  const response = await apiRequest(`/api/development/runs/${id}/cancel`, { method: 'POST' })
   if (!response.ok) throw new Error('取消失败')
 }
 
 export async function continueDevelopmentRun(id: string, feedback = ''): Promise<void> {
-  const response = await fetch(`/api/development/runs/${id}/continue`, {
+  const response = await apiRequest(`/api/development/runs/${id}/continue`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ additionalIterations: 4, additionalMinutes: 30, feedback })
   })
@@ -125,7 +126,7 @@ export async function continueDevelopmentRun(id: string, feedback = ''): Promise
 }
 
 export async function applyDevelopmentRun(id: string, baseRevision: string, diffDigest: string): Promise<any> {
-  const response = await fetch(`/api/development/runs/${id}/apply`, {
+  const response = await apiRequest(`/api/development/runs/${id}/apply`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ baseRevision, diffDigest })
   })

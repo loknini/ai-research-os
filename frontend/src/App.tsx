@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useEffect, lazy, Suspense } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { Sidebar } from '@/components/layout/sidebar'
@@ -9,7 +10,6 @@ import { Loader2 } from 'lucide-react'
 import { applyTheme, useThemeStore } from '@/stores/themeStore'
 import { GenerationWatcher } from '@/components/agent/generation-watcher'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
-import { installApiMonitor } from '@/services/apiMonitor'
 import { SpaceGate } from '@/components/SpaceGate'
 import NotFound from '@/components/ui/not-found'
 
@@ -29,14 +29,13 @@ const TeamsHub = lazy(() => import('@/hubs/teams'))
 
 // 安装全局 fetch 监控：真实 /api 流量驱动侧边栏「后端状态」灯，
 // 取代原先每 5 秒的 healthz 轮询（不再有常驻日志噪音与无谓外网探测）。
-installApiMonitor()
 
 // 应用挂载时只做一次存活检查，确定初始连接状态；之后由全局 fetch 监控维护。
 function BackendHealthMonitor() {
   const { setConnected } = useAppStore()
   useEffect(() => {
     let alive = true
-    fetch('/api/healthz', { headers: { Accept: 'application/json' } })
+    apiRequest('/api/healthz', { headers: { Accept: 'application/json' } })
       .then((r) => {
         if (!alive) return
         setConnected(r.ok || r.status < 500)

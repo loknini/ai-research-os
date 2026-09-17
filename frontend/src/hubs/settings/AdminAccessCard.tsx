@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useCallback, useEffect, useState } from 'react'
 import { CheckCircle2, Eye, EyeOff, KeyRound, Loader2, ShieldAlert, Trash2 } from 'lucide-react'
 
@@ -19,7 +20,7 @@ export default function AdminAccessCard({ onVerified }: { onVerified?: () => voi
     setChecking(true)
     setAdminSessionToken(candidate)
     try {
-      const response = await fetch('/api/settings/llm', { cache: 'no-store' })
+      const response = await apiRequest('/api/settings/llm', { cache: 'no-store' })
       if (!response.ok) {
         let message = `管理访问验证失败（HTTP ${response.status}）`
         try {

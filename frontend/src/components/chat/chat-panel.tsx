@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Bot, ChevronDown, Command, ExternalLink, Loader2, MessageSquare, Send, Settings, Sparkles, User, X } from 'lucide-react'
@@ -50,7 +51,7 @@ export function ChatPanel() {
 
   useEffect(() => {
     if (!isOpen) return
-    fetch('/api/llm/status').then(response => response.json()).then(data =>
+    apiRequest('/api/llm/status').then(response => response.json()).then(data =>
       setConfigured(data.configured === true)).catch(() => setConfigured(false))
     if (conversationId) void load(conversationId)
     else setConversation(null)

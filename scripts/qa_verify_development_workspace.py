@@ -13,7 +13,6 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 TEMP = tempfile.TemporaryDirectory(prefix="qa_development_")
 os.environ["DATA_DIR"] = str(Path(TEMP.name) / "data")
 

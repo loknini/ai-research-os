@@ -1,3 +1,4 @@
+import { apiRequest } from '@/services/api'
 import { useState, useEffect, useCallback } from 'react'
 import { Button } from './button'
 import { Badge } from './badge'
@@ -53,7 +54,7 @@ export function VersionHistory({
     
     setIsLoading(true)
     try {
-      const response = await fetch(`/api/versions/${entityType}/${entityId}`)
+      const response = await apiRequest(`/api/versions/${entityType}/${entityId}`)
       if (response.ok) {
         const data = await response.json()
         if (data.success) {
@@ -105,7 +106,7 @@ export function VersionHistory({
     }
 
     try {
-      const response = await fetch('/api/versions/compare', {
+      const response = await apiRequest('/api/versions/compare', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -129,7 +130,7 @@ export function VersionHistory({
   const handleRestore = async (versionId: string) => {
     setRestoringVersion(versionId)
     try {
-      const response = await fetch('/api/versions/restore', {
+      const response = await apiRequest('/api/versions/restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ versionId })

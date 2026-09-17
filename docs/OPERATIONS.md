@@ -232,18 +232,18 @@ uvicorn 日志直接输出到启动终端，无独立日志文件。
 
 ```powershell
 # 空间隔离（26 项）
-python scripts/qa_verify_space.py
+python -m scripts.qa_verify_space
 
 # 后台 Agent runner（19 项）
-python scripts/qa_verify_agent_runner.py
+python -m scripts.qa_verify_agent_runner
 
 # 正确性修复（论文旧库迁移、Cron 并发/API、公式、版本、RAG、CLI）
-python scripts/qa_verify_correctness.py
-python scripts/qa_verify_agent_teams.py
+python -m scripts.qa_verify_correctness
+python -m scripts.qa_verify_agent_teams
 
 # Python 语法与全部独立 QA（PowerShell）
 python -m compileall -q backend scripts
-Get-ChildItem scripts/qa_verify_*.py | ForEach-Object { python $_.FullName; if ($LASTEXITCODE) { throw $_.Name } }
+Get-ChildItem scripts/qa_verify_*.py | ForEach-Object { python -m "scripts.$($_.BaseName)"; if ($LASTEXITCODE) { throw $_.Name } }
 Get-ChildItem scripts/qa_verify_*.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE) { throw $_.Name } }
 
 # 前端护栏
