@@ -1,6 +1,6 @@
 # 技术债清单
 
-> 最近核对：2026-09-17；初始审计基线 `dd6a4dd`，T11/T13/T14 在其后核销。
+> 最近核对：2026-09-28；初始审计基线 `dd6a4dd`，T11/T13/T14 在其后核销。
 >
 > 本清单只保留当前仍存在的债务。表/路由/Hub 等架构数字仍以
 > [`_meta.json`](./_meta.json) 为事实源；本文中的行数和调用点数量只是本次审计快照。
@@ -32,11 +32,7 @@
 
 ## 🟢 低优先级
 
-### T16. 小型结构与文档漂移
-
-- `frontend/src/hubs/knowledge/KnowledgeHub.tsx:578` 仍有“打开 Obsidian 文件详情”的未实现 TODO。
-- `backend/requirements.txt` 中 `requests` 仅由 `scripts/formula_service.py` 使用；可移入专用依赖文件，或注明它属于公式 OCR 子进程。
-- `vite.config.ts.timestamp-*.mjs`（当前 6 个）与 `frontend/dist-verify` 已由 `.gitignore` 忽略，但本地仍有残留；不影响仓库存量。
+*无。* T16 的 Obsidian 文件详情、依赖归属、临时产物与文档漂移已完成清理。
 
 ---
 
@@ -62,5 +58,7 @@ T12 已建立唯一 HTTP transport（空间键、管理员令牌、连接状态�
 T15 已移除业务、QA、评测与回填脚本中的 `sys.path` 注入；后端子进程统一通过项目根目录下的
 `python -m scripts.<module>` 启动，不再设置 `PYTHONPATH`。README、运维文档和内置 Skill 命令已同步为模块入口，
 公开 CLI 被错误地按文件执行时会给出明确的正确命令提示。
+T16 已接通 Obsidian 文件详情读取与 Markdown/元数据预览，明确 `requests` 是 Formula Hub 的 SimpleTex OCR 运行时依赖，
+清理本地 Vite 时间戳与 `dist-verify` 残留，并同步 API transport、前端结构和验证方式等文档。
 
 历史治理提交可参考 `5c03c5a`、`26ecf0e`；RAG 2.1 与本次初始审计基线为 `dd6a4dd`。

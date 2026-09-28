@@ -31,13 +31,14 @@ import {
   X
 } from 'lucide-react'
 import { NOTE_TYPE_CONFIG } from './config'
-import type { ObsidianVault, ObsidianFile } from './types'
+import type { ObsidianVault, ObsidianFile, ObsidianFileDetail } from './types'
 import { fetchNotes, saveNote, updateNote, deleteNoteApi } from './services/notesApi'
-import { fetchVaults, fetchVaultFiles, scanVault, addVault } from './services/obsidianApi'
+import { fetchVaults, fetchVaultFiles, fetchObsidianFile, scanVault, addVault } from './services/obsidianApi'
 import { useKnowledgeData } from './hooks/useKnowledgeData'
 import { NoteCard } from './components/NoteCard'
 import { NoteEditor } from './components/NoteEditor'
 import { VaultSelectorDialog } from './components/VaultSelectorDialog'
+import { ObsidianFileViewer } from './components/ObsidianFileViewer'
 import FormulaHub from '@/hubs/formula'
 import { TeamContextRunDialog } from '@/components/agent/team-context-run-dialog'
 import { useSearchParams } from 'react-router-dom'
@@ -58,6 +59,11 @@ export default function KnowledgeHub() {
   const [selectedVault, setSelectedVault] = useState<number | null>(null)
   const selectedVaultRef = useRef<number | null>(null)
   selectedVaultRef.current = selectedVault
+  const [selectedObsidianFile, setSelectedObsidianFile] = useState<ObsidianFile | null>(null)
+  const [obsidianFileDetail, setObsidianFileDetail] = useState<ObsidianFileDetail | null>(null)
+  const [isObsidianFileLoading, setIsObsidianFileLoading] = useState(false)
+  const [obsidianFileError, setObsidianFileError] = useState<string | null>(null)
+  const obsidianFileRequestRef = useRef(0)
   const [isScanning, setIsScanning] = useState(false)
   const [showVaultSelector, setShowVaultSelector] = useState(false)
   const [vaultPathInput, setVaultPathInput] = useState('')
@@ -172,6 +178,37 @@ export default function KnowledgeHub() {
     } finally {
       setIsScanning(false)
     }
+  }
+
+  const handleOpenObsidianFile = async (file: ObsidianFile) => {
+    const requestId = ++obsidianFileRequestRef.current
+    setSelectedObsidianFile(file)
+    setObsidianFileDetail(null)
+    setObsidianFileError(null)
+    setIsObsidianFileLoading(true)
+    try {
+      const detail = await fetchObsidianFile(file.id)
+      if (requestId !== obsidianFileRequestRef.current) return
+      if (!detail) {
+        setObsidianFileError('文件不存在，或当前空间无权访问。请重新扫描 Vault 后再试。')
+        return
+      }
+      setObsidianFileDetail(detail)
+    } catch (error) {
+      if (requestId !== obsidianFileRequestRef.current) return
+      console.error('Failed to load Obsidian file:', error)
+      setObsidianFileError('请求失败，请检查后端连接后重试。')
+    } finally {
+      if (requestId === obsidianFileRequestRef.current) setIsObsidianFileLoading(false)
+    }
+  }
+
+  const closeObsidianFile = () => {
+    obsidianFileRequestRef.current += 1
+    setSelectedObsidianFile(null)
+    setObsidianFileDetail(null)
+    setObsidianFileError(null)
+    setIsObsidianFileLoading(false)
   }
 
   // 选择文件夹
@@ -372,6 +409,7 @@ export default function KnowledgeHub() {
                     value={selectedVault || ''}
                     onChange={(e) => {
                       const vaultId = parseInt(e.target.value)
+                      closeObsidianFile()
                       setSelectedVault(vaultId)
                       loadObsidianFiles(vaultId)
                     }}
@@ -571,13 +609,15 @@ export default function KnowledgeHub() {
               ) : (
                 <div className="space-y-2">
                   {obsidianFiles.map((file) => (
-                    <div
+                    <button
+                      type="button"
                       key={file.id}
-                      className="p-4 border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
-                      onClick={() => {
-                        // TODO: 打开 Obsidian 文件详情
-                        toast({ title: file.title, description: 'Obsidian 文件查看功能开发中' })
-                      }}
+                      className={cn(
+                        'w-full p-4 border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors text-left',
+                        selectedObsidianFile?.id === file.id && 'border-primary bg-primary/5',
+                      )}
+                      onClick={() => void handleOpenObsidianFile(file)}
+                      aria-pressed={selectedObsidianFile?.id === file.id}
                     >
                       <div className="flex items-start justify-between">
                         <div className="flex-1 min-w-0">
@@ -595,7 +635,7 @@ export default function KnowledgeHub() {
                           {new Date(file.modified_at * 1000).toLocaleDateString('zh-CN')}
                         </span>
                       </div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               )
@@ -604,7 +644,7 @@ export default function KnowledgeHub() {
         </div>
 
         {/* 右侧详情/编辑器（可调宽 + 全屏） */}
-        {(selectedNote || showEditor) && (
+        {activeTab === 'local' && (selectedNote || showEditor) && (
           <NoteEditor
             selectedNote={selectedNote}
             showEditor={showEditor}
@@ -627,6 +667,17 @@ export default function KnowledgeHub() {
             }}
             fullscreen={noteFullscreen}
             onToggleFullscreen={() => setNoteFullscreen((v) => !v)}
+          />
+        )}
+        {activeTab === 'obsidian' && selectedObsidianFile && (
+          <ObsidianFileViewer
+            file={selectedObsidianFile}
+            detail={obsidianFileDetail}
+            loading={isObsidianFileLoading}
+            error={obsidianFileError}
+            width={noteWidth}
+            onRetry={() => void handleOpenObsidianFile(selectedObsidianFile)}
+            onClose={closeObsidianFile}
           />
         )}
       </div>

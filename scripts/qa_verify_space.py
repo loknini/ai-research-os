@@ -527,6 +527,41 @@ async def run_async_tests() -> None:
     await test_backward_compat()
 
 
+def test_obsidian_file_detail() -> None:
+    """Verify Obsidian detail reads real Markdown and remains space-scoped."""
+    from scripts.obsidian_service import ObsidianService
+
+    vault_path = TMP / "obsidian-vault"
+    vault_path.mkdir(parents=True, exist_ok=True)
+    note_content = "# Retrieval Notes\n\n#rag\n\nSee [[Vector Search|retrieval]].\n"
+    (vault_path / "retrieval.md").write_text(note_content, encoding="utf-8")
+
+    owner = ObsidianService(space_id="obsidian-alpha")
+    added = owner.add_vault("QA Vault", str(vault_path))
+    vault_id = added.get("vault", {}).get("id")
+    scanned = owner.scan_vault(vault_id) if vault_id is not None else {}
+    files = owner.get_vault_files(vault_id) if vault_id is not None else []
+    detail = owner.get_file_content(files[0]["id"]) if files else None
+
+    record(
+        "I1 Obsidian vault scan exposes a file detail",
+        bool(added.get("success") and scanned.get("success") and detail),
+    )
+    record(
+        "I2 Obsidian detail returns the complete Markdown body",
+        detail is not None and detail.get("content") == note_content,
+    )
+    record(
+        "I3 Obsidian detail preserves parsed Wiki links",
+        detail is not None
+        and detail.get("links") == [{"target": "Vector Search", "alias": "retrieval"}],
+    )
+
+    outsider = ObsidianService(space_id="obsidian-beta")
+    hidden = bool(detail) and outsider.get_file_content(detail["id"]) is None
+    record("I4 Obsidian file detail is hidden from another space", hidden)
+
+
 # ---------------------------------------------------------------------------
 # G. 前端 X-Space-Key 注入唯一性（真实文件系统 grep）
 # ---------------------------------------------------------------------------
@@ -591,6 +626,9 @@ def main() -> None:
 
     print("\n--- G. 前端注入唯一性 ---")
     test_frontend_injection_unique()
+
+    print("\n--- I. Obsidian file detail / space isolation ---")
+    test_obsidian_file_detail()
 
     # 汇总
     total = len(RESULTS)

@@ -18,3 +18,10 @@ export interface ObsidianFile {
   tags: string[]
   modified_at: number
 }
+
+/** Full file payload returned when an Obsidian list item is opened. */
+export interface ObsidianFileDetail extends ObsidianFile {
+  content: string | null
+  frontmatter: Record<string, unknown>
+  links: Array<{ target: string; alias: string }>
+}

@@ -1,6 +1,6 @@
 # 系统架构
 
-> 核对日期：2026-09-17；事实数字以 `docs/_meta.json` 为准（当前 `hubs=12 / routers=22 / tables=36`）。
+> 核对日期：2026-09-28；事实数字以 `docs/_meta.json` 为准（当前 `hubs=12 / routers=22 / tables=36`）。
 > 索引：[README](./README.md) · [DATA-MODEL](./DATA-MODEL.md) · [API](./API.md) · [AGENT-LLM](./AGENT-LLM.md) · [FRONTEND](./FRONTEND.md) · [OPERATIONS](./OPERATIONS.md)
 
 ## 1. 定位与硬约束
@@ -25,7 +25,7 @@
 
 - `backend/server/main.py`：CORS → 异常处理 → 挂载 `routers`（22个，见 `_meta.json`）→ `lifespan: init_db + start_scheduler + start_development_runner` → 生产态托管 `frontend/dist`。
 - `backend/server/admin_access.py`：部署级管理边界；本机 loopback 免令牌，远程 settings/backup/SwanLab/Skills 请求必须通过 `X-Admin-Token`，与 space-key 软隔离职责分离。
-- `frontend/src/App.tsx`：12 个 Hub 全部 `React.lazy` 分割，`installApiMonitor()` 单点注入 `X-Space-Key`。
+- `frontend/src/App.tsx`：12 个 Hub 全部 `React.lazy` 分割；业务请求统一经过 `services/api.ts`。
 - `scripts/`：同时是**被 import 的库**（`database/chat_agent_stream/fetch_arxiv`）和**被 subprocess 调的 CLI**（`swanlab/citation/formula/obsidian`），后者经 `SPACE_ID` 环境变量透传空间。
 - `scripts/db/`：`core.py` 管理连接与事务，`migrations/` 用显式版本账本单向升级，`repos/` 按业务域承载 SQL；多 Worker 启动由迁移锁串行化。
 
@@ -33,7 +33,7 @@
 
 ## 3. 请求生命周期
 
-**CRUD**：`fetch /api/papers` → `apiMonitor` 注入头 → `Depends(get_space_id)`（<4 → 400）→ `get_db()` 独立 `aiosqlite` 连接（`busy_timeout=5000 → WAL → NORMAL → foreign_keys=ON`，有限重试）→ `WHERE space_id=?` → `*_to_dict` 转 `camelCase`。
+**CRUD**：业务 service → `services/api.ts` 注入请求头并执行 `fetch /api/papers` → `Depends(get_space_id)`（<4 → 400）→ `get_db()` 独立 `aiosqlite` 连接（`busy_timeout=5000 → WAL → NORMAL → foreign_keys=ON`，有限重试）→ `WHERE space_id=?` → `*_to_dict` 转 `camelCase`。
 
 **Chat SSE**：`POST /api/chat/completions/stream` → 载入历史+记忆+RAG 预检索 → `context.compact_messages` 超限摘要 → `llm.stream_llm(tools)` ReAct 循环（`tool_start/tool_result/context/rag_sources`）→ `[DONE]`。前端 `chatGenerationManager` 单例保证切 Hub 不中断（前端级后台），`ChatPanel` 与 ChatHub 共享同一会话。
 

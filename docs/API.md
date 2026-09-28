@@ -1,6 +1,6 @@
 # API 参考
 
-> 版本与路由数以 `docs/_meta.json` 为准（当前 22 个 Router，含 health）；运行时以 FastAPI `/docs` 为准。核对日期：2026-09-17
+> 版本与路由数以 `docs/_meta.json` 为准（当前 22 个 Router，含 health）；运行时以 FastAPI `/docs` 为准。核对日期：2026-09-28
 > 交互式文档：`http://localhost:8000/docs`
 
 ---
@@ -16,7 +16,7 @@ X-Space-Key: <你的空间口令>
 ```
 
 服务端 `trim + lower` 归一化后直接作为 `space_id`。缺失或长度 < 4 → `400 SPACE_REQUIRED`。
-前端由 `services/apiMonitor.ts` 统一注入，业务代码无需手动设置。
+前端请求统一经过 `services/api.ts`，由 transport 注入空间键；业务调用方无需手动设置。
 
 ### 管理头
 

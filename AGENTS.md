@@ -24,7 +24,7 @@ D:\project\ai-research-os/
 │       ├── hubs/          # 功能模块（Dashboard/Paper/Teams/Lab/... 共 12 个 Hub）
 │       ├── components/    # 通用 / 布局 / UI 组件（含 .glass 设计系统）
 │       ├── stores/        # Zustand 状态管理（按 Hub 拆分）
-│       ├── services/      # API 客户端（apiMonitor.ts 单点注入 X-Space-Key）
+│       ├── services/      # 统一 API transport（api.ts 注入空间键/管理令牌并处理错误、超时与流）
 │       ├── hooks/         # 少量跨 Hub hooks（大多内聚在各 Hub）
 │       ├── types/         # TypeScript 类型定义
 │       └── utils/         # 工具函数
@@ -190,7 +190,7 @@ npm run dev
 | 文件 | 说明 |
 |------|------|
 | `docs/README.md` | 文档索引（架构/数据/API/Agent/前端/运维/技术债） |
-| `frontend/src/services/apiMonitor.ts` | 前端 API 客户端，单点注入 `X-Space-Key` |
+| `frontend/src/services/api.ts` | 前端唯一 HTTP transport，统一空间键、管理令牌、连接状态与响应适配 |
 | `backend/server/` | FastAPI 后端（路由、LLM 客户端、配置、空间隔离依赖） |
 | `backend/server/agent_service.py` | 角色化 Multi-Agent 真身（与 server 同包，由 `backend/agent_roles.json` 驱动） |
 | `backend/server/tool_registry.py` | **工具注册表 + 审批策略内核**（`@register_tool` / safe-sensitive-dangerous / auto-manual-strict） |
@@ -215,6 +215,6 @@ npm run dev
 
 ## 备注
 
-- 当前日期：2026-08-26
+- 当前日期：2026-09-28
 - 项目状态：功能基本完备，文档基于代码实况重构中
 - 版本：v0.5（隔离研发工作区 / 可配置专家团队 / 共享 LLM 助手 / 工具审批）

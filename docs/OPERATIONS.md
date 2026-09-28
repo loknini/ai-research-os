@@ -35,14 +35,14 @@ PyMuPDF>=1.24           sqlite-vec==0.1.9
 
 ```powershell
 # Windows
-.\start.ps1                      # 后端 :8000 + 前端 :5173
+.\start.ps1                      # 后端 :8000 + 前端 :5173；默认后台运行且不弹新终端
 .\start.ps1 -SkipFrontend        # 仅后端
 .\start.ps1 -SkipBackend         # 仅前端
 .\start.ps1 -SkipLLM             # 跳过 LLM 可用性校验
 .\start.ps1 -ApiPort 9000        # 自定义后端端口
-.\start.ps1 -ApiWorkers 4        # worker 数；0 = 自动 min(CPU, 4)
+.\start.ps1 -ApiWorkers 4        # 交互模式可指定；Windows 后台模式固定单 worker
 .\start.ps1 -DataDir D:\Sync\airos-data   # 覆盖数据目录
-.\start.ps1 -Background            # 后台模式：不弹新终端，日志进 logs/，用 .\stop.ps1 停止
+.\start.ps1 -ShowTerminals         # 调试时为前后端分别打开可见终端
 ```
 
 ```bash
@@ -136,7 +136,7 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 
 ## 4. 多人内网使用
 
-1. 后端以 `APP_HOST=0.0.0.0` 启动（`start.ps1` 默认已是），开 `--workers N`。
+1. 后端以 `APP_HOST=0.0.0.0` 启动；Windows 后台脚本固定单 worker，Linux/macOS 或交互式手动启动可按容量开 `--workers N`。
 2. 同事访问 `http://<你的内网IP>:8000`（生产态）或 `:5173`（开发态，Vite 已 `host: true`）。
 3. 首屏 `SpaceGate` 要求每人填写自己的**空间口令**（≥ 4 字符），此后所有数据按空间隔离。
 4. 需要协作时，用顶栏空间指示器的「分享」生成 `?space=xxx` 链接发给对方，对方打开即自动进入同一空间。

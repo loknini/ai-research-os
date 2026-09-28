@@ -1,7 +1,7 @@
 # 前端架构与设计系统
 
 > 目录：`frontend/src`；数量与版本以 `docs/_meta.json` 为准（当前 Hubs=12，版本 0.5.0）。
-> 核对日期：2026-09-02
+> 核对日期：2026-09-28
 
 ---
 
@@ -62,7 +62,7 @@ npm run lint      # eslint --max-warnings 0
 ```
 src/
 ├── main.tsx              入口
-├── App.tsx               路由表 + 全局布局 + 全局挂件；模块顶层调用 installApiMonitor()
+├── App.tsx               路由表 + 全局布局 + 全局挂件；挂载后端健康检查
 ├── hubs/                 12 个功能中心（业务主体）
 ├── components/
 │   ├── ui/               13 个 shadcn 风格基元（手写）
@@ -74,13 +74,13 @@ src/
 │   ├── SpaceGate.tsx     首屏空间口令守卫
 │   └── ErrorBoundary.tsx 顶层错误边界（唯一 class 组件）
 ├── stores/               appStore.ts（含 useChatStore）/ generationStore.ts
-├── services/             apiMonitor.ts / aiAgent.ts
+├── services/             api.ts / adminAccess.ts / cronApi.ts
 ├── types/index.ts        全局类型（268 行）
 ├── utils/                index.ts（13 个工具函数）/ performance.ts（储备工具箱）
 └── index.css             Tailwind + 主题 token + .glass 材质
 ```
 
-> **没有顶级 `hooks/` 目录**：自定义 hook 下沉到各 Hub 的 `hooks/` 子目录，另有若干内联在组件文件里（`useToast` / `useConfirmDialog` / `useCommandPalette` / `useAIAgent`）。
+> **Hook 组织**：业务 hook 优先下沉到各 Hub 的 `hooks/` 子目录；顶级 `hooks/` 只保留跨 Hub 复用项（当前为 `usePapers.ts`），另有少量简单 hook 内联在组件文件中。
 
 ---
 
@@ -124,17 +124,18 @@ src/
 
 ### 3.3 barrel 拆分现状
 
-**已拆分的 5 个**（`index.tsx` 只有一行 `export { default } from './XxxHub'`）：
+**已拆分的 6 个**（入口只负责导出或页面编排）：
 
 | Hub | 结构 |
 |---|---|
 | `paper/` | `PaperHub.tsx`(容器) · `config.ts` · `types.ts` · `hooks/usePaperData.ts` · `services/papersApi.ts` · `components/PaperFilters` `FetchPapersDialog` |
 | `task/` | `TaskHub.tsx` · `config.ts` · `hooks/useTaskData.ts` · `services/tasksApi.ts` · `utils/taskTree.ts` · `components/TaskItem`(递归) `TaskForm` |
-| `knowledge/` | `KnowledgeHub.tsx` · `config.ts` · `types.ts` · `hooks/useKnowledgeData.ts` · `services/notesApi.ts` `obsidianApi.ts` · `components/NoteCard` `NoteEditor` `VaultSelectorDialog` |
+| `knowledge/` | `KnowledgeHub.tsx` · `config.ts` · `types.ts` · `hooks/useKnowledgeData.ts` · `services/notesApi.ts` `obsidianApi.ts` · `components/NoteCard` `NoteEditor` `ObsidianFileViewer` `VaultSelectorDialog` |
 | `software/` | `SoftwareHub.tsx` · `config.ts` · `hooks/useSoftwareData.ts` · `services/projectsApi.ts` · `components/ProjectCard` `ProjectDetail` `ProjectForm` `IdeaFormDialog` |
-| `chat/` | `ChatHub.tsx`(723 行，全站最大) · `types.ts` · `services/chatApi.ts` · `components/MessageContent` |
+| `chat/` | `ChatHub.tsx`（页面编排）· `hooks/useChatController.ts` · `services/chatApi.ts` `chatGenerationManager.ts` · 侧栏/顶部/消息列表/输入区等组件 |
+| `settings/` | `index.tsx`（页面编排）· `hooks/useSettingsController.ts` · 通用/集成/扩展/RAG 面板及独立管理组件 |
 
-**仍是单文件的 6 个**：`dashboard`(381) · `experiment`(579) · `formula`(653) · `citation`(467) · `agent-runs`(320) · `settings`(894 + 已拆出 `SkillManager.tsx` `MemoryManager.tsx`)
+**仍以单入口组件为主的 5 个**：`dashboard` · `experiment` · `formula` · `citation` · `agent-runs`。
 
 拆分策略是**零破坏性搬移**：barrel 保持导入路径不变，各拆分文件顶部注释标注了原 monolith 的行号区间。
 
@@ -147,7 +148,7 @@ hubs/<name>/
 ├── config.ts          常量配置（STATUS_CONFIG 等）
 ├── types.ts           本 Hub 局部类型
 ├── hooks/useXxxData   派生状态（stats / filtered / 批量操作）
-├── services/xxxApi.ts 所有 fetch 调用
+├── services/xxxApi.ts 领域 API 调用（统一委托 services/api.ts）
 └── components/        展示组件
 ```
 
@@ -187,19 +188,17 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 
 ## 5. API 层
 
-### 5.1 单点注入：`services/apiMonitor.ts`
+### 5.1 唯一 HTTP transport：`services/api.ts`
 
-`installApiMonitor()` 在 `App.tsx` **模块顶层**（组件外）调用一次，monkey-patch `window.fetch`：
+所有业务请求显式调用 `apiRequest` / `requestJson` / `requestVoid` / `uploadForm` / `downloadBlob` / `openEventStream`，不再 monkey-patch `window.fetch`：
 
-1. **X-Space-Key 注入** — URL 含 `/api/` 时，从 `useAppStore.getState().spaceKey` 取值，`trim().toLowerCase()` 后写入请求头。**这是全站唯一注入点**，所有 Hub 的 `fetch('/api/...')` 都不需要自己带头。
-2. **连接状态驱动** — `res.ok` → `setConnected(true)`；fetch 抛错或 HTTP 5xx → `setConnected(false)`；HTTP 4xx 不算断开。取代了早期每 5 秒的 healthz 轮询。
+1. **请求头注入** — 仅对同源 `/api` 请求注入归一化后的 `X-Space-Key` 和会话级 `X-Admin-Token`，不会把本地凭据带到跨域 URL。
+2. **统一适配** — transport 负责连接状态、结构化错误、超时与取消，并为 JSON、FormData、Blob 和 SSE 提供明确入口。
+3. **架构门禁** — ESLint 与 `scripts/check-frontend-boundaries.mjs` 禁止业务源码直接调用 `fetch`，并阻止恢复旧 `apiMonitor.ts`。
 
 ### 5.2 调用形态
 
-没有统一 api client（无 axios、无 baseURL 常量、无拦截器），全部是裸 `fetch('/api/...')` 相对路径，依赖 Vite 代理（开发）/ 同源（生产）。
-
-- **已下沉到 service 文件**：paper / task / knowledge / software / chat
-- **仍内联在组件里**：dashboard / experiment / formula / citation / agent-runs / settings / version-history / agent-workflow / command-palette
+项目不引入 axios；领域 service 与少量组件内请求都调用统一 transport，并继续使用相对 `/api/...` 路径，依赖 Vite 代理（开发）或同源托管（生产）。跨 Hub 的认证、隔离、错误和连接状态语义只在 `services/api.ts` 实现一次。
 
 ### 5.3 两套流式协议（注意区分）
 
@@ -315,21 +314,19 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 
 > **当前几乎无引用**（论文列表用的是自己的分页而非虚拟滚动），属储备工具箱。`debounce`/`throttle` 与 `utils/index.ts` 重复实现。
 
-### `services/aiAgent.ts`
+### 已移除的规则式助手入口
 
-前端侧规则式意图识别（已于 2026-07-31 随旧 `POST /api/agent/run` 删除而改为本地分发+优雅降级，不再回退后端）。当前悬浮 `ChatPanel` 与 ChatHub 共用 `chatGenerationManager` 与同一会话，详见 `TECH-DEBT.md:T3/T6`。
+旧 `services/aiAgent.ts` 与 `POST /api/agent/run` 已删除。当前悬浮 `ChatPanel` 与 ChatHub 共享 `chatGenerationManager` 和同一套会话 API；复杂任务统一从 Agent/DAG 入口发起。
 
 ---
 
 ## 9. 验证
 
-本项目无单测框架，靠三道护栏：
+前端使用 Vitest，并将静态检查、单测、架构边界与生产构建汇总为一条命令：
 
 ```bash
 cd frontend
-npx tsc --noEmit     # strict + noUnusedLocals/Parameters —— 最重要
-npm run build        # = tsc && vite build
-npm run lint         # --max-warnings 0
+npm run verify       # lint + vitest + 架构边界 + tsc + vite build
 ```
 
-之后人工冒烟：逐 Hub 验证 CRUD、筛选、弹窗、分页、流式对话、空间切换。
+其中 `check:architecture` 保证只有统一 transport 可以调用原生 `fetch`，并限制 Chat/Settings 页面入口重新膨胀。之后仍需按改动范围人工冒烟 CRUD、筛选、弹窗、分页、流式对话与空间切换。

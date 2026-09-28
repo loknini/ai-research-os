@@ -104,7 +104,7 @@ AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 A
 | 层级 | 技术 |
 |------|------|
 | 前端 | React 18、TypeScript、Vite 5、TailwindCSS + shadcn/ui（源码内置）、Zustand、React Router v6 |
-| API 层 | **独立 FastAPI + uvicorn 后端（端口 8000，多 worker）**，开发态前端经 `vite proxy` 转发 `/api` |
+| API 层 | **独立 FastAPI + uvicorn 后端（端口 8000）**；Windows 后台单 worker，交互启动及其它平台可多 worker；开发态前端经 `vite proxy` 转发 `/api` |
 | 后端脚本 | Python 3.10+（标准库为主 + 少量第三方库） |
 | LLM | 任意 OpenAI 兼容端点（urllib 客户端，零新增依赖；含 embeddings 用于 RAG） |
 | 存储 | SQLite（`data/ai_research_os.db`，WAL 模式）+ 文件系统，按 space-key 软隔离 |
@@ -142,7 +142,7 @@ cd ai-research-os
 .\start.ps1
 ```
 
-该脚本会自动完成：检查 Python → 创建项目内 `.venv` 虚拟环境 → 按 `backend/requirements.txt` 内容指纹同步后端依赖到 `.venv` → 安装前端依赖 → 创建数据目录 → 启动 FastAPI 后端（多 worker）→ 启动前端开发服务器。requirements 变化或已安装包缺失时会自动补装，**无需手动装依赖**。
+该脚本会自动完成：检查 Python → 创建项目内 `.venv` 虚拟环境 → 按 `backend/requirements.txt` 内容指纹同步后端依赖到 `.venv` → 安装前端依赖 → 创建数据目录 → 启动 FastAPI 后端（Windows 后台固定单 worker，规避 IDE 控制信号与 SQLite 写锁竞争）→ 启动前端开发服务器。requirements 变化或已安装包缺失时会自动补装，**无需手动装依赖**。
 
 macOS / Linux：
 
@@ -195,14 +195,14 @@ SQLite 数据库会在后端首次启动时自动建表（`backend/server/db.py:
 **Windows（PowerShell）**
 
 ```powershell
-.\start.ps1                        # 启动后端 + 前端
+.\start.ps1                        # 后端 + 前端，默认后台运行且不弹新终端
 .\start.ps1 -SkipFrontend          # 仅启动后端
 .\start.ps1 -SkipBackend           # 仅启动前端（核心功能需另行提供 /api）
 .\start.ps1 -ApiPort 9000          # 自定义后端端口
-.\start.ps1 -ApiWorkers 4          # 指定 worker 数（默认 min(CPU, 4)）
+.\start.ps1 -ApiWorkers 4          # 交互模式可指定；Windows 后台模式为稳定性固定单 worker
 .\start.ps1 -DataDir D:\Sync\airos-data   # 数据目录指向同步盘（双设备单数据源）
 .\start.ps1 -ReuseBackend          # 端口已有健康后端实例时复用，不重启
-.\start.ps1 -Background            # 后台模式：不弹新终端，日志进 logs/，用 .\stop.ps1 停止
+.\start.ps1 -ShowTerminals         # 调试时为前后端分别打开可见终端
 .\stop.ps1                         # 停止后台服务（按 pid 精准杀，无则按端口兜底）
 ```
 

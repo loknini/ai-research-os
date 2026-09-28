@@ -2,7 +2,7 @@
 
 > 实现目录：`scripts/db/`；兼容门面：`scripts/database.py`；引导壳：`backend/server/db.py`。
 > 版本与数量以 `docs/_meta.json` 为准（当前 36 张业务/运行表，另有内部迁移账本 `schema_migrations`；31 张列入 `SPACE_TABLES` 兼容迁移）。
-> 核对日期：2026-09-17
+> 核对日期：2026-09-28
 
 ---
 
@@ -52,7 +52,7 @@ async def get_db():   # 每次调用新建独立连接，绝不跨协程复用
 用户填写口令 "lab-zhang"
         │  前端 SpaceGate 校验（>= 4 字符）
         ▼
-apiMonitor 注入  X-Space-Key: lab-zhang
+services/api.ts 注入  X-Space-Key: lab-zhang
         │  后端 deps.normalize_space_key：trim + lower，不 hash
         ▼
 space_id = "lab-zhang"  →  每条 SQL 带 WHERE space_id = ?

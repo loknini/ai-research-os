@@ -10,6 +10,8 @@ uvicorn[standard]>=0.29
 pydantic>=2.6
 pydantic-settings>=2.2
 python-dotenv>=1.0
+# Required by scripts/formula_service.py, the Formula Hub's SimpleTex OCR subprocess.
+# Keep it in the default set so the built-in Formula Hub works after the documented install command.
 requests>=2.31
 python-multipart>=0.0.9
 aiosqlite>=0.20

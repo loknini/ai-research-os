@@ -13,7 +13,7 @@ import { apiRequest } from '@/services/api'
 //   handler's existing `if (result?.success)` / `if (result)` flow reproduces the
 //   original behavior (non-OK responses were silently ignored in the source).
 
-import type { ObsidianVault, ObsidianFile } from '../types'
+import type { ObsidianVault, ObsidianFile, ObsidianFileDetail } from '../types'
 
 /** Result shape of a vault scan, as returned by the backend. */
 export interface ScanResult {
@@ -46,6 +46,14 @@ export async function fetchVaultFiles(vaultId: number): Promise<ObsidianFile[]> 
     if (data.success) return data.files as ObsidianFile[]
   }
   return []
+}
+
+/** Fetch the complete Markdown and metadata for one indexed Obsidian file. */
+export async function fetchObsidianFile(fileId: number): Promise<ObsidianFileDetail | null> {
+  const response = await apiRequest(`/api/obsidian/files/${fileId}`)
+  if (!response.ok) return null
+  const data = await response.json()
+  return data.success && data.file ? data.file as ObsidianFileDetail : null
 }
 
 /** Trigger a scan of the given vault. Returns `null` when the response is not OK. */

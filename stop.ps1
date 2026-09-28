@@ -1,4 +1,4 @@
-﻿# AI-Research-OS 停止脚本（配合 start.ps1 -Background 使用；前景终端模式直接关窗口即可）
+﻿# AI-Research-OS 停止脚本（配合 start.ps1 默认后台模式使用；-ShowTerminals 模式可直接关窗口）
 #
 # 用法:
 #   .\stop.ps1                  # 按 pid 文件精准停止，无则按端口兜底
@@ -84,7 +84,7 @@ function Stop-ByPort {
 
 Write-Host "`n🛑 停止 AI-Research-OS..." -ForegroundColor Yellow
 
-$beStopped = Stop-ByPidFile "后端" "$LogDir\backend.pid" '^(python|uvicorn)$'
+$beStopped = Stop-ByPidFile "后端" "$LogDir\backend.pid" '^(cmd|python|uvicorn|powershell|pwsh)$'
 $feStopped = Stop-ByPidFile "前端" "$LogDir\frontend.pid" '^(node|npm|cmd)$'
 
 # pid 文件缺失/过期/复用时，用端口兜底（-Restart 杀不干净的重灾区）

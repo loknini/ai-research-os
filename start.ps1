@@ -7,7 +7,8 @@
 #   .\start.ps1 -ApiPort 9000   # 自定义后端端口
 #   .\start.ps1 -ReuseBackend   # 端口已有健康后端实例时不重启，直接复用（默认会先结束旧实例再以最新代码启动）
 #   .\start.ps1 -Restart        # 重启模式：结束后端+前端（如正在运行）后以最新代码重新启动
-#   .\start.ps1 -Background     # 后台模式：不弹新终端，日志进 logs/，用 .\stop.ps1 停止
+#   .\start.ps1                 # 默认后台启动：不弹新终端，日志进 logs/，用 .\stop.ps1 停止
+#   .\start.ps1 -ShowTerminals  # 调试模式：为前后端分别打开可见终端
 #
 # ⚠️ 不要用系统 python 手动再起一个 uvicorn（即使不同端口）：
 #   双后端共享同一 SQLite 会造成慢性 database is locked（reindex 500 事故根因）。
@@ -29,10 +30,11 @@ param(
     [switch]$Restart,         # 重启模式：结束后端+前端（如正在运行）后以最新代码重新启动
     [int]$FrontendPort = 5173,
     [int]$ApiPort = 8000,
-    [int]$ApiWorkers = 0,    # FastAPI worker 进程数；0 = 自动探测 min(CPU, 4)
+    [int]$ApiWorkers = 0,    # worker 数；Windows 后台固定 1，交互模式/其它平台 0 = 自动 min(CPU, 4)
     [string]$DataDir,         # 数据目录（DATA_DIR）覆盖；优先级最高：命令行 -DataDir > .airos-data-dir 文件 > 已有环境变量 > 默认
-    [switch]$Background,      # 后台模式：不弹新终端，前后端日志写入 $LogDir，用 .\stop.ps1 停止
-    [string]$LogDir = ""      # 后台日志目录；留空则为 $ProjectDir\logs（git 已忽略）
+    [switch]$Background,      # 向后兼容：后台现为默认行为，此开关保留但无需再传
+    [switch]$ShowTerminals,   # 调试模式：为前后端分别打开可见终端
+    [string]$LogDir = ""      # 默认后台日志目录；留空则为 $ProjectDir\logs（git 已忽略）
 )
 
 # 强制控制台使用 UTF-8，避免中文/emoji 输出乱码
@@ -59,7 +61,15 @@ if (-not $DataDir -and $env:DATA_DIR) {
 if (-not $DataDir) {
     $DataDir = "$ProjectDir\data"
 }
-# 后台日志目录（仅 -Background 有效；前景模式保持弹终端实时看日志）
+# 默认使用后台模式，避免启动脚本退出/IDE 终端关闭时误伤服务，也不额外弹窗。
+# -Background 为旧版兼容参数；需要实时终端日志时显式传 -ShowTerminals。
+$UseBackground = -not $ShowTerminals
+if ($Background -and $ShowTerminals) {
+    Write-Host "❌ -Background 与 -ShowTerminals 不能同时使用" -ForegroundColor Red
+    exit 1
+}
+
+# 后台日志目录
 if (-not $LogDir) {
     $LogDir = "$ProjectDir\logs"
 }
@@ -154,11 +164,17 @@ Write-Host "`n🚀 启动服务..." -ForegroundColor Yellow
 # 将解析后的数据目录导出给后端进程（必须在启动 uvicorn 之前设置 DATA_DIR）
 if ($DataDir) { $env:DATA_DIR = $DataDir }
 
-# 多 worker：优先使用 -ApiWorkers，否则自动探测 min(CPU, 4)。
-# 4 是 I/O 型负载（等 LLM API、等 SQLite 单写锁）的甜点：再多 workers 只增加
-# 锁竞争与内存（本地嵌入模型每进程独立加载一份），吞吐几乎无提升。
-# 如需压测峰值并发，可显式 -ApiWorkers 8 覆盖。
-if ($ApiWorkers -gt 0) {
+# Windows 后台服务固定单 worker：Uvicorn 的 Windows multiprocess supervisor 会处理并
+# 向 spawn workers 转发 console signals；某些 IDE task runner 会对后台子树发送 Ctrl+C，
+# 导致所有 workers 在启动期一起退出。单 async worker 仍可并发处理 I/O，并减少 SQLite
+# 单写锁竞争。显式 -ShowTerminals 时保留多 worker 调试/压测能力。
+$IsWindowsRuntime = ($env:OS -eq "Windows_NT")
+if ($IsWindowsRuntime -and $UseBackground) {
+    $Workers = 1
+    if ($ApiWorkers -gt 1) {
+        Write-Host "   ⚠️ Windows 后台模式为稳定性固定使用 1 worker；-ApiWorkers $ApiWorkers 已忽略。多 worker 请使用 -ShowTerminals。" -ForegroundColor Yellow
+    }
+} elseif ($ApiWorkers -gt 0) {
     $Workers = $ApiWorkers
 } else {
     $Workers = [Math]::Min((& "$VenvPython" -c "import os; print(min(os.cpu_count() or 1, 4))"), 4)
@@ -177,6 +193,25 @@ function Rotate-Log {
     if ((Test-Path -LiteralPath $Path) -and ((Get-Item -LiteralPath $Path).Length -gt 10MB)) {
         Move-Item -LiteralPath $Path -Destination "$Path.1" -Force
     }
+}
+
+# 真正的无控制台后台进程。Start-Process -WindowStyle Hidden 只隐藏窗口，进程仍可能
+# 继承启动终端的 console，在 IDE 结束任务或终端发送 Ctrl+C 时收到 SIGINT。
+# cmd.exe 作为稳定包装进程等待实际服务；CreateNoWindow 则把整棵子进程树从 console
+# 控制事件中隔离。Command 的 stdout/stderr 必须由调用方重定向到文件。
+function Start-NoConsoleCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+    )
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $env:ComSpec
+    $startInfo.Arguments = "/d /s /c $Command"
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    return [System.Diagnostics.Process]::Start($startInfo)
 }
 
 # 重启模式：先结束后端+前端旧进程，再以最新代码启动
@@ -316,12 +351,20 @@ if (-not $SkipBackend) {
 
 if (-not $SkipBackend) {
     Write-Host "   🔌 启动 FastAPI 后端 (端口: $ApiPort, workers: $Workers)..." -ForegroundColor Cyan
-    if ($Background) {
+    if ($UseBackground) {
         if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
         Rotate-Log "$LogDir\backend.log"
         Rotate-Log "$LogDir\backend.err.log"
-        # 后台模式直接起 uvicorn 进程（无 powershell 包装层），PID 即 supervisor，可被 stop.ps1 精准结束
-        $beProc = Start-Process -FilePath $VenvPython -ArgumentList "-m", "uvicorn", "backend.server.main:app", "--port", "$ApiPort", "--workers", "$Workers" -WorkingDirectory $ProjectDir -WindowStyle Hidden -RedirectStandardOutput "$LogDir\backend.log" -RedirectStandardError "$LogDir\backend.err.log" -PassThru
+        # Windows venv 的 python.exe 是 redirector，外层 cmd.exe 同步等待真正的 Uvicorn；
+        # PID 文件因此稳定指向可用于 taskkill /T 的完整后端进程树。
+        Set-Content -LiteralPath "$LogDir\backend.log" -Value "" -Encoding UTF8 -NoNewline
+        Set-Content -LiteralPath "$LogDir\backend.err.log" -Value "" -Encoding UTF8 -NoNewline
+        if ($IsWindowsRuntime) {
+            $backendCommand = '""{0}" -m backend.server.windows_daemon --port {1} 1>>"{2}" 2>>"{3}""' -f $VenvPython, $ApiPort, "$LogDir\backend.log", "$LogDir\backend.err.log"
+        } else {
+            $backendCommand = '""{0}" -m uvicorn backend.server.main:app --port {1} --workers {2} 1>>"{3}" 2>>"{4}""' -f $VenvPython, $ApiPort, $Workers, "$LogDir\backend.log", "$LogDir\backend.err.log"
+        }
+        $beProc = Start-NoConsoleCommand -Command $backendCommand -WorkingDirectory $ProjectDir
         Set-Content -LiteralPath "$LogDir\backend.pid" -Value $beProc.Id -Encoding Ascii -NoNewline
         Write-Host "   🔇 后台运行中 (PID $($beProc.Id)，日志: $LogDir\backend.log)" -ForegroundColor Gray
     } else {
@@ -333,8 +376,13 @@ if (-not $SkipBackend) {
     $retries = 0
     $maxRetries = 40
     $connected = $false
+    $backendExited = $false
     while ($retries -lt $maxRetries -and -not $connected) {
         Start-Sleep -Milliseconds 500
+        if ($UseBackground -and $beProc.HasExited) {
+            $backendExited = $true
+            break
+        }
         try {
             $response = Invoke-WebRequest -Uri "http://localhost:$ApiPort/api/healthz" -UseBasicParsing -ErrorAction SilentlyContinue
             if ($response.StatusCode -eq 200) { $connected = $true }
@@ -343,8 +391,21 @@ if (-not $SkipBackend) {
     }
     if ($connected) {
         Write-Host "   ✅ 后端已就绪 (http://localhost:$ApiPort)" -ForegroundColor Green
+    } elseif ($backendExited) {
+        $backendExitCode = "unknown"
+        try {
+            $beProc.WaitForExit()
+            $backendExitCode = $beProc.ExitCode
+        } catch {}
+        Write-Host "   ❌ 后端进程在健康检查完成前退出 (exit code: $backendExitCode)" -ForegroundColor Red
+        Write-Host "      错误日志: $LogDir\backend.err.log" -ForegroundColor Yellow
+        if (Test-Path -LiteralPath "$LogDir\backend.err.log") {
+            Get-Content -LiteralPath "$LogDir\backend.err.log" -Tail 20 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+        }
+        exit 1
     } else {
-        Write-Host "   ⚠️  后端启动中或健康检查失败，请查看后端窗口日志" -ForegroundColor Yellow
+        $diagnosticTarget = if ($UseBackground) { "$LogDir\backend.err.log" } else { "后端窗口日志" }
+        Write-Host "   ⚠️  后端启动中或健康检查失败，请查看 $diagnosticTarget" -ForegroundColor Yellow
     }
 }
 
@@ -362,13 +423,16 @@ if (-not $SkipFrontend) {
     }
 
     Write-Host "   🎨 启动前端开发服务器 (端口: $FrontendPort)..." -ForegroundColor Cyan
-    if ($Background) {
+    if ($UseBackground) {
         if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
         Rotate-Log "$LogDir\frontend.log"
         Rotate-Log "$LogDir\frontend.err.log"
         $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
         if (-not $npmCmd) { $npmCmd = "npm" }
-        $feProc = Start-Process -FilePath $npmCmd -ArgumentList "run", "dev", "--", "--port", "$FrontendPort" -WorkingDirectory "$ProjectDir\frontend" -WindowStyle Hidden -RedirectStandardOutput "$LogDir\frontend.log" -RedirectStandardError "$LogDir\frontend.err.log" -PassThru
+        Set-Content -LiteralPath "$LogDir\frontend.log" -Value "" -Encoding UTF8 -NoNewline
+        Set-Content -LiteralPath "$LogDir\frontend.err.log" -Value "" -Encoding UTF8 -NoNewline
+        $frontendCommand = '""{0}" run dev -- --port {1} 1>>"{2}" 2>>"{3}""' -f $npmCmd, $FrontendPort, "$LogDir\frontend.log", "$LogDir\frontend.err.log"
+        $feProc = Start-NoConsoleCommand -Command $frontendCommand -WorkingDirectory "$ProjectDir\frontend"
         Set-Content -LiteralPath "$LogDir\frontend.pid" -Value $feProc.Id -Encoding Ascii -NoNewline
         Write-Host "   🔇 后台运行中 (PID $($feProc.Id)，日志: $LogDir\frontend.log)" -ForegroundColor Gray
     } else {
@@ -394,10 +458,10 @@ Write-Host @"
    - 配置 LLM：打开前端「设置 → LLM API 配置」填写（也可复制 backend/.env.example 为项目根 .env）
    - 数据备份与迁移：打开前端「设置 → 数据备份与迁移」卡片
    - 查看设计文档: .\docs\SYSTEM-DESIGN.md
-   - 按 Ctrl+C 停止各个服务窗口
+   - 停止服务: .\stop.ps1（-ShowTerminals 模式也可在服务窗口按 Ctrl+C）
 "@ -ForegroundColor Green
 
-if ($Background) {
+if ($UseBackground) {
     Write-Host @"
 
 🔇 后台模式已启用（无新终端）：

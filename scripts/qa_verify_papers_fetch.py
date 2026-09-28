@@ -2,7 +2,7 @@
 """QA 验证：POST /api/papers/fetch 契约兼容性（修复 422 回归）。
 
 背景：后端端点原本只接受 JSON body（FetchPapersRequest），而前端
-papersApi.ts / aiAgent.ts 用 query 参数（max / keywords）且不带 body，
+papersApi.ts 用 query 参数（max / keywords）且不带 body，
 FastAPI 解析必填 body 失败 → 422 Unprocessable Entity。
 
 修复后端点同时兼容 query 参数与 body。本脚本用 FastAPI TestClient
