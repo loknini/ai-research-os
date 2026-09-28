@@ -6,6 +6,7 @@ import aiosqlite
 from .runner import Migration
 from .v0001_baseline import BaselineContext
 from . import v0001_baseline
+from . import v0002_rag_resume
 from ..schema import validate_schema
 
 
@@ -34,6 +35,13 @@ def build_migrations(
             upgrade=apply_baseline,
             transactional=False,
             validate=validate_baseline,
+        ),
+        Migration(
+            version=v0002_rag_resume.VERSION,
+            name=v0002_rag_resume.NAME,
+            checksum=v0002_rag_resume.CHECKSUM,
+            upgrade=v0002_rag_resume.upgrade,
+            validate=v0002_rag_resume.validate,
         ),
     )
 

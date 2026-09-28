@@ -28,3 +28,13 @@ export function extractTextFromContent(content: string | ChatContentPart[]): str
     .join('\n')
     .trim()
 }
+
+/** Remove only blank lines before an assistant reply, preserving code indentation. */
+export function stripAssistantLeadingBreaks(content: string): string {
+  return content.replace(/^(?:[\t ]*\r?\n)+/, '')
+}
+
+/** Append an SSE text delta without allowing providers to create an empty first line. */
+export function appendAssistantDelta(current: string, delta: string): string {
+  return stripAssistantLeadingBreaks(current + delta)
+}

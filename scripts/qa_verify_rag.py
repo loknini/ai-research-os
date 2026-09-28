@@ -554,6 +554,83 @@ async def main() -> None:
     finally:
         del _lc.embed_with_fallback  # 恢复类方法，避免污染后继用例
 
+    # 22) Resumable generation: a fully persisted file is not parsed again,
+    # and staged chunks remain invisible until the generation is activated.
+    _resume_source = "src-resume"
+    await database.create_rag_source(
+        _resume_source, SPACE, _resume_source, [str(corpus)], True,
+        ["txt", "md"], status="indexing")
+    _resume_job = await database.enqueue_rag_index(
+        SPACE, _resume_source, [str(corpus)], True, ["txt", "md"])
+    _claimed = await database.claim_rag_index_job("qa-resume-worker")
+    assert _claimed and _claimed["id"] == _resume_job, _claimed
+    assert await database.mark_rag_job_running(_resume_job, SPACE)
+    _generation = await database.ensure_rag_job_generation(_resume_job, SPACE)
+    assert _generation
+    assert await database.ensure_rag_job_generation(_resume_job, SPACE) == _generation
+
+    _first_path = (corpus / "a.txt").resolve()
+    _first_meta = rag_service.extract_document(_first_path)
+    _first_doc_id = "resume-doc-a"
+    _first_chunks = rag_service.chunk_document(
+        _first_meta["full_text"], _first_meta["page_boundaries"], overlap=150)
+    assert await database.store_rag_document_chunks({
+        "id": _first_doc_id,
+        "source_id": _resume_source,
+        "file_path": str(_first_path),
+        "file_name": _first_path.name,
+        "file_type": _first_meta["file_type"],
+        "file_size": _first_meta["file_size"],
+        "page_count": _first_meta["page_count"],
+        "char_count": _first_meta["char_count"],
+        "generation_id": _generation,
+    }, [{
+        "id": f"resume-a-{i}", "source_id": _resume_source,
+        "doc_id": _first_doc_id, "chunk_index": i,
+        "content": chunk["content"], "page_start": chunk["page_start"],
+        "page_end": chunk["page_end"], "char_start": chunk["char_start"],
+        "char_end": chunk["char_end"], "generation_id": _generation,
+        "token_count": max(1, len(chunk["content"]) // 4),
+    } for i, chunk in enumerate(_first_chunks)], SPACE)
+    _before_activation = await database.get_rag_chunks_for_retrieval(
+        SPACE, [_resume_source])
+    assert not _before_activation, "staging generation leaked before activation"
+
+    _orig_extract = rag_service.extract_document
+    _orig_resume_spec = rag_service._current_embedding_spec
+    _orig_resume_exact = llm_client.embed_exact
+    _extracted_paths = []
+
+    def _count_extract(path):
+        _extracted_paths.append(str(Path(path).resolve()))
+        return _orig_extract(path)
+
+    rag_service.extract_document = _count_extract
+    rag_service._current_embedding_spec = lambda: {
+        "provider": "api", "model": "qa-resume", "revision": "qa-v1",
+        "query_instruction": "", "normalized": True,
+    }
+    llm_client.embed_exact = lambda texts, **kwargs: fake_embed(texts)
+    try:
+        _resumed = await rag_service.index_source(
+            _resume_source, SPACE, [str(corpus)], True, ["txt", "md"],
+            job_id=_resume_job, generation_id=_generation)
+    finally:
+        rag_service.extract_document = _orig_extract
+        rag_service._current_embedding_spec = _orig_resume_spec
+        llm_client.embed_exact = _orig_resume_exact
+    assert _resumed["status"] == "ready", _resumed
+    assert str(_first_path) not in _extracted_paths, _extracted_paths
+    assert str((corpus / "sub" / "b.md").resolve()) in _extracted_paths, _extracted_paths
+    _resume_state = await database.get_rag_generation_state(
+        _resume_source, SPACE, _generation)
+    assert _resume_state["documentCount"] == 2, _resume_state
+    assert _resume_state["embeddedCount"] == _resume_state["chunkCount"], _resume_state
+    _resume_job_row = await database.get_rag_index_job(_resume_job, SPACE)
+    assert _resume_job_row and _resume_job_row["phase"] == "done", _resume_job_row
+    assert _resume_job_row["checkpoint"].get("completed") is True, _resume_job_row
+    print("PASS resumable generation + invisible staging + durable checkpoint")
+
     print("\nALL_RAG_QA_PASS")
 
 

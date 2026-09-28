@@ -12,6 +12,7 @@ import {
 } from '@/hubs/chat/services/chatApi'
 import { chatGenerationManager } from '@/hubs/chat/services/chatGenerationManager'
 import type { Conversation, Message } from '@/hubs/chat/types'
+import { stripAssistantLeadingBreaks } from '@/hubs/chat/messageUtils'
 
 const QUICK_PROMPTS = [
   { label: '研读论文', prompt: '请帮我设计一份论文研读计划，并说明需要我提供哪些论文。', icon: '✨' },
@@ -154,10 +155,10 @@ export function ChatPanel() {
           {visibleMessages.map(message => <div key={message.id} className={cn('flex gap-3', message.role === 'user' && 'flex-row-reverse')}>
             <div className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-lg', message.role === 'user' ? 'bg-primary' : 'bg-muted')}>
               {message.role === 'user' ? <User className="h-4 w-4 text-primary-foreground" /> : <Bot className="h-4 w-4" />}
-            </div><div className={cn('max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm', message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted')}>{contentText(message.content)}</div>
+            </div><div className={cn('max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-2 text-sm', message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted')}>{message.role === 'assistant' ? stripAssistantLeadingBreaks(contentText(message.content)) : contentText(message.content)}</div>
           </div>)}
           {(isGenerating || streaming) && <div className="flex gap-3"><div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted"><Bot className="h-4 w-4" /></div>
-            <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl bg-muted px-4 py-2 text-sm">{streaming || <Loader2 className="h-4 w-4 animate-spin" />}</div></div>}
+            <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl bg-muted px-4 py-2 text-sm">{stripAssistantLeadingBreaks(streaming) || <Loader2 className="h-4 w-4 animate-spin" />}</div></div>}
         </div>}
       </ScrollArea>
       {error && <div className="px-4 text-xs text-destructive">{error}</div>}

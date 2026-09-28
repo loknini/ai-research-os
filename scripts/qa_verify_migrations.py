@@ -32,13 +32,19 @@ async def main() -> int:
             )
         ).fetchall()
         pragma = await (await conn.execute("PRAGMA user_version")).fetchone()
-    check("fresh DB records exactly one baseline", len(rows) == 1 and rows[0]["version"] == 1)
-    check("PRAGMA user_version mirrors the ledger", bool(pragma and pragma[0] == 1))
+    latest = int(rows[-1]["version"] if rows else 0)
+    expected_versions = list(range(1, latest + 1))
+    check(
+        "fresh DB records every registered migration",
+        [int(row["version"]) for row in rows] == expected_versions,
+        f"versions={expected_versions}",
+    )
+    check("PRAGMA user_version mirrors the ledger", bool(pragma and pragma[0] == latest))
 
     await database.init_db()
     async with database.get_db() as conn:
         count = await (await conn.execute("SELECT COUNT(*) FROM schema_migrations")).fetchone()
-    check("repeated startup is idempotent", bool(count and count[0] == 1))
+    check("repeated startup is idempotent", bool(count and count[0] == latest))
 
     stored_name = str(rows[0]["name"])
     stored_checksum = str(rows[0]["checksum"])
@@ -46,12 +52,19 @@ async def main() -> int:
     async def noop(_conn) -> None:
         return None
 
-    bad_history = Migration(1, stored_name, "0" * 64, noop)
+    recorded = tuple(
+        Migration(int(row["version"]), str(row["name"]), str(row["checksum"]), noop)
+        for row in rows
+    )
+    bad_history = (
+        Migration(1, stored_name, "0" * 64, noop),
+        *recorded[1:],
+    )
     try:
         await run_migrations(
             get_db=database.get_db,
             data_dir=database.DATA_DIR,
-            migrations=(bad_history,),
+            migrations=bad_history,
         )
     except MigrationError as exc:
         check("edited migration history is rejected", "differs from the applied history" in str(exc))
@@ -64,12 +77,13 @@ async def main() -> int:
         raise RuntimeError("fault injection")
 
     baseline = Migration(1, stored_name, stored_checksum, noop)
-    failing = Migration(2, "fault_injection", "f" * 64, fail_after_ddl)
+    failing_version = latest + 1
+    failing = Migration(failing_version, "fault_injection", "f" * 64, fail_after_ddl)
     try:
         await run_migrations(
             get_db=database.get_db,
             data_dir=database.DATA_DIR,
-            migrations=(baseline, failing),
+            migrations=(*recorded, failing),
         )
     except RuntimeError as exc:
         check("migration failure is propagated", str(exc) == "fault injection")
@@ -81,19 +95,20 @@ async def main() -> int:
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='migration_should_rollback'"
             )
         ).fetchone()
-        version_two = await (
-            await conn.execute("SELECT 1 FROM schema_migrations WHERE version=2")
+        failed_version = await (
+            await conn.execute("SELECT 1 FROM schema_migrations WHERE version=?", (failing_version,))
         ).fetchone()
     check("failed transactional DDL is rolled back", leaked is None)
-    check("failed migration does not advance the ledger", version_two is None)
+    check("failed migration does not advance the ledger", failed_version is None)
 
+    future_version = latest + 1
     async with database.get_db() as conn:
         await conn.execute(
             "INSERT INTO schema_migrations "
-            "(version, name, checksum, applied_at, duration_ms) VALUES (2, 'future', ?, 0, 0)",
-            ("2" * 64,),
+            "(version, name, checksum, applied_at, duration_ms) VALUES (?, 'future', ?, 0, 0)",
+            (future_version, "2" * 64),
         )
-        await conn.execute("PRAGMA user_version = 2")
+        await conn.execute(f"PRAGMA user_version = {future_version}")
     try:
         await database.init_db()
     except MigrationError as exc:
@@ -103,12 +118,12 @@ async def main() -> int:
 
     async with database.get_db() as conn:
         await conn.execute("DELETE FROM schema_migrations WHERE version = 1")
-    future = Migration(2, "future", "2" * 64, noop)
+    future = Migration(future_version, "future", "2" * 64, noop)
     try:
         await run_migrations(
             get_db=database.get_db,
             data_dir=database.DATA_DIR,
-            migrations=(baseline, future),
+            migrations=(*recorded, future),
         )
     except MigrationError as exc:
         check("migration history gaps are rejected", "history has gaps" in str(exc))

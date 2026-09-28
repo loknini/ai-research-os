@@ -132,6 +132,10 @@ async def dispatcher(stop: asyncio.Event) -> None:
         try:
             if not await db.database.mark_rag_job_running(job["id"], space_id):
                 continue
+            generation_id = await db.database.ensure_rag_job_generation(job["id"], space_id)
+            if not generation_id:
+                raise RuntimeError("无法为索引任务分配持久 generation")
+            job["generationId"] = generation_id
             task = asyncio.create_task(asyncio.to_thread(_run_job_blocking, job, cancel_ev))
             while not task.done():
                 try:
@@ -180,7 +184,9 @@ def _run_job_blocking(job: Dict, cancel_ev: threading.Event) -> Dict:
     return asyncio.run(rag_service.index_source(
         source_id, space_id, payload.get("paths") or [],
         bool(payload.get("recursive", True)), payload.get("file_types"),
-        cancel_event=cancel_ev))
+        cancel_event=cancel_ev, job_id=job.get("id"),
+        generation_id=job.get("generationId"),
+        checkpoint=job.get("checkpoint") or {}))
 
 
 __all__ = ["submit_index", "submit_paper", "submit_web", "cancel_index",

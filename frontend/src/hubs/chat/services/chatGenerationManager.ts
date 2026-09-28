@@ -2,6 +2,7 @@ import { streamChatCompletion, addMessageAPI } from './chatApi'
 import { useGenerationStore } from '@/stores/generationStore'
 import { generateId } from '@/utils'
 import type { Message, ReasoningStep, ToolResult, RagSource } from '../types'
+import { appendAssistantDelta, stripAssistantLeadingBreaks } from '../messageUtils'
 
 export type GenStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 
@@ -196,7 +197,7 @@ class ChatGenerationManager {
       await streamChatCompletion(
         messagesForLLM,
         (chunk) => {
-          state.streamingContent += chunk
+          state.streamingContent = appendAssistantDelta(state.streamingContent, chunk)
           if (state.phase !== 'writing') state.phase = 'writing'
           this.notify(conversationId)
         },
@@ -271,7 +272,7 @@ class ChatGenerationManager {
       const assistantMessage: Message = {
         id: generateId(),
         role: 'assistant',
-        content: state.streamingContent,
+        content: stripAssistantLeadingBreaks(state.streamingContent),
         timestamp: Date.now(),
         parentId,
         metadata: {

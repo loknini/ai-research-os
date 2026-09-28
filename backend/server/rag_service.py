@@ -665,74 +665,85 @@ async def index_source(
     recursive: bool,
     file_types: Optional[List[str]],
     cancel_event: Optional[threading.Event] = None,
+    job_id: Optional[str] = None,
+    generation_id: Optional[str] = None,
+    checkpoint: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """对一个索引源执行完整索引流程：发现 → 抽取 → 切片 → 嵌入 → 落库。
+    """Build an invisible generation with file- and batch-level crash recovery."""
+    generation_id = generation_id or uuid.uuid4().hex
+    checkpoint_data: Dict[str, Any] = dict(checkpoint or {})
+    skipped_paths = set(checkpoint_data.get("skippedPaths") or [])
 
-    进度/状态全部落在 ``rag_sources``（status: indexing→ready/partial/failed/cancelled，
-    progress 0-100 实时推进），前端轮询即可渲染进度条；
-    ``cancel_event`` 支持中途取消（跨 worker 以 DB 状态为准）。
-    嵌入模型一律走全局 LLM 配置（单空间单向量空间，不支持按源覆盖）。
-    阶段权重：发现 5% → 抽取切片 70%（按文件）→ 向量化 10% → 落库 15%（按批）。
-    """
-    generation_id = uuid.uuid4().hex
-    # 清理更早的非活动代放在本轮构建开始前；此时 active 尚未切换，不会删到
-    # 任何当前请求正在引用的数据。刚退役的一代至少保留到下次重建，保护在途查询。
-    try:
-        previous = await db.database.get_rag_source(source_id, space_id)
-        previous_generation = (previous or {}).get("activeGenerationId")
-        if previous_generation:
+    async def save_checkpoint(phase: str, **values: Any) -> None:
+        checkpoint_data.update(values)
+        checkpoint_data["generationId"] = generation_id
+        if job_id:
+            await db.database.update_rag_job_checkpoint(
+                job_id, space_id, phase=phase, checkpoint=checkpoint_data)
+
+    state = await db.database.get_rag_generation_state(
+        source_id, space_id, generation_id)
+    is_resume = bool(state["documentCount"] or state["chunkCount"])
+    previous = await db.database.get_rag_source(source_id, space_id)
+    previous_generation = (previous or {}).get("activeGenerationId")
+    if not is_resume and previous_generation:
+        # Retain the active generation and discard older abandoned staging data.
+        try:
             await db.database.clear_rag_generation(
                 source_id, space_id, previous_generation, keep=True)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[rag] deferred generation cleanup skipped: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[rag] deferred generation cleanup skipped: {exc}")
     await db.database.update_rag_source(
         source_id, space_id, status="indexing", error="",
-        progress=0, total_files=0)
+        **({"progress": 0, "total_files": 0} if not is_resume else {}))
+
+    await save_checkpoint("discovering")
     files = discover_files(paths, recursive, file_types)
     if not files:
         await db.database.update_rag_source(
             source_id, space_id, status="failed", error="未找到可索引的文件（请检查路径/类型）")
-        return {"status": "failed", "doc_count": 0, "chunk_count": 0}
+        return {"status": "failed", "doc_count": 0, "chunk_count": 0,
+                "error": "未找到可索引的文件"}
 
     total = len(files)
     await db.database.update_rag_source(
         source_id, space_id, total_files=total, progress=5)
-    all_chunks: List[Dict[str, Any]] = []
-    doc_count = 0
-    skipped = 0
+    completed_paths = set(state["completedPaths"])
+    await save_checkpoint(
+        "extracting", totalFiles=total, processedFiles=len(completed_paths),
+        skippedPaths=sorted(skipped_paths))
+
     for idx, fp in enumerate(files):
+        normalized_path = str(fp.resolve())
+        if normalized_path in completed_paths or normalized_path in skipped_paths:
+            continue
         if cancel_event and cancel_event.is_set():
             await db.database.update_rag_source(source_id, space_id, status="cancelled")
             await db.database.clear_rag_generation(source_id, space_id, generation_id)
-            return {"status": "cancelled", "doc_count": doc_count,
-                    "chunk_count": len(all_chunks)}
+            return {"status": "cancelled", "doc_count": 0, "chunk_count": 0}
         try:
             if fp.stat().st_size > _MAX_FILE_SIZE:
-                skipped += 1
+                skipped_paths.add(normalized_path)
                 continue
             meta = extract_document(fp)
         except Exception as exc:  # noqa: BLE001 - 单个文件失败不阻断整体
             print(f"[rag] skip {fp}: {exc}")
-            skipped += 1
+            skipped_paths.add(normalized_path)
             continue
         finally:
-            # 每个文件（成功/跳过）都推进一次，取消/崩溃时进度不回退
             await db.database.update_rag_source(
                 source_id, space_id, progress=5 + 70 * (idx + 1) // total)
 
-        doc_id = str(uuid.uuid4())
-        await db.database.create_rag_document(
-            doc_id, space_id, source_id, str(fp), fp.name, meta["file_type"],
-            meta["file_size"], meta["page_count"], meta["char_count"], 0,
-            generation_id=generation_id)
-        doc_count += 1
-
-        # 局部重叠避免答案跨切片边界时两边都召回不到；元数据仍保留精确字符/页码。
-        chunks = chunk_document(
+        doc_id = str(uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{space_id}\0{source_id}\0{generation_id}\0{normalized_path}",
+        ))
+        parsed_chunks = chunk_document(
             meta["full_text"], meta["page_boundaries"], overlap=150)
-        for i, ch in enumerate(chunks):
-            all_chunks.append({
-                "id": str(uuid.uuid4()),
+        chunks: List[Dict[str, Any]] = []
+        for i, ch in enumerate(parsed_chunks):
+            chunks.append({
+                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{doc_id}\0{i}")),
                 "source_id": source_id,
                 "doc_id": doc_id,
                 "chunk_index": i,
@@ -745,86 +756,136 @@ async def index_source(
                 "generation_id": generation_id,
                 "token_count": max(1, len(ch["content"]) // 4),
             })
-        await db.database.update_rag_document(doc_id, space_id, chunk_count=len(chunks))
-        # 及时释放大文本，避免内存堆积。
+        if not chunks:
+            skipped_paths.add(normalized_path)
+            continue
+        stored = await db.database.store_rag_document_chunks({
+            "id": doc_id,
+            "source_id": source_id,
+            "file_path": normalized_path,
+            "file_name": fp.name,
+            "file_type": meta["file_type"],
+            "file_size": meta["file_size"],
+            "page_count": meta["page_count"],
+            "char_count": meta["char_count"],
+            "generation_id": generation_id,
+        }, chunks, space_id)
+        if not stored:
+            await db.database.update_rag_source(
+                source_id, space_id, status="failed", error=f"切片落库失败: {fp.name}")
+            return {"status": "failed", "doc_count": 0, "chunk_count": 0,
+                    "error": f"切片落库失败: {fp.name}"}
+        completed_paths.add(normalized_path)
         meta.clear()
+        await save_checkpoint(
+            "extracting", processedFiles=len(completed_paths),
+            skippedPaths=sorted(skipped_paths))
 
-    if doc_count == 0:
+    state = await db.database.get_rag_generation_state(source_id, space_id, generation_id)
+    if state["documentCount"] == 0:
         await db.database.clear_rag_generation(source_id, space_id, generation_id)
         await db.database.update_rag_source(
             source_id, space_id, status="failed",
             error="所有文件均解析失败（PDF 需安装 PyMuPDF；或文件为空/损坏）")
-        return {"status": "failed", "doc_count": 0, "chunk_count": 0}
+        return {"status": "failed", "doc_count": 0, "chunk_count": 0,
+                "error": "所有文件均解析失败"}
 
-    # 向量化（全局配置；local provider 与 API 共用同一 embed_with_fallback 入口）。
-    # 逐批上报 75→85% + 每 20 批打一行后端日志（此前整个阶段进度 frozen 在 75%，
-    # 外加控制台无声，被误认卡死；rogue 后端事故里 4 小时无声就是这么来的）。
     embed_mode = "keyword"
     embed_profile: Optional[Dict[str, Any]] = None
     embed_spec = _current_embedding_spec()
-    source = await db.database.get_rag_source(source_id, space_id)
+    profile_ids = state["profileIds"]
+    if len(profile_ids) > 1:
+        return {"status": "failed", "doc_count": 0, "chunk_count": 0,
+                "error": "暂存代包含多个嵌入 profile"}
+    if profile_ids:
+        embed_profile = await db.database.get_rag_embedding_profile(profile_ids[0])
+
     if embed_spec:
-        texts = [c["content"] for c in all_chunks]
-        _embed_batches = 0
-
-        async def _on_embed_batch(done: int, total: int) -> None:
-            nonlocal _embed_batches
-            _embed_batches += 1
+        batch_size = _EMBED_BATCH_LOCAL if embed_spec.get("provider") == "local" else _EMBED_BATCH_API
+        embed_batches = int(checkpoint_data.get("embeddingBatches") or 0)
+        total_chunks = int(state["chunkCount"])
+        while True:
+            if cancel_event and cancel_event.is_set():
+                await db.database.update_rag_source(source_id, space_id, status="cancelled")
+                await db.database.clear_rag_generation(source_id, space_id, generation_id)
+                return {"status": "cancelled", "doc_count": 0, "chunk_count": 0}
+            pending = await db.database.get_pending_rag_chunks(
+                source_id, space_id, generation_id, batch_size)
+            if not pending:
+                break
+            vectors = await _embed_texts(
+                [chunk["content"] for chunk in pending], spec=embed_spec)
+            if vectors is None or len(vectors) != len(pending):
+                state = await db.database.get_rag_generation_state(
+                    source_id, space_id, generation_id)
+                if state["embeddedCount"]:
+                    await db.database.update_rag_source(
+                        source_id, space_id, status="failed",
+                        error="向量化中断；已保存断点，可在配置恢复后重试")
+                    return {"status": "failed", "doc_count": state["documentCount"],
+                            "chunk_count": state["chunkCount"], "error": "向量化中断"}
+                break
+            dims = len(vectors[0]) if vectors else 0
+            current_profile = _embedding_profile(embed_spec, dims) if dims else None
+            if not current_profile:
+                break
+            if embed_profile and embed_profile.get("id") != current_profile["id"]:
+                await db.database.update_rag_source(
+                    source_id, space_id, status="failed",
+                    error="嵌入配置在索引过程中发生变化，请重新提交索引")
+                return {"status": "failed", "doc_count": state["documentCount"],
+                        "chunk_count": state["chunkCount"], "error": "嵌入配置发生变化"}
+            embed_profile = current_profile
+            await db.database.upsert_rag_embedding_profile(embed_profile)
+            batch = [
+                {**chunk, "embedding": vector}
+                for chunk, vector in zip(pending, vectors)
+            ]
+            written = await db.database.update_rag_chunk_embeddings(
+                space_id, batch, embed_profile["id"])
+            if written != len(batch):
+                return {"status": "failed", "doc_count": state["documentCount"],
+                        "chunk_count": state["chunkCount"], "error": "向量断点落库失败"}
+            embed_batches += 1
+            state = await db.database.get_rag_generation_state(
+                source_id, space_id, generation_id)
+            done = int(state["embeddedCount"])
             await db.database.update_rag_source(
                 source_id, space_id,
-                progress=75 + 10 * done // total if total else 75)
-            if _embed_batches == 1 or _embed_batches % 20 == 0 or done >= total:
-                print(f"[rag] embedding {source_id[:8]}: batch {_embed_batches} "
-                      f"({done}/{total} chunks)", flush=True)
+                progress=75 + 20 * done // total_chunks if total_chunks else 95)
+            await save_checkpoint(
+                "embedding", embeddingBatches=embed_batches,
+                embeddedChunks=done, totalChunks=total_chunks)
+            if embed_batches == 1 or embed_batches % 20 == 0 or done >= total_chunks:
+                print(f"[rag] embedding {source_id[:8]}: batch {embed_batches} "
+                      f"({done}/{total_chunks} chunks)", flush=True)
 
-        vecs = await _embed_texts(texts, on_batch=_on_embed_batch, spec=embed_spec)
-        if cancel_event and cancel_event.is_set():
-            await db.database.clear_rag_generation(source_id, space_id, generation_id)
-            await db.database.update_rag_source(source_id, space_id, status="cancelled")
-            return {"status": "cancelled", "doc_count": 0, "chunk_count": 0}
-        if vecs is not None and len(vecs) == len(all_chunks):
-            dims = len(vecs[0]) if vecs else 0
-            if dims and all(len(v) == dims for v in vecs):
-                embed_profile = _embedding_profile(embed_spec, dims)
-                await db.database.upsert_rag_embedding_profile(embed_profile)
-            for c, v in zip(all_chunks, vecs):
-                c["embedding"] = v
-                c["embedding_profile_id"] = embed_profile["id"] if embed_profile else None
-            if embed_profile:
-                embed_mode = "vector"
-    await db.database.update_rag_source(source_id, space_id, progress=85)
+    state = await db.database.get_rag_generation_state(source_id, space_id, generation_id)
+    if state["embeddedCount"] == state["chunkCount"] and state["chunkCount"] > 0:
+        embed_mode = "vector"
+        if not embed_profile and state["profileIds"]:
+            embed_profile = await db.database.get_rag_embedding_profile(state["profileIds"][0])
 
-    # 落库（分批，避免单事务过大；每批推进一次）。
-    total_chunks = len(all_chunks)
-    for i in range(0, total_chunks, 200):
-        if cancel_event and cancel_event.is_set():
-            await db.database.clear_rag_generation(source_id, space_id, generation_id)
-            await db.database.update_rag_source(source_id, space_id, status="cancelled")
-            return {"status": "cancelled", "doc_count": 0, "chunk_count": 0}
-        inserted = await db.database.insert_rag_chunks(all_chunks[i:i + 200], space_id)
-        if inserted != len(all_chunks[i:i + 200]):
-            await db.database.clear_rag_generation(source_id, space_id, generation_id)
-            await db.database.update_rag_source(
-                source_id, space_id, status="failed", error="索引写入失败，旧版本保持可用")
-            return {"status": "failed", "doc_count": 0, "chunk_count": 0}
-        if total_chunks:
-            await db.database.update_rag_source(
-                source_id, space_id,
-                progress=85 + 15 * min(i + 200, total_chunks) // total_chunks)
-
-    status = "ready" if skipped == 0 else "partial"
+    await save_checkpoint(
+        "activating", processedFiles=state["documentCount"],
+        embeddedChunks=state["embeddedCount"], totalChunks=state["chunkCount"],
+        skippedPaths=sorted(skipped_paths))
+    status = "ready" if not skipped_paths else "partial"
     if cancel_event and cancel_event.is_set():
         await db.database.clear_rag_generation(source_id, space_id, generation_id)
         await db.database.update_rag_source(source_id, space_id, status="cancelled")
         return {"status": "cancelled", "doc_count": 0, "chunk_count": 0}
     activated = await db.database.activate_rag_generation(
-        source_id, space_id, generation_id, status=status, doc_count=doc_count,
-        chunk_count=len(all_chunks), embed_mode=embed_mode, profile=embed_profile)
+        source_id, space_id, generation_id, status=status,
+        doc_count=state["documentCount"], chunk_count=state["chunkCount"],
+        embed_mode=embed_mode, profile=embed_profile)
     if not activated:
-        await db.database.clear_rag_generation(source_id, space_id, generation_id)
-        return {"status": "failed", "doc_count": 0, "chunk_count": 0}
-    return {"status": status, "doc_count": doc_count, "chunk_count": len(all_chunks),
-            "skipped": skipped, "embed_mode": embed_mode}
+        return {"status": "failed", "doc_count": state["documentCount"],
+                "chunk_count": state["chunkCount"], "error": "索引代激活失败"}
+    await save_checkpoint("done", completed=True)
+    return {"status": status, "doc_count": state["documentCount"],
+            "chunk_count": state["chunkCount"], "skipped": len(skipped_paths),
+            "embed_mode": embed_mode}
 
 
 async def _embed_and_store(space_id: str, source_id: str, docs_chunks: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]]) -> Dict[str, Any]:

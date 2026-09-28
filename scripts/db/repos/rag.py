@@ -345,7 +345,8 @@ async def get_rag_documents(space_id: str = DEFAULT_SPACE, source_id: Optional[s
                 'SELECT d.* FROM rag_documents d JOIN rag_sources s '
                 'ON s.id = d.source_id AND s.space_id = d.space_id '
                 'WHERE d.space_id = ? AND d.source_id = ? '
-                'AND (s.active_generation_id IS NULL OR d.generation_id = s.active_generation_id) '
+                'AND ((s.active_generation_id IS NULL AND d.generation_id IS NULL) '
+                'OR d.generation_id = s.active_generation_id) '
                 'ORDER BY d.file_name',
                 (space_id, source_id))
         else:
@@ -353,7 +354,8 @@ async def get_rag_documents(space_id: str = DEFAULT_SPACE, source_id: Optional[s
                 'SELECT d.* FROM rag_documents d JOIN rag_sources s '
                 'ON s.id = d.source_id AND s.space_id = d.space_id '
                 'WHERE d.space_id = ? '
-                'AND (s.active_generation_id IS NULL OR d.generation_id = s.active_generation_id) '
+                'AND ((s.active_generation_id IS NULL AND d.generation_id IS NULL) '
+                'OR d.generation_id = s.active_generation_id) '
                 'ORDER BY d.file_name', (space_id,))
         return [_rag_document_to_dict(r) for r in rows]
 
@@ -419,6 +421,162 @@ async def _fts_delete_by_chunk_ids(conn: aiosqlite.Connection,
         await conn.execute(
             f"DELETE FROM rag_chunks_fts WHERE space_id = ? "
             f"AND chunk_id IN ({placeholders})", [space_id, *part])
+
+
+async def get_rag_generation_state(
+    source_id: str,
+    space_id: str,
+    generation_id: str,
+) -> Dict[str, Any]:
+    """Return durable staging progress used to resume an interrupted build."""
+    async with get_db() as conn:
+        docs = await _fetchall(
+            conn,
+            "SELECT id, file_path, chunk_count FROM rag_documents "
+            "WHERE source_id = ? AND space_id = ? AND generation_id = ?",
+            (source_id, space_id, generation_id),
+        )
+        chunks = await _fetchone(
+            conn,
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) AS embedded "
+            "FROM rag_chunks WHERE source_id = ? AND space_id = ? AND generation_id = ?",
+            (source_id, space_id, generation_id),
+        )
+        profiles = await _fetchall(
+            conn,
+            "SELECT DISTINCT embedding_profile_id FROM rag_chunks "
+            "WHERE source_id = ? AND space_id = ? AND generation_id = ? "
+            "AND embedding_profile_id IS NOT NULL",
+            (source_id, space_id, generation_id),
+        )
+    return {
+        "documentCount": len(docs),
+        "chunkCount": int((chunks or {"total": 0})["total"] or 0),
+        "embeddedCount": int((chunks or {"embedded": 0})["embedded"] or 0),
+        "completedPaths": {str(row["file_path"]) for row in docs},
+        "profileIds": [str(row["embedding_profile_id"]) for row in profiles],
+    }
+
+
+async def store_rag_document_chunks(
+    document: Dict[str, Any],
+    chunks: List[Dict[str, Any]],
+    space_id: str,
+) -> bool:
+    """Atomically persist one extracted document and its unembedded chunks.
+
+    A process death can therefore leave either the whole file or none of it;
+    the next claimant only has to compare completed ``file_path`` values.
+    """
+    if not chunks:
+        return False
+    now = int(time.time() * 1000)
+    try:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            existing = await _fetchone(
+                conn,
+                "SELECT id FROM rag_documents WHERE id = ? AND space_id = ?",
+                (document["id"], space_id),
+            )
+            if existing:
+                return True
+            await conn.execute(
+                """
+                INSERT INTO rag_documents
+                (id, space_id, source_id, file_path, file_name, file_type, file_size,
+                 page_count, char_count, chunk_count, url, title, section,
+                 content_hash, fetched_at, generation_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document["id"], space_id, document["source_id"],
+                    document.get("file_path", ""), document.get("file_name", ""),
+                    document.get("file_type", ""), int(document.get("file_size") or 0),
+                    int(document.get("page_count") or 0), int(document.get("char_count") or 0),
+                    len(chunks), document.get("url"), document.get("title"),
+                    document.get("section"), document.get("content_hash"),
+                    document.get("fetched_at"), document.get("generation_id"), now,
+                ),
+            )
+            fts_rows: List[Tuple[str, str, str]] = []
+            for chunk in chunks:
+                content = _clean_text_for_db(chunk.get("content", "")) or ""
+                await conn.execute(
+                    """
+                    INSERT INTO rag_chunks
+                    (id, space_id, source_id, doc_id, chunk_index, content, page_start, page_end,
+                     char_start, char_end, embedding, embedding_profile_id, generation_id,
+                     token_count, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+                    """,
+                    (
+                        chunk["id"], space_id, chunk["source_id"], chunk["doc_id"],
+                        int(chunk.get("chunk_index") or 0), content,
+                        chunk.get("page_start"), chunk.get("page_end"),
+                        chunk.get("char_start"), chunk.get("char_end"),
+                        chunk.get("generation_id"), int(chunk.get("token_count") or 0), now,
+                    ),
+                )
+                fts_rows.append((content, chunk["id"], space_id))
+            await _fts_insert_batch(conn, fts_rows)
+        return True
+    except Exception as exc:
+        print(f"Store RAG document chunks error: {exc}")
+        return False
+
+
+async def get_pending_rag_chunks(
+    source_id: str,
+    space_id: str,
+    generation_id: str,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    async with get_db() as conn:
+        rows = await _fetchall(
+            conn,
+            "SELECT id, source_id, content FROM rag_chunks "
+            "WHERE source_id = ? AND space_id = ? AND generation_id = ? "
+            "AND embedding IS NULL ORDER BY rowid LIMIT ?",
+            (source_id, space_id, generation_id, max(1, int(limit))),
+        )
+        return [dict(row) for row in rows]
+
+
+async def update_rag_chunk_embeddings(
+    space_id: str,
+    chunks: List[Dict[str, Any]],
+    profile_id: str,
+) -> int:
+    """Persist one completed embedding batch and its sqlite-vec projection."""
+    if not chunks:
+        return 0
+    updated = 0
+    vec_rows: List[Tuple[str, str, str, List[float]]] = []
+    vec_dims = 0
+    vec_recreated = False
+    try:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            for chunk in chunks:
+                embedding = chunk.get("embedding")
+                if not isinstance(embedding, list) or not embedding:
+                    continue
+                cur = await conn.execute(
+                    "UPDATE rag_chunks SET embedding = ?, embedding_profile_id = ? "
+                    "WHERE id = ? AND space_id = ? AND embedding IS NULL",
+                    (json.dumps(embedding, ensure_ascii=False), profile_id, chunk["id"], space_id),
+                )
+                if cur.rowcount > 0:
+                    updated += 1
+                    vec_rows.append((chunk["id"], chunk["source_id"], profile_id, embedding))
+            vec_dims, vec_recreated = await _vec_dual_write(conn, space_id, vec_rows)
+        if vec_dims:
+            await _vec_meta_maintain(
+                space_id, vec_dims, len(vec_rows), vec_recreated, profile_id)
+        return updated
+    except Exception as exc:
+        print(f"Update RAG chunk embeddings error: {exc}")
+        return 0
 
 
 async def insert_rag_chunks(chunks: List[Dict[str, Any]], space_id: str = DEFAULT_SPACE) -> int:
@@ -576,7 +734,7 @@ async def get_rag_chunks_for_retrieval(space_id: str = DEFAULT_SPACE,
                 "FROM rag_chunks c LEFT JOIN rag_documents d ON c.doc_id = d.id AND c.space_id = d.space_id "
                 "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
                 f"WHERE c.space_id = ? AND c.source_id IN ({placeholders}) "
-                "AND c.rowid > ? AND (s.active_generation_id IS NULL "
+                "AND c.rowid > ? AND ((s.active_generation_id IS NULL AND c.generation_id IS NULL) "
                 "OR c.generation_id = s.active_generation_id)"
             )
             params: List[Any] = [space_id, *source_ids, after_rowid]
@@ -587,7 +745,8 @@ async def get_rag_chunks_for_retrieval(space_id: str = DEFAULT_SPACE,
                 f"c.page_end, d.file_name, d.file_path, d.file_type{_extra} "
                 "FROM rag_chunks c LEFT JOIN rag_documents d ON c.doc_id = d.id AND c.space_id = d.space_id "
                 "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
-                "WHERE c.space_id = ? AND c.rowid > ? AND (s.active_generation_id IS NULL "
+                "WHERE c.space_id = ? AND c.rowid > ? "
+                "AND ((s.active_generation_id IS NULL AND c.generation_id IS NULL) "
                 "OR c.generation_id = s.active_generation_id)"
             )
             params = [space_id, after_rowid]
@@ -661,7 +820,8 @@ async def get_rag_chunks_by_ids(space_id: str = DEFAULT_SPACE,
                     " ON c.doc_id = d.id AND c.space_id = d.space_id "
                     "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
                     f"WHERE c.space_id = ? AND c.id IN ({placeholders}) "
-                    "AND (s.active_generation_id IS NULL OR c.generation_id = s.active_generation_id)",
+                    "AND ((s.active_generation_id IS NULL AND c.generation_id IS NULL) "
+                    "OR c.generation_id = s.active_generation_id)",
                     [space_id, *part])
                 for r in rows:
                     try:
@@ -843,7 +1003,8 @@ async def fts_search_chunk_ids(space_id: str, query: str, limit: int = 50,
                 "JOIN rag_chunks c ON c.id = f.chunk_id AND c.space_id = f.space_id "
                 "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
                 "WHERE rag_chunks_fts MATCH ? AND f.space_id = ? "
-                "AND (s.active_generation_id IS NULL OR c.generation_id = s.active_generation_id)"
+                "AND ((s.active_generation_id IS NULL AND c.generation_id IS NULL) "
+                "OR c.generation_id = s.active_generation_id)"
                 + source_sql + " ORDER BY rank LIMIT ?",
                 params)
             return [r["chunk_id"] for r in rows]
@@ -896,7 +1057,8 @@ async def get_rag_retrieval_profile(space_id: str = DEFAULT_SPACE,
                 "JOIN rag_sources s ON s.id = c.source_id AND s.space_id = c.space_id "
                 "WHERE c.space_id = ? AND c.embedding IS NOT NULL "
                 "AND c.embedding_profile_id IS NOT NULL "
-                "AND (s.active_generation_id IS NULL OR c.generation_id = s.active_generation_id)"
+                "AND ((s.active_generation_id IS NULL AND c.generation_id IS NULL) "
+                "OR c.generation_id = s.active_generation_id)"
                 + source_sql + " LIMIT 2",
                 params)
             ids = [r["profile_id"] for r in rows if r["profile_id"]]
@@ -915,15 +1077,18 @@ async def get_rag_stats(space_id: str = DEFAULT_SPACE) -> Dict[str, int]:
         docs = await _fetchone(conn,
             'SELECT COUNT(*) AS n FROM rag_documents d JOIN rag_sources s '
             'ON s.id=d.source_id AND s.space_id=d.space_id WHERE d.space_id = ? '
-            'AND (s.active_generation_id IS NULL OR d.generation_id=s.active_generation_id)', (space_id,))
+            'AND ((s.active_generation_id IS NULL AND d.generation_id IS NULL) '
+            'OR d.generation_id=s.active_generation_id)', (space_id,))
         chunks = await _fetchone(conn,
             'SELECT COUNT(*) AS n FROM rag_chunks c JOIN rag_sources s '
             'ON s.id=c.source_id AND s.space_id=c.space_id WHERE c.space_id = ? '
-            'AND (s.active_generation_id IS NULL OR c.generation_id=s.active_generation_id)', (space_id,))
+            'AND ((s.active_generation_id IS NULL AND c.generation_id IS NULL) '
+            'OR c.generation_id=s.active_generation_id)', (space_id,))
         vecs = await _fetchone(conn,
             "SELECT COUNT(*) AS n FROM rag_chunks c JOIN rag_sources s "
             "ON s.id=c.source_id AND s.space_id=c.space_id WHERE c.space_id = ? "
-            "AND c.embedding IS NOT NULL AND (s.active_generation_id IS NULL "
+            "AND c.embedding IS NOT NULL "
+            "AND ((s.active_generation_id IS NULL AND c.generation_id IS NULL) "
             "OR c.generation_id=s.active_generation_id)", (space_id,))
         return {
             "sourceCount": src["n"] if src else 0,
@@ -940,6 +1105,18 @@ def _rag_job_to_dict(row) -> Optional[Dict[str, Any]]:
         payload = json.loads(row["payload"]) if row["payload"] else {}
     except Exception:
         payload = {}
+    try:
+        checkpoint = json.loads(row["checkpoint"]) if row["checkpoint"] else {}
+    except Exception:
+        checkpoint = {}
+
+    def _job_col(name: str, default=None):
+        try:
+            value = row[name]
+            return default if value is None else value
+        except Exception:
+            return default
+
     return {
         "id": row["id"],
         "spaceId": row["space_id"],
@@ -953,6 +1130,9 @@ def _rag_job_to_dict(row) -> Optional[Dict[str, Any]]:
         "error": row["error"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
+        "generationId": _job_col("generation_id"),
+        "phase": _job_col("phase", "queued"),
+        "checkpoint": checkpoint,
     }
 
 
@@ -1000,6 +1180,60 @@ async def enqueue_rag_job(space_id: str, source_id: str, kind: str,
     except Exception as e:
         print(f"Enqueue rag index error: {e}")
         raise
+
+
+async def ensure_rag_job_generation(job_id: str, space_id: str) -> Optional[str]:
+    """Assign one immutable staging generation to a job and return it.
+
+    ``COALESCE`` makes repeated calls and crash recovery idempotent: a reclaimed
+    job continues writing the same invisible generation instead of starting over.
+    """
+    candidate = uuid.uuid4().hex
+    now = int(time.time() * 1000)
+    try:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            await conn.execute(
+                "UPDATE rag_index_jobs SET generation_id = COALESCE(generation_id, ?), "
+                "phase = CASE WHEN phase IS NULL OR phase = 'queued' THEN 'discovering' ELSE phase END, "
+                "updated_at = ? WHERE id = ? AND space_id = ?",
+                (candidate, now, job_id, space_id),
+            )
+            row = await _fetchone(
+                conn,
+                "SELECT generation_id FROM rag_index_jobs WHERE id = ? AND space_id = ?",
+                (job_id, space_id),
+            )
+            return str(row["generation_id"]) if row and row["generation_id"] else None
+    except Exception as exc:
+        print(f"Ensure RAG job generation error: {exc}")
+        return None
+
+
+async def update_rag_job_checkpoint(
+    job_id: str,
+    space_id: str,
+    *,
+    phase: str,
+    checkpoint: Dict[str, Any],
+) -> bool:
+    """Persist resumable progress after each file or embedding batch."""
+    try:
+        async with get_db() as conn:
+            cur = await conn.execute(
+                "UPDATE rag_index_jobs SET phase = ?, checkpoint = ?, updated_at = ? "
+                "WHERE id = ? AND space_id = ? AND status IN ('claimed','running')",
+                (
+                    phase,
+                    json.dumps(checkpoint or {}, ensure_ascii=False),
+                    int(time.time() * 1000),
+                    job_id,
+                    space_id,
+                ),
+            )
+            return cur.rowcount > 0
+    except Exception as exc:
+        print(f"Update RAG checkpoint error: {exc}")
+        return False
 
 
 async def acquire_rag_worker_lease(worker_id: str, lease_sec: int = 300) -> bool:
@@ -1107,10 +1341,10 @@ async def finish_rag_index_job(job_id: str, space_id: str, status: str,
     try:
         async with get_db() as conn:
             cur = await conn.execute(
-                "UPDATE rag_index_jobs SET status = ?, error = ?, updated_at = ?"
+                "UPDATE rag_index_jobs SET status = ?, phase = ?, error = ?, updated_at = ?"
                 " WHERE id = ? AND space_id = ?"
                 " AND (status != 'cancelled' OR ? = 'cancelled')",
-                (status, error, int(time.time() * 1000), job_id, space_id, status))
+                (status, status, error, int(time.time() * 1000), job_id, space_id, status))
             return cur.rowcount > 0
     except Exception:
         return False
@@ -1124,7 +1358,7 @@ async def cancel_rag_index_jobs(space_id: str, source_id: str) -> int:
     try:
         async with get_db() as conn:
             cur = await conn.execute(
-                "UPDATE rag_index_jobs SET status = 'cancelled', updated_at = ?"
+                "UPDATE rag_index_jobs SET status = 'cancelled', phase = 'cancelled', updated_at = ?"
                 " WHERE space_id = ? AND source_id = ?"
                 " AND status IN ('pending','claimed','running')",
                 (int(time.time() * 1000), space_id, source_id))
@@ -1187,6 +1421,10 @@ __all__ = [
     "_fts_table_exists",
     "_fts_insert_batch",
     "_fts_delete_by_chunk_ids",
+    "get_rag_generation_state",
+    "store_rag_document_chunks",
+    "get_pending_rag_chunks",
+    "update_rag_chunk_embeddings",
     "insert_rag_chunks",
     "_vec_store_or_none",
     "_vec_dual_write",
@@ -1206,6 +1444,8 @@ __all__ = [
     "_rag_job_to_dict",
     "enqueue_rag_index",
     "enqueue_rag_job",
+    "ensure_rag_job_generation",
+    "update_rag_job_checkpoint",
     "acquire_rag_worker_lease",
     "release_rag_worker_lease",
     "claim_rag_index_job",
