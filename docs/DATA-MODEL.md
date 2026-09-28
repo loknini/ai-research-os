@@ -14,7 +14,7 @@
 | 覆盖方式 | `DB_PATH`（优先） > `DATA_DIR`/ai_research_os.db > 默认 |
 | 驱动 | `aiosqlite`（异步）；`scripts/obsidian_service.py` 是唯一例外，仍用同步 `sqlite3` |
 | 表数量 | 见 `_meta.json`（全部含 `space_id`） |
-| Schema 版本 | `schema_migrations` 为事实源，`PRAGMA user_version` 同步镜像；当前版本 `v1` |
+| Schema 版本 | `schema_migrations` 为事实源，`PRAGMA user_version` 同步镜像；当前版本 `v3` |
 | 空间迁移 | `SPACE_TABLES` 统一补列/建索引；`cron_run_history` DDL 原生含 `space_id` |
 | 时间戳 | 毫秒级 Unix 时间戳 `int(time.time() * 1000)`；例外：`obsidian_vaults` 的 DDL 默认值是秒级 |
 | 文件产物 | `data/papers/<space_id>/pdfs/`、`data/memory/<space_id>.md`、`data/.swanlab/config.json`（全局） |
@@ -202,17 +202,22 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 **`rag_sources`** — `(space_id,id)` 复合主键；索引状态、目标路径、活动代
 `active_generation_id`，以及当前嵌入 profile/model/provider/revision/dims。
 
-**`rag_documents`** — `(space_id,id)` 复合主键；源内文件元数据、哈希、页数、字符数、
-切片数与 `generation_id`。
+**`rag_documents`** — `(space_id,id)` 复合主键；源内文件元数据、全文哈希、
+`file_mtime_ns`、`index_signature`、页数、字符数、切片数与 `generation_id`。
+本地扫描用大小 + 纳秒修改时间 + 切片器签名快速判定未变化文件；时间戳变化时再以全文哈希确认。
 
 **`rag_chunks`** — `(space_id,id)` 复合主键；正文、页码/字符区间、token 估算、
-可选向量 JSON、`embedding_profile_id` 与 `generation_id`。
+`chunk_hash`、可选向量 JSON、`embedding_profile_id` 与 `generation_id`。
+
+**`rag_embedding_cache`** — `(space_id,profile_id,chunk_hash)` 复合主键；保存完全相同切片在
+不可变 embedding profile 下的向量。缓存只用于派生数据复用，删除后可由真源重建。
 
 **`rag_embedding_profiles`** — 不可变向量空间定义：provider / model / revision /
 dims / normalized / query instruction；不同 profile 的向量禁止相互计算相似度。
 
-**`rag_index_jobs` / `rag_worker_lease`** — local、paper、web 共用的持久任务队列，
-job lease 负责故障接管，全局 writer lease 保证多进程仅一个索引写者。
+**`rag_index_jobs` / `rag_worker_lease`** — local、paper、web 共用的持久任务队列；
+`generation_id`、`phase`、`checkpoint` 记录文件级/向量批次级断点，job lease 负责故障接管，
+全局 writer lease 保证多进程仅一个索引写者。
 
 **`rag_chunks_fts` / `rag_vec_meta` / `rag_vec`** — FTS5 稀疏候选和可选 sqlite-vec
 派生索引。FTS 与主表同事务显式维护；查询 JOIN 活动主表，因此历史代与孤儿不可见。

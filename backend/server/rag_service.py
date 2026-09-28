@@ -63,6 +63,9 @@ _CHUNK_SIZE = 1000          # 每个切片的目标字符数
 _CHUNK_SEPARATORS = ["\n\n", "\n", "。", "！", "？", "；", ";", ".", " ", ""]
 # 每次嵌入请求的批量大小：API 保持 16（对远端礼貌），本地 CPU 推理提到 64
 # （摊薄 Python 来回开销、吃满多核；32GB 机器实测安全）。
+_LOCAL_CHUNK_TARGET_TOKENS = 350
+_LOCAL_CHUNK_OVERLAP_TOKENS = 48
+_LOCAL_INDEX_SIGNATURE = "local-struct-v2:t350:o48"
 _EMBED_BATCH_API = 16
 _EMBED_BATCH_LOCAL = 64
 _EMBED_BATCH = 16  # 兼容旧引用；新代码按 provider 选择上面两者
@@ -339,6 +342,86 @@ def chunk_document(full_text: str, bounds: List[Tuple[int, int, int]],
 def content_hash(text: str) -> str:
     """全文 sha1（增量去重用）。"""
     return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
+
+
+# Local source structure-aware chunking and stable index signature.
+def _estimate_tokens(text: str) -> int:
+    """Cheap tokenizer-independent estimate suitable for chunk budgeting."""
+    cjk = len(re.findall(r"[\u3400-\u9fff\uf900-\ufaff]", text))
+    other = len(re.findall(
+        r"[A-Za-z0-9_]+|[^\sA-Za-z0-9_\u3400-\u9fff\uf900-\ufaff]", text))
+    return max(1, cjk + other)
+
+
+def _token_limited_end(text: str, start: int, end: int, token_limit: int) -> int:
+    capped_end = min(end, start + 2000)
+    if capped_end == end and _estimate_tokens(text[start:end]) <= token_limit:
+        return end
+    low, high = start + 1, capped_end
+    while low < high:
+        mid = (low + high + 1) // 2
+        if _estimate_tokens(text[start:mid]) <= token_limit:
+            low = mid
+        else:
+            high = mid - 1
+    return low
+
+
+def _structured_spans(
+    text: str,
+    *,
+    target_tokens: int = _LOCAL_CHUNK_TARGET_TOKENS,
+    overlap_tokens: int = _LOCAL_CHUNK_OVERLAP_TOKENS,
+) -> List[Tuple[int, int]]:
+    """Split on Markdown sections, then paragraphs/sentences within a token budget."""
+    headings = [match.start() for match in re.finditer(r"(?m)^#{1,6}[ \t]+\S", text)]
+    section_bounds = sorted(set([0, *headings, len(text)]))
+    spans: List[Tuple[int, int]] = []
+    for section_index in range(len(section_bounds) - 1):
+        section_start, section_end = section_bounds[section_index:section_index + 2]
+        cursor = section_start
+        while cursor < section_end:
+            hard_end = _token_limited_end(text, cursor, section_end, target_tokens)
+            cut = hard_end
+            if hard_end < section_end:
+                floor = cursor + max(1, (hard_end - cursor) // 2)
+                for separator in ("\n\n", "\n", "。", "！", "？", ". ", "; ", " "):
+                    candidate = text.rfind(separator, floor, hard_end)
+                    if candidate >= floor:
+                        cut = candidate + len(separator)
+                        break
+            if cut <= cursor:
+                cut = min(section_end, cursor + 1)
+            if text[cursor:cut].strip():
+                spans.append((cursor, cut))
+            if cut >= section_end:
+                break
+            overlap_start = cut
+            while overlap_start > cursor:
+                candidate = max(cursor, overlap_start - 64)
+                if _estimate_tokens(text[candidate:cut]) > overlap_tokens:
+                    break
+                overlap_start = candidate
+            cursor = max(cursor + 1, overlap_start)
+    return spans
+
+
+def chunk_local_document(
+    full_text: str,
+    bounds: List[Tuple[int, int, int]],
+) -> List[Dict[str, Any]]:
+    """Token-budgeted local chunking that preserves Markdown heading boundaries."""
+    chunks: List[Dict[str, Any]] = []
+    for start, end in _structured_spans(full_text):
+        page_start, page_end = _pages_for_range(bounds, start, end)
+        chunks.append({
+            "content": full_text[start:end],
+            "char_start": start,
+            "char_end": end,
+            "page_start": page_start,
+            "page_end": page_end,
+        })
+    return chunks
 
 
 # 系统源 ID（每空间一套，只读展示）
@@ -658,6 +741,21 @@ def fetch_url_text(url: str, timeout: int = 20) -> Tuple[str, str]:
 # ===========================================================================
 # 5. 索引编排（后台线程调用，async）
 # ===========================================================================
+def _embedding_profile_matches_spec(
+    profile: Optional[Dict[str, Any]],
+    spec: Optional[Dict[str, Any]],
+) -> bool:
+    if not profile or not spec:
+        return False
+    return all([
+        profile.get("provider") == spec.get("provider"),
+        profile.get("model") == spec.get("model"),
+        (profile.get("revision") or "") == (spec.get("revision") or ""),
+        bool(profile.get("normalized", 1)) == bool(spec.get("normalized", True)),
+        (profile.get("query_instruction") or "") == (spec.get("query_instruction") or ""),
+    ])
+
+
 async def index_source(
     source_id: str,
     space_id: str,
@@ -686,6 +784,15 @@ async def index_source(
     is_resume = bool(state["documentCount"] or state["chunkCount"])
     previous = await db.database.get_rag_source(source_id, space_id)
     previous_generation = (previous or {}).get("activeGenerationId")
+    active_manifest = await db.database.get_active_rag_document_manifest(
+        source_id, space_id)
+    embed_spec = _current_embedding_spec()
+    previous_profile = None
+    if previous and previous.get("embeddingProfileId"):
+        previous_profile = await db.database.get_rag_embedding_profile(
+            previous["embeddingProfileId"])
+    preserve_active_embeddings = _embedding_profile_matches_spec(
+        previous_profile, embed_spec)
     if not is_resume and previous_generation:
         # Retain the active generation and discard older abandoned staging data.
         try:
@@ -709,9 +816,10 @@ async def index_source(
     await db.database.update_rag_source(
         source_id, space_id, total_files=total, progress=5)
     completed_paths = set(state["completedPaths"])
+    reused_files = int(checkpoint_data.get("reusedFiles") or 0)
     await save_checkpoint(
         "extracting", totalFiles=total, processedFiles=len(completed_paths),
-        skippedPaths=sorted(skipped_paths))
+        reusedFiles=reused_files, skippedPaths=sorted(skipped_paths))
 
     for idx, fp in enumerate(files):
         normalized_path = str(fp.resolve())
@@ -722,10 +830,48 @@ async def index_source(
             await db.database.clear_rag_generation(source_id, space_id, generation_id)
             return {"status": "cancelled", "doc_count": 0, "chunk_count": 0}
         try:
-            if fp.stat().st_size > _MAX_FILE_SIZE:
+            file_stat = fp.stat()
+            if file_stat.st_size > _MAX_FILE_SIZE:
                 skipped_paths.add(normalized_path)
                 continue
+            active_doc = active_manifest.get(normalized_path)
+            fingerprint_matches = bool(
+                active_doc
+                and int(active_doc.get("file_size") or 0) == int(file_stat.st_size)
+                and int(active_doc.get("file_mtime_ns") or 0) == int(file_stat.st_mtime_ns)
+                and active_doc.get("index_signature") == _LOCAL_INDEX_SIGNATURE
+            )
+            if fingerprint_matches:
+                cloned = await db.database.clone_rag_document_generation(
+                    source_id, space_id, active_doc["id"], generation_id,
+                    file_size=file_stat.st_size, file_mtime_ns=file_stat.st_mtime_ns,
+                    preserve_embeddings=preserve_active_embeddings)
+                if cloned:
+                    reused_files += 1
+                    completed_paths.add(normalized_path)
+                    await save_checkpoint(
+                        "extracting", processedFiles=len(completed_paths),
+                        reusedFiles=reused_files, skippedPaths=sorted(skipped_paths))
+                    continue
             meta = extract_document(fp)
+            document_hash = content_hash(meta["full_text"])
+            content_matches = bool(
+                active_doc
+                and active_doc.get("index_signature") == _LOCAL_INDEX_SIGNATURE
+                and active_doc.get("content_hash") == document_hash
+            )
+            if content_matches:
+                cloned = await db.database.clone_rag_document_generation(
+                    source_id, space_id, active_doc["id"], generation_id,
+                    file_size=file_stat.st_size, file_mtime_ns=file_stat.st_mtime_ns,
+                    preserve_embeddings=preserve_active_embeddings)
+                if cloned:
+                    reused_files += 1
+                    completed_paths.add(normalized_path)
+                    await save_checkpoint(
+                        "extracting", processedFiles=len(completed_paths),
+                        reusedFiles=reused_files, skippedPaths=sorted(skipped_paths))
+                    continue
         except Exception as exc:  # noqa: BLE001 - 单个文件失败不阻断整体
             print(f"[rag] skip {fp}: {exc}")
             skipped_paths.add(normalized_path)
@@ -738,8 +884,8 @@ async def index_source(
             uuid.NAMESPACE_URL,
             f"{space_id}\0{source_id}\0{generation_id}\0{normalized_path}",
         ))
-        parsed_chunks = chunk_document(
-            meta["full_text"], meta["page_boundaries"], overlap=150)
+        parsed_chunks = chunk_local_document(
+            meta["full_text"], meta["page_boundaries"])
         chunks: List[Dict[str, Any]] = []
         for i, ch in enumerate(parsed_chunks):
             chunks.append({
@@ -754,7 +900,9 @@ async def index_source(
                 "char_end": ch["char_end"],
                 "embedding": None,
                 "generation_id": generation_id,
-                "token_count": max(1, len(ch["content"]) // 4),
+                "token_count": _estimate_tokens(ch["content"]),
+                "chunk_hash": hashlib.sha256(
+                    ch["content"].encode("utf-8", errors="ignore")).hexdigest(),
             })
         if not chunks:
             skipped_paths.add(normalized_path)
@@ -768,7 +916,10 @@ async def index_source(
             "file_size": meta["file_size"],
             "page_count": meta["page_count"],
             "char_count": meta["char_count"],
+            "content_hash": document_hash,
             "generation_id": generation_id,
+            "file_mtime_ns": file_stat.st_mtime_ns,
+            "index_signature": _LOCAL_INDEX_SIGNATURE,
         }, chunks, space_id)
         if not stored:
             await db.database.update_rag_source(
@@ -779,7 +930,7 @@ async def index_source(
         meta.clear()
         await save_checkpoint(
             "extracting", processedFiles=len(completed_paths),
-            skippedPaths=sorted(skipped_paths))
+            reusedFiles=reused_files, skippedPaths=sorted(skipped_paths))
 
     state = await db.database.get_rag_generation_state(source_id, space_id, generation_id)
     if state["documentCount"] == 0:
@@ -792,17 +943,27 @@ async def index_source(
 
     embed_mode = "keyword"
     embed_profile: Optional[Dict[str, Any]] = None
-    embed_spec = _current_embedding_spec()
     profile_ids = state["profileIds"]
     if len(profile_ids) > 1:
         return {"status": "failed", "doc_count": 0, "chunk_count": 0,
                 "error": "暂存代包含多个嵌入 profile"}
     if profile_ids:
         embed_profile = await db.database.get_rag_embedding_profile(profile_ids[0])
+    elif preserve_active_embeddings:
+        embed_profile = previous_profile
+
+    if embed_profile and embed_spec and not _embedding_profile_matches_spec(
+            embed_profile, embed_spec):
+        await db.database.update_rag_source(
+            source_id, space_id, status="failed",
+            error="嵌入配置在索引续跑期间发生变化，请重新提交索引")
+        return {"status": "failed", "doc_count": state["documentCount"],
+                "chunk_count": state["chunkCount"], "error": "嵌入配置发生变化"}
 
     if embed_spec:
         batch_size = _EMBED_BATCH_LOCAL if embed_spec.get("provider") == "local" else _EMBED_BATCH_API
         embed_batches = int(checkpoint_data.get("embeddingBatches") or 0)
+        cache_hits = int(checkpoint_data.get("cacheHits") or 0)
         total_chunks = int(state["chunkCount"])
         while True:
             if cancel_event and cancel_event.is_set():
@@ -813,6 +974,34 @@ async def index_source(
                 source_id, space_id, generation_id, batch_size)
             if not pending:
                 break
+            if embed_profile:
+                cached_vectors = await db.database.get_cached_rag_embeddings(
+                    space_id, embed_profile["id"],
+                    [chunk.get("chunk_hash") for chunk in pending])
+                cached_batch = [
+                    {**chunk, "embedding": cached_vectors[chunk["chunk_hash"]]}
+                    for chunk in pending
+                    if chunk.get("chunk_hash") in cached_vectors
+                ]
+                if cached_batch:
+                    cached_written = await db.database.update_rag_chunk_embeddings(
+                        space_id, cached_batch, embed_profile["id"])
+                    if cached_written != len(cached_batch):
+                        return {"status": "failed", "doc_count": state["documentCount"],
+                                "chunk_count": state["chunkCount"],
+                                "error": "缓存向量断点落库失败"}
+                    cache_hits += cached_written
+                    cached_ids = {chunk["id"] for chunk in cached_batch}
+                    pending = [chunk for chunk in pending if chunk["id"] not in cached_ids]
+                if not pending:
+                    state = await db.database.get_rag_generation_state(
+                        source_id, space_id, generation_id)
+                    done = int(state["embeddedCount"])
+                    await save_checkpoint(
+                        "embedding", embeddingBatches=embed_batches,
+                        cacheHits=cache_hits, reusedFiles=reused_files,
+                        embeddedChunks=done, totalChunks=total_chunks)
+                    continue
             vectors = await _embed_texts(
                 [chunk["content"] for chunk in pending], spec=embed_spec)
             if vectors is None or len(vectors) != len(pending):
@@ -846,6 +1035,8 @@ async def index_source(
             if written != len(batch):
                 return {"status": "failed", "doc_count": state["documentCount"],
                         "chunk_count": state["chunkCount"], "error": "向量断点落库失败"}
+            await db.database.upsert_cached_rag_embeddings(
+                space_id, embed_profile["id"], batch)
             embed_batches += 1
             state = await db.database.get_rag_generation_state(
                 source_id, space_id, generation_id)
@@ -855,6 +1046,7 @@ async def index_source(
                 progress=75 + 20 * done // total_chunks if total_chunks else 95)
             await save_checkpoint(
                 "embedding", embeddingBatches=embed_batches,
+                cacheHits=cache_hits, reusedFiles=reused_files,
                 embeddedChunks=done, totalChunks=total_chunks)
             if embed_batches == 1 or embed_batches % 20 == 0 or done >= total_chunks:
                 print(f"[rag] embedding {source_id[:8]}: batch {embed_batches} "
@@ -869,6 +1061,8 @@ async def index_source(
     await save_checkpoint(
         "activating", processedFiles=state["documentCount"],
         embeddedChunks=state["embeddedCount"], totalChunks=state["chunkCount"],
+        reusedFiles=reused_files,
+        cacheHits=int(checkpoint_data.get("cacheHits") or 0),
         skippedPaths=sorted(skipped_paths))
     status = "ready" if not skipped_paths else "partial"
     if cancel_event and cancel_event.is_set():
@@ -882,9 +1076,12 @@ async def index_source(
     if not activated:
         return {"status": "failed", "doc_count": state["documentCount"],
                 "chunk_count": state["chunkCount"], "error": "索引代激活失败"}
+    await db.database.prune_rag_embedding_cache(space_id)
     await save_checkpoint("done", completed=True)
     return {"status": status, "doc_count": state["documentCount"],
             "chunk_count": state["chunkCount"], "skipped": len(skipped_paths),
+            "reused_files": reused_files,
+            "cache_hits": int(checkpoint_data.get("cacheHits") or 0),
             "embed_mode": embed_mode}
 
 

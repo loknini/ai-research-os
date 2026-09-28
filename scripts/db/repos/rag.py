@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -307,6 +308,8 @@ def _rag_document_to_dict(row) -> Optional[Dict[str, Any]]:
         "title": _col("title") or row["file_name"],
         "section": _col("section"),
         "contentHash": _col("content_hash"),
+        "fileMtimeNs": _col("file_mtime_ns"),
+        "indexSignature": _col("index_signature"),
         "fetchedAt": _col("fetched_at"),
         "generationId": _col("generation_id"),
         "createdAt": row["created_at"],
@@ -319,7 +322,9 @@ async def create_rag_document(doc_id: str, space_id: str, source_id: str, file_p
                               url: Optional[str] = None, title: Optional[str] = None,
                               section: Optional[str] = None, content_hash: Optional[str] = None,
                               fetched_at: Optional[int] = None,
-                              generation_id: Optional[str] = None) -> bool:
+                              generation_id: Optional[str] = None,
+                              file_mtime_ns: Optional[int] = None,
+                              index_signature: Optional[str] = None) -> bool:
     try:
         now = int(time.time() * 1000)
         async with get_db() as conn:
@@ -327,11 +332,13 @@ async def create_rag_document(doc_id: str, space_id: str, source_id: str, file_p
                 INSERT INTO rag_documents
                 (id, space_id, source_id, file_path, file_name, file_type, file_size,
                  page_count, char_count, chunk_count, url, title, section,
-                 content_hash, fetched_at, generation_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 content_hash, fetched_at, generation_id, file_mtime_ns,
+                 index_signature, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (doc_id, space_id, source_id, file_path, file_name, file_type,
                   file_size, page_count, char_count, chunk_count, url, title,
-                  section, content_hash, fetched_at, generation_id, now))
+                  section, content_hash, fetched_at, generation_id,
+                  file_mtime_ns, index_signature, now))
         return True
     except Exception as e:
         print(f"Create rag document error: {e}")
@@ -459,6 +466,126 @@ async def get_rag_generation_state(
     }
 
 
+async def get_active_rag_document_manifest(
+    source_id: str,
+    space_id: str,
+) -> Dict[str, Dict[str, Any]]:
+    """Return visible documents keyed by normalized path for incremental scans."""
+    async with get_db() as conn:
+        rows = await _fetchall(
+            conn,
+            "SELECT d.* FROM rag_documents d JOIN rag_sources s "
+            "ON s.id = d.source_id AND s.space_id = d.space_id "
+            "WHERE d.source_id = ? AND d.space_id = ? "
+            "AND ((s.active_generation_id IS NULL AND d.generation_id IS NULL) "
+            "OR d.generation_id = s.active_generation_id)",
+            (source_id, space_id),
+        )
+    return {str(row["file_path"]): dict(row) for row in rows if row["file_path"]}
+
+
+async def clone_rag_document_generation(
+    source_id: str,
+    space_id: str,
+    old_doc_id: str,
+    generation_id: str,
+    *,
+    file_size: Optional[int] = None,
+    file_mtime_ns: Optional[int] = None,
+    preserve_embeddings: bool = True,
+) -> Optional[Dict[str, int]]:
+    """Clone one active document into a staging generation without re-extraction."""
+    now = int(time.time() * 1000)
+    new_doc_id = str(uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"{space_id}\0{source_id}\0{generation_id}\0{old_doc_id}",
+    ))
+    vec_rows: List[Any] = []
+    vec_dims = 0
+    vec_recreated = False
+    try:
+        async with get_db(busy_timeout_ms=30000) as conn:
+            existing = await _fetchone(
+                conn, "SELECT chunk_count FROM rag_documents WHERE id = ? AND space_id = ?",
+                (new_doc_id, space_id),
+            )
+            if existing:
+                return {"chunkCount": int(existing["chunk_count"] or 0), "embeddedCount": 0}
+            doc = await _fetchone(
+                conn, "SELECT * FROM rag_documents WHERE id = ? AND space_id = ? AND source_id = ?",
+                (old_doc_id, space_id, source_id),
+            )
+            if not doc:
+                return None
+            chunks = await _fetchall(
+                conn, "SELECT * FROM rag_chunks WHERE doc_id = ? AND space_id = ? ORDER BY chunk_index",
+                (old_doc_id, space_id),
+            )
+            if not chunks:
+                return None
+            await conn.execute(
+                """
+                INSERT INTO rag_documents
+                (id, space_id, source_id, file_path, file_name, file_type, file_size,
+                 page_count, char_count, chunk_count, url, title, section, content_hash,
+                 fetched_at, generation_id, file_mtime_ns, index_signature, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_doc_id, space_id, source_id, doc["file_path"], doc["file_name"],
+                    doc["file_type"], int(file_size if file_size is not None else doc["file_size"] or 0),
+                    doc["page_count"], doc["char_count"], len(chunks), doc["url"],
+                    doc["title"], doc["section"], doc["content_hash"], doc["fetched_at"],
+                    generation_id,
+                    file_mtime_ns if file_mtime_ns is not None else doc["file_mtime_ns"],
+                    doc["index_signature"], now,
+                ),
+            )
+            fts_rows: List[Any] = []
+            embedded_count = 0
+            for chunk in chunks:
+                new_chunk_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"{new_doc_id}\0{int(chunk['chunk_index'] or 0)}"))
+                embedding = chunk["embedding"] if preserve_embeddings else None
+                profile_id = chunk["embedding_profile_id"] if preserve_embeddings else None
+                chunk_hash = chunk["chunk_hash"] or hashlib.sha256(
+                    str(chunk["content"] or "").encode("utf-8", errors="ignore")).hexdigest()
+                await conn.execute(
+                    """
+                    INSERT INTO rag_chunks
+                    (id, space_id, source_id, doc_id, chunk_index, content, page_start,
+                     page_end, char_start, char_end, embedding, embedding_profile_id,
+                     generation_id, token_count, chunk_hash, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_chunk_id, space_id, source_id, new_doc_id, chunk["chunk_index"],
+                        chunk["content"], chunk["page_start"], chunk["page_end"],
+                        chunk["char_start"], chunk["char_end"], embedding, profile_id,
+                        generation_id, chunk["token_count"], chunk_hash, now,
+                    ),
+                )
+                fts_rows.append((chunk["content"], new_chunk_id, space_id))
+                if embedding and profile_id:
+                    try:
+                        vector = json.loads(embedding)
+                    except Exception:
+                        vector = None
+                    if isinstance(vector, list) and vector:
+                        embedded_count += 1
+                        vec_rows.append((new_chunk_id, source_id, profile_id, vector))
+            await _fts_insert_batch(conn, fts_rows)
+            vec_dims, vec_recreated = await _vec_dual_write(conn, space_id, vec_rows)
+        if vec_dims:
+            await _vec_meta_maintain(
+                space_id, vec_dims, len(vec_rows), vec_recreated,
+                vec_rows[0][2] if vec_rows else None)
+        return {"chunkCount": len(chunks), "embeddedCount": embedded_count}
+    except Exception as exc:
+        print(f"Clone RAG document generation error: {exc}")
+        return None
+
+
 async def store_rag_document_chunks(
     document: Dict[str, Any],
     chunks: List[Dict[str, Any]],
@@ -486,8 +613,9 @@ async def store_rag_document_chunks(
                 INSERT INTO rag_documents
                 (id, space_id, source_id, file_path, file_name, file_type, file_size,
                  page_count, char_count, chunk_count, url, title, section,
-                 content_hash, fetched_at, generation_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 content_hash, fetched_at, generation_id, file_mtime_ns,
+                 index_signature, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     document["id"], space_id, document["source_id"],
@@ -496,7 +624,8 @@ async def store_rag_document_chunks(
                     int(document.get("page_count") or 0), int(document.get("char_count") or 0),
                     len(chunks), document.get("url"), document.get("title"),
                     document.get("section"), document.get("content_hash"),
-                    document.get("fetched_at"), document.get("generation_id"), now,
+                    document.get("fetched_at"), document.get("generation_id"),
+                    document.get("file_mtime_ns"), document.get("index_signature"), now,
                 ),
             )
             fts_rows: List[Tuple[str, str, str]] = []
@@ -507,15 +636,16 @@ async def store_rag_document_chunks(
                     INSERT INTO rag_chunks
                     (id, space_id, source_id, doc_id, chunk_index, content, page_start, page_end,
                      char_start, char_end, embedding, embedding_profile_id, generation_id,
-                     token_count, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+                     token_count, chunk_hash, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)
                     """,
                     (
                         chunk["id"], space_id, chunk["source_id"], chunk["doc_id"],
                         int(chunk.get("chunk_index") or 0), content,
                         chunk.get("page_start"), chunk.get("page_end"),
                         chunk.get("char_start"), chunk.get("char_end"),
-                        chunk.get("generation_id"), int(chunk.get("token_count") or 0), now,
+                        chunk.get("generation_id"), int(chunk.get("token_count") or 0),
+                        chunk.get("chunk_hash"), now,
                     ),
                 )
                 fts_rows.append((content, chunk["id"], space_id))
@@ -535,12 +665,98 @@ async def get_pending_rag_chunks(
     async with get_db() as conn:
         rows = await _fetchall(
             conn,
-            "SELECT id, source_id, content FROM rag_chunks "
+            "SELECT id, source_id, content, chunk_hash FROM rag_chunks "
             "WHERE source_id = ? AND space_id = ? AND generation_id = ? "
             "AND embedding IS NULL ORDER BY rowid LIMIT ?",
             (source_id, space_id, generation_id, max(1, int(limit))),
         )
         return [dict(row) for row in rows]
+
+
+async def get_cached_rag_embeddings(
+    space_id: str,
+    profile_id: str,
+    chunk_hashes: List[str],
+) -> Dict[str, List[float]]:
+    """Read exact-content vectors for one immutable embedding profile."""
+    hashes = list(dict.fromkeys(value for value in chunk_hashes if value))
+    if not hashes or not profile_id:
+        return {}
+    found: Dict[str, List[float]] = {}
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        for offset in range(0, len(hashes), 400):
+            part = hashes[offset:offset + 400]
+            placeholders = ",".join("?" for _ in part)
+            rows = await _fetchall(
+                conn,
+                f"SELECT chunk_hash, embedding FROM rag_embedding_cache "
+                f"WHERE space_id = ? AND profile_id = ? AND chunk_hash IN ({placeholders})",
+                [space_id, profile_id, *part],
+            )
+            for row in rows:
+                try:
+                    vector = json.loads(row["embedding"])
+                except Exception:
+                    continue
+                if isinstance(vector, list) and vector:
+                    found[str(row["chunk_hash"])] = vector
+            if rows:
+                await conn.execute(
+                    f"UPDATE rag_embedding_cache SET last_used_at = ? "
+                    f"WHERE space_id = ? AND profile_id = ? AND chunk_hash IN ({placeholders})",
+                    [now, space_id, profile_id, *part],
+                )
+    return found
+
+
+async def upsert_cached_rag_embeddings(
+    space_id: str,
+    profile_id: str,
+    rows: List[Dict[str, Any]],
+) -> int:
+    """Persist exact chunk vectors so later generations can reuse them."""
+    valid = [row for row in rows if row.get("chunk_hash") and row.get("embedding")]
+    if not valid or not profile_id:
+        return 0
+    now = int(time.time() * 1000)
+    async with get_db() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO rag_embedding_cache
+            (space_id, profile_id, chunk_hash, embedding, dims, created_at, last_used_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(space_id, profile_id, chunk_hash) DO UPDATE SET
+                embedding=excluded.embedding, dims=excluded.dims,
+                last_used_at=excluded.last_used_at
+            """,
+            [(
+                space_id, profile_id, row["chunk_hash"],
+                json.dumps(row["embedding"], ensure_ascii=False),
+                len(row["embedding"]), now, now,
+            ) for row in valid],
+        )
+    return len(valid)
+
+
+async def prune_rag_embedding_cache(space_id: str, max_entries: int = 200_000) -> int:
+    """Bound the derived cache with an LRU-style last-used cutoff."""
+    max_entries = max(1_000, int(max_entries))
+    async with get_db(busy_timeout_ms=30000) as conn:
+        row = await _fetchone(
+            conn, "SELECT COUNT(*) AS n FROM rag_embedding_cache WHERE space_id = ?",
+            (space_id,),
+        )
+        excess = max(0, int((row or {"n": 0})["n"] or 0) - max_entries)
+        if not excess:
+            return 0
+        cur = await conn.execute(
+            "DELETE FROM rag_embedding_cache WHERE rowid IN ("
+            "SELECT rowid FROM rag_embedding_cache WHERE space_id = ? "
+            "ORDER BY last_used_at ASC LIMIT ?)",
+            (space_id, excess),
+        )
+        return cur.rowcount or 0
 
 
 async def update_rag_chunk_embeddings(
@@ -1422,8 +1638,13 @@ __all__ = [
     "_fts_insert_batch",
     "_fts_delete_by_chunk_ids",
     "get_rag_generation_state",
+    "get_active_rag_document_manifest",
+    "clone_rag_document_generation",
     "store_rag_document_chunks",
     "get_pending_rag_chunks",
+    "get_cached_rag_embeddings",
+    "upsert_cached_rag_embeddings",
+    "prune_rag_embedding_cache",
     "update_rag_chunk_embeddings",
     "insert_rag_chunks",
     "_vec_store_or_none",

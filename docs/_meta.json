@@ -1,6 +1,6 @@
 {
   "version": "0.5.0",
-  "tables": 36,
+  "tables": 37,
   "tableList": [
     "papers",
     "cron_jobs",
@@ -37,7 +37,8 @@
     "rag_index_jobs",
     "rag_worker_lease",
     "rag_vec_meta",
-    "global_config"
+    "global_config",
+    "rag_embedding_cache"
   ],
   "spaceTables": 31,
   "routers": 22,
@@ -68,6 +69,8 @@
   "hubs": 12,
   "generatedFrom": [
     "scripts/db/migrations/v0001_baseline.py",
+    "scripts/db/migrations/v0002_rag_resume.py",
+    "scripts/db/migrations/v0003_rag_incremental.py",
     "scripts/db/core.py",
     "backend/server/routers/__init__.py",
     "frontend/src/App.tsx",

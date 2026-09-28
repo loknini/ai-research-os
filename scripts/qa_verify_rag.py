@@ -631,6 +631,76 @@ async def main() -> None:
     assert _resume_job_row["checkpoint"].get("completed") is True, _resume_job_row
     print("PASS resumable generation + invisible staging + durable checkpoint")
 
+    # 23) Structured local chunking keeps Markdown sections separate and bounded.
+    _structured_text = (
+        "# Section A\n\n" + ("alpha sentence. " * 500)
+        + "\n\n# Section B\n\n" + ("第二节内容。" * 500)
+    )
+    _structured = rag_service.chunk_local_document(
+        _structured_text, [(1, 0, len(_structured_text))])
+    assert len(_structured) > 2
+    assert all(rag_service._estimate_tokens(c["content"]) <= 400 for c in _structured)
+    assert not any(
+        "# Section A" in c["content"] and "# Section B" in c["content"]
+        for c in _structured)
+    assert any(c["content"].startswith("# Section A") for c in _structured)
+    assert any(c["content"].startswith("# Section B") for c in _structured)
+    print("PASS structured token-budgeted local chunking")
+
+    # 24) A no-change rescan performs no extraction/embedding; duplicate content
+    # reuses the exact embedding cache for the same immutable profile.
+    _incremental_source = "src-incremental"
+    await database.create_rag_source(
+        _incremental_source, SPACE, _incremental_source, [str(corpus)], True,
+        ["txt", "md"], status="indexing")
+    _orig_inc_spec = rag_service._current_embedding_spec
+    _orig_inc_exact = llm_client.embed_exact
+    _inc_embed_calls = {"texts": 0}
+
+    def _incremental_embed(texts, **kwargs):
+        _inc_embed_calls["texts"] += len(texts)
+        return fake_embed(texts)
+
+    rag_service._current_embedding_spec = lambda: {
+        "provider": "api", "model": "qa-incremental", "revision": "qa-v1",
+        "query_instruction": "", "normalized": True,
+    }
+    llm_client.embed_exact = _incremental_embed
+    try:
+        _inc_first = await rag_service.index_source(
+            _incremental_source, SPACE, [str(corpus)], True, ["txt", "md"])
+        assert _inc_first["status"] == "ready" and _inc_embed_calls["texts"] > 0, _inc_first
+
+        _original_extract = rag_service.extract_document
+
+        def _unexpected_extract(path):
+            raise AssertionError(f"unchanged file was extracted again: {path}")
+
+        rag_service.extract_document = _unexpected_extract
+        _inc_embed_calls["texts"] = 0
+        try:
+            _inc_second = await rag_service.index_source(
+                _incremental_source, SPACE, [str(corpus)], True, ["txt", "md"])
+        finally:
+            rag_service.extract_document = _original_extract
+        assert _inc_second["status"] == "ready", _inc_second
+        assert _inc_second["reused_files"] == 2, _inc_second
+        assert _inc_embed_calls["texts"] == 0, _inc_embed_calls
+
+        _duplicate = corpus / "copy.txt"
+        _duplicate.write_text((corpus / "a.txt").read_text(encoding="utf-8"), encoding="utf-8")
+        _inc_embed_calls["texts"] = 0
+        _inc_third = await rag_service.index_source(
+            _incremental_source, SPACE, [str(corpus)], True, ["txt", "md"])
+        assert _inc_third["status"] == "ready", _inc_third
+        assert _inc_third["reused_files"] == 2, _inc_third
+        assert _inc_third["cache_hits"] >= 1, _inc_third
+        assert _inc_embed_calls["texts"] == 0, _inc_embed_calls
+    finally:
+        rag_service._current_embedding_spec = _orig_inc_spec
+        llm_client.embed_exact = _orig_inc_exact
+    print("PASS file fingerprints + generation reuse + embedding cache")
+
     print("\nALL_RAG_QA_PASS")
 
 

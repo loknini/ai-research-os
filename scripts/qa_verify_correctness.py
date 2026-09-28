@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -108,7 +109,10 @@ def run_parallel_database_cli() -> None:
         for _ in range(4)
     ]
     results = [process.communicate(timeout=60) + (process.returncode,) for process in processes]
-    ok = all(code == 0 and "Database schema is at v1" in stdout for stdout, _stderr, code in results)
+    ok = all(
+        code == 0 and re.search(r"Database schema is at v\d+", stdout)
+        for stdout, _stderr, code in results
+    )
     detail = "; ".join(f"exit={code}, stderr={stderr.strip()[:80]}" for _out, stderr, code in results)
     check("旧库可多进程并发、幂等初始化", ok, detail)
 
@@ -348,7 +352,11 @@ def verify_clis() -> None:
         [sys.executable, "-m", "scripts.database"], cwd=PROJECT_ROOT, env=env,
         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
     )
-    check("database 模块 CLI 真正调用 _main", database_cli.returncode == 0 and "Database schema is at v1" in database_cli.stdout)
+    check(
+        "database 模块 CLI 真正调用 _main",
+        database_cli.returncode == 0
+        and re.search(r"Database schema is at v\d+", database_cli.stdout),
+    )
 
     direct = subprocess.run(
         [sys.executable, str(PROJECT_ROOT / "backend/server/agent_service.py")],

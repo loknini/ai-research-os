@@ -7,6 +7,7 @@ from .runner import Migration
 from .v0001_baseline import BaselineContext
 from . import v0001_baseline
 from . import v0002_rag_resume
+from . import v0003_rag_incremental
 from ..schema import validate_schema
 
 
@@ -42,6 +43,13 @@ def build_migrations(
             checksum=v0002_rag_resume.CHECKSUM,
             upgrade=v0002_rag_resume.upgrade,
             validate=v0002_rag_resume.validate,
+        ),
+        Migration(
+            version=v0003_rag_incremental.VERSION,
+            name=v0003_rag_incremental.NAME,
+            checksum=v0003_rag_incremental.CHECKSUM,
+            upgrade=v0003_rag_incremental.upgrade,
+            validate=v0003_rag_incremental.validate,
         ),
     )
 

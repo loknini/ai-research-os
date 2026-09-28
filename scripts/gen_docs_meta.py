@@ -5,9 +5,10 @@ import re
 import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-schema_path = ROOT / "scripts" / "db" / "migrations" / "v0001_baseline.py"
+migrations_dir = ROOT / "scripts" / "db" / "migrations"
+migration_paths = sorted(migrations_dir.glob("v[0-9][0-9][0-9][0-9]_*.py"))
 core_path = ROOT / "scripts" / "db" / "core.py"
-schema_text = schema_path.read_text(encoding="utf-8")
+schema_text = "\n".join(path.read_text(encoding="utf-8") for path in migration_paths)
 core_text = core_path.read_text(encoding="utf-8")
 raw_tables = re.findall(r"CREATE TABLE IF NOT EXISTS\s+(\w+)", schema_text)
 # Filter: keep only lowercase/underscore names, drop comment fragments
@@ -35,7 +36,7 @@ meta = {
     "routerList": sorted(routers + ["health"]),
     "hubs": hubs,
     "generatedFrom": [
-        "scripts/db/migrations/v0001_baseline.py",
+        *[path.relative_to(ROOT).as_posix() for path in migration_paths],
         "scripts/db/core.py",
         "backend/server/routers/__init__.py",
         "frontend/src/App.tsx",
