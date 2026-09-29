@@ -4,7 +4,14 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { generateId } from '@/utils'
 import { useToast } from '@/components/ui/toast'
 import { useConfirmDialog } from '@/components/ui/confirm-dialog'
-import type { ChatContentPart, Conversation, Message, RagSource, ReasoningStep } from '../types'
+import type {
+  ChatContentPart,
+  ChatContextInfo,
+  Conversation,
+  Message,
+  RagSource,
+  ReasoningStep,
+} from '../types'
 import {
   addMessageAPI,
   createConversationAPI,
@@ -16,7 +23,12 @@ import {
 } from '../services/chatApi'
 import { chatGenerationManager } from '../services/chatGenerationManager'
 import type { GenPhase } from '../services/chatGenerationManager'
-import { estimateTokensLocal, extractTextFromContent } from '../messageUtils'
+import {
+  addTokenUsage,
+  appendFinalMessage,
+  estimateTokensLocal,
+  extractTextFromContent,
+} from '../messageUtils'
 import { useAppStore } from '@/stores/appStore'
 
 export function useChatController() {
@@ -190,11 +202,9 @@ export function useChatController() {
   }, [])
 
   // 上下文窗口用量（后端每轮回传的 context 事件）
-  const [contextInfo, setContextInfo] = useState<{
-    estimated_tokens: number
-    limit: number
-    compressed: boolean
-  } | null>(null)
+  const [contextInfo, setContextInfo] = useState<ChatContextInfo | null>(null)
+  const contextInfoRef = useRef<ChatContextInfo | null>(null)
+  contextInfoRef.current = contextInfo
   const [ctxExpanded, setCtxExpanded] = useState(false)
 
   // 思考过程步骤（用于「思考过程」可折叠面板）
@@ -377,26 +387,68 @@ export function useChatController() {
         setGenPhase(null)
         return
       }
-      setIsGenerating(g.status === 'running')
-      setGenPhase(g.status === 'running' ? g.phase : null)
+      const isRunning = g.status === 'running'
+      if (isRunning) {
+        setIsGenerating(true)
+        setGenPhase(g.phase)
+      }
       setStreamingContent(g.streamingContent)
       setReasoningSteps(g.reasoningSteps)
       setStreamingRagSources(g.ragSources || [])
-      if (g.contextInfo) setContextInfo(g.contextInfo)
-      if (g.status !== 'running' && !flushing) {
-        // 生成完成/失败/取消：先 await 后端刷新（含分支兄弟信息），
-        // 确保 currentConversation 被替换为最新路径后再清掉本地流式残留。
+      if (g.contextInfo) {
+        const nextContext = { ...contextInfoRef.current, ...g.contextInfo }
+        contextInfoRef.current = nextContext
+        setContextInfo(nextContext)
+      }
+      if (!isRunning && !flushing) {
         flushing = true
+
+        // addMessageAPI 已在 manager 中成功返回。先在同一个 React 批次里把
+        // 流式气泡替换为最终消息，避免先卸载气泡、等待详情请求后再显示消息
+        // 所造成的完成瞬间闪烁。详情请求仍用于补齐 sibling 等分支元数据。
+        if (g.finalMessage) {
+          setCurrentConversation((conversation) =>
+            appendFinalMessage(conversation, g.finalMessage!, currentConversationId)
+          )
+        }
+        setStreamingContent('')
+        setReasoningSteps([])
+        setIsGenerating(false)
+        setGenPhase(null)
+        setStreamPanelOpen(true)
+
+        if (g.usage) {
+          const previousContext = contextInfoRef.current
+          const nextContext: ChatContextInfo = {
+            estimated_tokens: g.contextInfo?.estimated_tokens
+              ?? previousContext?.estimated_tokens
+              ?? 0,
+            limit: g.contextInfo?.limit ?? previousContext?.limit ?? 512000,
+            compressed: g.contextInfo?.compressed ?? previousContext?.compressed ?? false,
+            last_usage: g.usage,
+            cumulative_usage: addTokenUsage(previousContext?.cumulative_usage, g.usage),
+          }
+          contextInfoRef.current = nextContext
+          setContextInfo(nextContext)
+        }
+
+        // Persist usage before reloading detail; otherwise a fast GET can
+        // restore the old metadata while the effect's PUT is still pending.
+        if (contextInfoRef.current) {
+          try {
+            const existingMetadata = currentConvRef.current?.metadata || {}
+            await updateConversationAPI(currentConversationId, {
+              metadata: { ...existingMetadata, context: contextInfoRef.current },
+            })
+          } catch (err) {
+            console.error('Failed to persist token usage:', err)
+          }
+        }
         try {
           await loadDetailRef.current(currentConversationId)
         } catch (err) {
           console.error('Failed to reload conversation after generation:', err)
         } finally {
-          setStreamingContent('')
-          setReasoningSteps([])
-          setIsGenerating(false)
-          setGenPhase(null)
-          setStreamPanelOpen(true)
           chatGenerationManager.clear(currentConversationId)
           flushing = false
         }
@@ -413,6 +465,7 @@ export function useChatController() {
   useEffect(() => {
     if (!currentConversation) {
       lastRagSyncId.current = null
+      contextInfoRef.current = null
       setContextInfo(null)
       return
     }
@@ -422,11 +475,15 @@ export function useChatController() {
     setRagSourceIds(ragMeta?.sourceIds ?? [])
     const ctxMeta = (currentConversation.metadata as any)?.context
     if (ctxMeta?.estimated_tokens) {
+      contextInfoRef.current = ctxMeta
       setContextInfo(ctxMeta)
     } else {
       const est = estimateTokensLocal(currentConversation.messages as any)
-      if (est > 0) setContextInfo({ estimated_tokens: est, limit: 16000, compressed: false })
-      else setContextInfo(null)
+      const fallback = est > 0
+        ? { estimated_tokens: est, limit: 512000, compressed: false }
+        : null
+      contextInfoRef.current = fallback
+      setContextInfo(fallback)
     }
   }, [currentConversation])
 
@@ -455,7 +512,7 @@ export function useChatController() {
     if (!convId || !contextInfo) return
     const existingMeta = currentConvRef.current?.metadata || {}
     const prevCtx = (existingMeta as any)?.context
-    if (prevCtx?.estimated_tokens === contextInfo.estimated_tokens && prevCtx?.compressed === contextInfo.compressed) return
+    if (JSON.stringify(prevCtx || {}) === JSON.stringify(contextInfo)) return
     updateConversationAPI(convId, {
       metadata: { ...existingMeta, context: contextInfo } as any,
     })

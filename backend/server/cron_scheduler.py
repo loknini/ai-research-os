@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -32,6 +33,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import config
 from . import db
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 调度器配置
@@ -54,7 +57,7 @@ def start_scheduler() -> None:
         target=_scheduler_loop, name=JOB_NAME, daemon=True
     )
     _scheduler_thread.start()
-    print(f"[cron_scheduler] started (scan_interval={SCAN_INTERVAL}s)")
+    logger.info("cron.started scan_interval_seconds=%s", SCAN_INTERVAL)
 
 
 def stop_scheduler() -> None:
@@ -76,11 +79,11 @@ def _scheduler_loop() -> None:
             try:
                 loop.run_until_complete(_scan_and_dispatch())
             except Exception as exc:  # noqa: BLE001
-                print(f"[cron_scheduler] scan error: {exc}")
+                logger.exception("cron.scan_failed error=%s", exc)
             _stop_event.wait(SCAN_INTERVAL)
     finally:
         loop.close()
-    print("[cron_scheduler] stopped")
+    logger.info("cron.stopped")
 
 
 async def _init_next_runs() -> None:
@@ -94,7 +97,7 @@ async def _init_next_runs() -> None:
                 if next_ms:
                     await db.database.init_cron_next_run(job["id"], next_ms)
     except Exception as exc:  # noqa: BLE001
-        print(f"[cron_scheduler] init next_runs error: {exc}")
+        logger.exception("cron.initialize_next_runs_failed error=%s", exc)
 
 
 async def _scan_and_dispatch() -> None:

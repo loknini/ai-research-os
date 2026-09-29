@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import uuid
@@ -22,6 +23,8 @@ from typing import Dict, List, Optional
 
 from . import db
 from . import rag_service
+
+logger = logging.getLogger(__name__)
 
 # 同 worker 内的即时取消信号；跨 worker 以 DB 状态为准。
 RUN_CANCEL: Dict[str, threading.Event] = {}
@@ -94,7 +97,7 @@ async def dispatcher(stop: asyncio.Event) -> None:
         try:
             job = await db.database.claim_rag_index_job(_WORKER_ID, lease_sec=_LEASE_SEC)
         except Exception as exc:  # noqa: BLE001 - 认领失败本轮跳过
-            print(f"[rag_runner] claim failed: {exc}")
+            logger.exception("rag.claim_failed error=%s", exc)
             job = None
         if job is None:
             await db.database.release_rag_worker_lease(_WORKER_ID)
@@ -162,7 +165,7 @@ async def dispatcher(stop: asyncio.Event) -> None:
                 job["id"], space_id, final,
                 None if final != "failed" else str((result or {}).get("error") or "索引失败")[:200])
         except Exception as exc:  # noqa: BLE001 - 单任务崩溃不杀 dispatcher
-            print(f"[rag_runner] job {job.get('id')} crashed: {exc}")
+            logger.exception("rag.job_crashed job_id=%s error=%s", job.get("id"), exc)
             await db.database.finish_rag_index_job(
                 job["id"], space_id, "failed", str(exc)[:200])
         finally:

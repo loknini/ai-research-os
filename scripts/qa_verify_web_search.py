@@ -194,6 +194,9 @@ check("全失败 success:false", out.get("success") is False)
 check("全失败 status unavailable", out.get("status") == "unavailable")
 check("全失败 attempts 非空且有 error", len(out.get("attempts", [])) >= 2
       and all("error" in a for a in out["attempts"] if not a["ok"]))
+check("全失败汇总每个检索源的真实原因", "duckduckgo: down" in out.get("error", "")
+      and "wikipedia: down" in out.get("error", "")
+      and "wikipedia 无可用结果" not in out.get("error", ""))
 
 # ---------- 8. 非法 freshness ----------
 with patch.object(ws.urllib.request, "urlopen", _urlopen_router([("duckduckgo", DDG_HTML)])):

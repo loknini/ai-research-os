@@ -11,8 +11,12 @@ import {
   addMessageAPI, createConversationAPI, fetchConversationDetail, updateConversationAPI
 } from '@/hubs/chat/services/chatApi'
 import { chatGenerationManager } from '@/hubs/chat/services/chatGenerationManager'
-import type { Conversation, Message } from '@/hubs/chat/types'
-import { stripAssistantLeadingBreaks } from '@/hubs/chat/messageUtils'
+import type { ChatContextInfo, Conversation, Message } from '@/hubs/chat/types'
+import {
+  addTokenUsage,
+  appendFinalMessage,
+  stripAssistantLeadingBreaks,
+} from '@/hubs/chat/messageUtils'
 
 const QUICK_PROMPTS = [
   { label: '研读论文', prompt: '请帮我设计一份论文研读计划，并说明需要我提供哪些论文。', icon: '✨' },
@@ -40,6 +44,8 @@ export function ChatPanel() {
   const [error, setError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const conversationRef = useRef<Conversation | null>(null)
+  conversationRef.current = conversation
 
   const load = useCallback(async (id: string) => {
     const detail = await fetchConversationDetail(id)
@@ -64,14 +70,57 @@ export function ChatPanel() {
     const sync = async () => {
       const generation = chatGenerationManager.getActive(conversationId)
       if (!generation) { setIsGenerating(false); return }
-      setIsGenerating(generation.status === 'running')
+      const isRunning = generation.status === 'running'
+      if (isRunning) setIsGenerating(true)
       setStreaming(generation.streamingContent)
-      if (generation.status !== 'running' && !flushing) {
+      if (!isRunning && !flushing) {
         flushing = true
-        await load(conversationId)
-        setStreaming(''); setIsGenerating(false)
-        chatGenerationManager.clear(conversationId)
-        flushing = false
+        const previous = conversationRef.current
+        const previousContext = previous?.metadata?.context as ChatContextInfo | undefined
+        const nextContext = generation.contextInfo
+          ? { ...previousContext, ...generation.contextInfo }
+          : previousContext
+        const contextWithUsage: ChatContextInfo | undefined = generation.usage && nextContext
+          ? {
+              ...nextContext,
+              last_usage: generation.usage,
+              cumulative_usage: addTokenUsage(
+                previousContext?.cumulative_usage,
+                generation.usage
+              ),
+            }
+          : nextContext
+        let metadataToPersist: Record<string, any> | null = null
+        if (previous && contextWithUsage) {
+          const metadata = { ...(previous.metadata || {}), context: contextWithUsage }
+          metadataToPersist = metadata
+          conversationRef.current = { ...previous, metadata }
+          setConversation(current => current?.id === conversationId
+            ? { ...current, metadata }
+            : current)
+        }
+        if (generation.finalMessage) {
+          setConversation(current =>
+            appendFinalMessage(current, generation.finalMessage!, conversationId)
+          )
+        }
+        // 与完整聊天页保持同样的原子交接：历史消息出现和流式气泡消失
+        // 在同一批更新中完成，后台详情刷新不参与首屏呈现。
+        setStreaming('')
+        setIsGenerating(false)
+        if (metadataToPersist) {
+          try {
+            await updateConversationAPI(conversationId, { metadata: metadataToPersist })
+          } catch (caught) {
+            console.error('Failed to persist compact chat token usage:', caught)
+          }
+        }
+        try {
+          await load(conversationId)
+        } finally {
+          chatGenerationManager.clear(conversationId)
+          flushing = false
+        }
       }
     }
     const unsubscribe = chatGenerationManager.subscribe(conversationId, () => void sync())

@@ -1,8 +1,16 @@
 import { streamChatCompletion, addMessageAPI } from './chatApi'
 import { useGenerationStore } from '@/stores/generationStore'
 import { generateId } from '@/utils'
-import type { Message, ReasoningStep, ToolResult, RagSource } from '../types'
-import { appendAssistantDelta, stripAssistantLeadingBreaks } from '../messageUtils'
+import type {
+  ChatContextInfo,
+  Message,
+  ReasoningStep,
+  ToolResult,
+  RagSource,
+  TokenUsage,
+} from '../types'
+import { addTokenUsage, appendAssistantDelta, stripAssistantLeadingBreaks } from '../messageUtils'
+import { StreamingTextPacer } from '../streamingTextPacer'
 
 export type GenStatus = 'running' | 'completed' | 'failed' | 'cancelled'
 
@@ -16,7 +24,8 @@ export interface ActiveGeneration {
   phase: GenPhase
   streamingContent: string
   reasoningSteps: ReasoningStep[]
-  contextInfo?: { estimated_tokens: number; limit: number; compressed: boolean }
+  contextInfo?: ChatContextInfo
+  usage?: TokenUsage
   ragSources?: RagSource[]
   hadError: boolean
   finalMessage?: Message
@@ -159,6 +168,11 @@ class ChatGenerationManager {
     const toolResults: ToolResult[] = []
     let reasoningRef: ReasoningStep[] = []
     let ragSourcesRef: RagSource[] = []
+    const textPacer = new StreamingTextPacer((chunk) => {
+      state.streamingContent = appendAssistantDelta(state.streamingContent, chunk)
+      if (state.phase !== 'writing') state.phase = 'writing'
+      this.notify(conversationId)
+    })
 
     const pushReasoning = (step: ReasoningStep) => {
       reasoningRef = [...reasoningRef, step]
@@ -197,11 +211,10 @@ class ChatGenerationManager {
       await streamChatCompletion(
         messagesForLLM,
         (chunk) => {
-          state.streamingContent = appendAssistantDelta(state.streamingContent, chunk)
-          if (state.phase !== 'writing') state.phase = 'writing'
-          this.notify(conversationId)
+          textPacer.push(chunk)
         },
         (tool, params) => {
+          textPacer.flushNow()
           if (state.phase !== 'writing') state.phase = 'working'
           // 落定之前的思考文本为一步；若模型未输出任何思考，自动补一条占位说明
           if (state.streamingContent.trim()) {
@@ -228,8 +241,10 @@ class ChatGenerationManager {
           })
         },
         (error) => {
+          textPacer.flushNow()
           state.hadError = true
-          state.streamingContent += `\n\n[错误: ${error}]`
+          state.streamingContent = appendAssistantDelta(
+            state.streamingContent, `\n\n[错误: ${error}]`)
           this.notify(conversationId)
         },
         (ctx) => {
@@ -247,17 +262,26 @@ class ChatGenerationManager {
           // 后端 retrieving 首字节：检索阶段确认，立刻刷 UI（此前十几秒无声）
           if (state.phase !== 'writing') state.phase = 'retrieving'
           this.notify(conversationId)
+        },
+        (usage) => {
+          state.usage = addTokenUsage(state.usage, usage)
+          this.notify(conversationId)
         }
       )
 
       // 用户主动取消（目前仅 cancel() 触发）→ 不保存半成品
       if (signal.aborted) {
+        textPacer.cancel()
         state.status = 'cancelled'
         useGenerationStore.getState().setStatus(state.genId, 'cancelled')
         this.notify(conversationId)
         this.scheduleClear(conversationId)
         return
       }
+
+      // A single network read may contain many SSE events. Drain them across
+      // timer tasks before persisting and replacing the live message.
+      await textPacer.drain()
 
       // 流式结束：构建 assistant 消息并落库
       const lastMsg = messagesForLLM[messagesForLLM.length - 1]
@@ -294,6 +318,7 @@ class ChatGenerationManager {
       this.notify(conversationId)
       this.scheduleClear(conversationId)
     } catch (e) {
+      textPacer.cancel()
       console.error('chat generation failed', e)
       state.hadError = true
       state.status = 'failed'

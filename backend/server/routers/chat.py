@@ -36,11 +36,17 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 # 此处保留旧名导出，Chat 路由其余代码无需改动。
 from ..context import (
     CONTEXT_TOKEN_LIMIT,
-    KEEP_LAST_MESSAGES,
-    estimate_tokens as _estimate_tokens,
-    summarize_history as _summarize,
+    estimate_request_tokens as _estimate_request_tokens,
     compact_messages as _compact,
 )
+
+
+def _usage_sse(item: Any) -> Optional[str]:
+    """Convert an optional LLM usage item to the browser SSE contract."""
+    if not isinstance(item, dict) or not isinstance(item.get("usage"), dict):
+        return None
+    usage = item["usage"]
+    return f"data: {json.dumps({'type': 'usage', **usage}, ensure_ascii=False)}\n\n"
 
 
 # --------------------------------------------------------------------------- #
@@ -263,6 +269,10 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
                     if isinstance(item, str):
                         summary_text += item
                         yield f"data: {json.dumps({'type': 'text', 'content': item}, ensure_ascii=False)}\n\n"
+                    else:
+                        usage_event = _usage_sse(item)
+                        if usage_event:
+                            yield usage_event
             except LLMUnavailableError as exc:
                 yield sse_error(f"LLM 服务不可用：{exc}")
 
@@ -280,7 +290,7 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
         for _ in range(MAX_TURNS):
             # 上下文压缩（超阈值时把中间历史摘要为单条 system 消息）
             messages, compressed = _compact(messages)
-            yield f"data: {json.dumps({'type': 'context', 'estimated_tokens': _estimate_tokens(messages), 'limit': CONTEXT_TOKEN_LIMIT, 'compressed': compressed}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'context', 'estimated_tokens': _estimate_request_tokens(messages, TOOLS), 'limit': CONTEXT_TOKEN_LIMIT, 'compressed': compressed}, ensure_ascii=False)}\n\n"
 
             assistant_text: str = ""
             tool_calls_this_turn: List[dict] = []
@@ -291,6 +301,10 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
                         yield f"data: {json.dumps({'type': 'text', 'content': item}, ensure_ascii=False)}\n\n"
                     elif isinstance(item, dict) and "tool_calls" in item:
                         tool_calls_this_turn = item["tool_calls"]
+                    else:
+                        usage_event = _usage_sse(item)
+                        if usage_event:
+                            yield usage_event
             except LLMUnavailableError as exc:
                 yield sse_error(f"LLM 服务不可用：{exc}")
                 yield f"data: {SSE_DONE}\n\n"
@@ -365,6 +379,10 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
                     if isinstance(item2, str):
                         assistant_text += item2
                         yield f"data: {json.dumps({'type': 'text', 'content': item2}, ensure_ascii=False)}\n\n"
+                    else:
+                        usage_event = _usage_sse(item2)
+                        if usage_event:
+                            yield usage_event
             except LLMUnavailableError as exc:
                 yield sse_error(f"LLM 服务不可用：{exc}")
             final_answer_text = assistant_text
@@ -373,6 +391,11 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
         # 避免把检索 top-k 全部展示造成的“乱引用”。
         cited_sources = _filter_cited_sources(final_answer_text, rag_sources_payload)
         yield f"data: {json.dumps({'type': 'rag_sources', 'sources': cited_sources, 'mode': rag_mode, 'enabled': req.rag_enabled}, ensure_ascii=False)}\n\n"
+        # Refresh the estimate after the answer: this reflects the persisted
+        # conversation that will be sent on the next turn, rather than staying
+        # one assistant reply behind until the user sends another message.
+        next_turn_messages = formatted + [{"role": "assistant", "content": final_answer_text}]
+        yield f"data: {json.dumps({'type': 'context', 'estimated_tokens': _estimate_request_tokens(next_turn_messages, TOOLS), 'limit': CONTEXT_TOKEN_LIMIT, 'compressed': False}, ensure_ascii=False)}\n\n"
         yield f"data: {SSE_DONE}\n\n"
 
     return StreamingResponse(

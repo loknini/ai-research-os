@@ -10,6 +10,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import json
+import urllib.error
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -51,6 +54,42 @@ def main() -> None:
 
         with patch("backend.server.llm.socket.create_connection", side_effect=OSError("offline")):
             assert client._reachable() is False
+
+        # 精确 usage：优先请求 stream_options；旧供应商返回 400 时自动回退，
+        # 且仍能解析文本与最终 token 用量。
+        requests = []
+
+        class FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return iter([
+                    b'data: {"choices":[{"delta":{"content":"ok"}}]}\n',
+                    b'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}\n',
+                    b'data: [DONE]\n',
+                ])
+
+        def fake_urlopen(request, timeout=None):
+            del timeout
+            requests.append(json.loads(request.data.decode("utf-8")))
+            if len(requests) == 1:
+                raise urllib.error.HTTPError(
+                    request.full_url, 400, "unsupported", {}, io.BytesIO()
+                )
+            return FakeStream()
+
+        with patch("backend.server.llm.urllib.request.urlopen", side_effect=fake_urlopen):
+            items = list(client.stream_llm([{"role": "user", "content": "hi"}]))
+        assert items == [
+            "ok",
+            {"usage": {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}},
+        ]
+        assert "stream_options" in requests[0]
+        assert "stream_options" not in requests[1]
 
     # 端点处理函数使用全局 client；打桩探测本身并清空 TTL 缓存，确保不触网。
     health._reach_cache.update(ts=0.0, val=False)

@@ -21,11 +21,14 @@ from __future__ import annotations
 
 import os
 import hashlib
+import logging
 import re
 import threading
 import urllib.parse
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # 延迟导入 torch / transformers（避免模块加载时拖慢启动）
 _torch = None
@@ -226,11 +229,13 @@ class LocalEmbedder:
                 self._revision = revision
                 self._last_error = ""
                 dev = "GPU" if self._device.type == "cuda" else "CPU"
-                print(f"[local_embed] 模型加载完成: {model_path} ({dev}，"
-                      f"{self._dims} 维)")
+                logger.info(
+                    "local_embed.model_loaded model=%s device=%s dimensions=%s",
+                    model_path, dev, self._dims,
+                )
                 return True
             except Exception as exc:
-                print(f"[local_embed] 模型加载失败: {exc}")
+                logger.exception("local_embed.model_load_failed error=%s", exc)
                 self._model = None
                 self._last_error = str(exc)[:200]
                 return False
@@ -289,7 +294,7 @@ class LocalEmbedder:
             vecs = embeddings.cpu().float().numpy().tolist()
             return vecs
         except Exception as exc:
-            print(f"[local_embed] 推理失败: {exc}")
+            logger.exception("local_embed.inference_failed error=%s", exc)
             self._last_error = str(exc)[:200]
             return None
 

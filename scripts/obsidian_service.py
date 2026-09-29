@@ -176,16 +176,21 @@ class ObsidianService:
         return conn
 
     def add_vault(self, name: str, vault_path: str) -> Dict[str, Any]:
-        path = Path(vault_path)
-        if not path.exists():
+        raw_path = Path(vault_path).expanduser()
+        if not raw_path.is_absolute():
+            return {'success': False, 'message': '请输入服务端绝对路径'}
+        try:
+            path = raw_path.resolve(strict=True)
+        except (OSError, RuntimeError):
             return {'success': False, 'message': '路径不存在'}
         if not path.is_dir():
             return {'success': False, 'message': '路径不是目录'}
+        normalized_path = str(path)
 
         with self._get_db() as conn:
             existing = conn.execute(
                 'SELECT id FROM obsidian_vaults WHERE vault_path = ? AND space_id = ?',
-                (vault_path, self.space_id)
+                (normalized_path, self.space_id)
             ).fetchone()
             if existing:
                 return {'success': False, 'message': '该 Vault 已存在'}
@@ -193,13 +198,13 @@ class ObsidianService:
             cursor = conn.execute(
                 '''INSERT INTO obsidian_vaults (name, vault_path, space_id)
                    VALUES (?, ?, ?)''',
-                (name, vault_path, self.space_id)
+                (name, normalized_path, self.space_id)
             )
             vault_id = cursor.lastrowid
             conn.commit()
             return {
                 'success': True,
-                'vault': {'id': vault_id, 'name': name, 'path': vault_path}
+                'vault': {'id': vault_id, 'name': name, 'path': normalized_path}
             }
 
     def list_vaults(self) -> List[Dict[str, Any]]:
@@ -306,14 +311,13 @@ class ObsidianService:
                 'errors': len(result['errors'])
             }
 
-    def get_vault_files(self, vault_id: int, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_vault_files(self, vault_id: int) -> List[Dict[str, Any]]:
         with self._get_db() as conn:
             rows = conn.execute(
                 '''SELECT * FROM obsidian_files
                    WHERE vault_id = ? AND space_id = ?
-                   ORDER BY modified_time DESC
-                   LIMIT ?''',
-                (vault_id, self.space_id, limit)
+                   ORDER BY modified_time DESC''',
+                (vault_id, self.space_id)
             ).fetchall()
             return [{
                 'id': row['id'],

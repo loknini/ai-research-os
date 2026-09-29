@@ -12,6 +12,7 @@ Responsibilities:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,9 +26,12 @@ from .cron_scheduler import start_scheduler
 from .development_runner import start_development_runner
 from .errors import register_exception_handlers
 from .llm import llm_client
+from .logging_config import RequestIdMiddleware, configure_logging
 from .routers import routers
 
 FRONTEND_DIST = config.PROJECT_ROOT / "frontend" / "dist"
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 class SPAStaticFiles(StaticFiles):
@@ -56,7 +60,11 @@ async def lifespan(app: FastAPI):
     # `space_id` column migration for legacy/user tables.
     await db.init_db()
     from .admin_access import startup_security_message
-    print(startup_security_message())
+    security_message = startup_security_message()
+    if "WARNING" in security_message:
+        logger.warning(security_message)
+    else:
+        logger.info(security_message)
     # 跨端口重复实例心跳：登记自己 + 发现同 DB 的其它 supervisor。
     # 双后端共享同一 SQLite 是慢性锁竞争（reindex 500 事故根因），这里只做
     # 可见性（ERROR 日志 + /api/healthz siblings），不强制单例。
@@ -69,15 +77,19 @@ async def lifespan(app: FastAPI):
         beat()
         sibs = list_siblings()
         if sibs:
-            print(f"[backend] ERROR: 检测到 {len(sibs)} 个其它后端实例共享同一数据库: "
-                  f"{[(s.get('supervisorPid'), s.get('port')) for s in sibs]}"
-                  f"（本实例 {_INSTANCE_ID}）。请只保留一个，否则必然出现 database is locked。")
+            logger.error(
+                "检测到 %s 个其它后端实例共享同一数据库: %s（本实例 %s）。"
+                "请只保留一个，否则必然出现 database is locked。",
+                len(sibs),
+                [(s.get("supervisorPid"), s.get("port")) for s in sibs],
+                _INSTANCE_ID,
+            )
         else:
-            print(f"[backend] instance {_INSTANCE_ID} started, no sibling instances.")
+            logger.info("backend.instance_started instance_id=%s siblings=0", _INSTANCE_ID)
         _beat_stop = _asyncio.Event()
         _asyncio.create_task(heartbeat_loop(_beat_stop))
     except Exception as exc:  # noqa: BLE001 - 心跳失败绝不阻断启动
-        print(f"[backend] instance heartbeat disabled: {exc}")
+        logger.exception("backend.instance_heartbeat_disabled error=%s", exc)
     # 启动 cron 调度器守护线程（多 Worker 各跑一个，靠 DB 原子领取防重）。
     start_scheduler()
     start_development_runner()
@@ -99,6 +111,7 @@ app = FastAPI(
     version="0.5.0",
     lifespan=lifespan,
 )
+app.add_middleware(RequestIdMiddleware)
 
 # CORS ----------------------------------------------------------------------
 origins = config.get_cors_origins()

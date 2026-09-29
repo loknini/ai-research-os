@@ -10,6 +10,7 @@ through to the DB layer for soft isolation.
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -23,6 +24,7 @@ from ..llm import llm_client
 from ..schemas import BatchImportPapersRequest, FetchPapersRequest
 
 router = APIRouter(prefix="/api/papers", tags=["papers"])
+logger = logging.getLogger(__name__)
 
 
 def _schedule_paper_index(space_id: str, paper_id: Optional[str] = None,
@@ -41,7 +43,7 @@ def _schedule_paper_index(space_id: str, paper_id: Optional[str] = None,
                 if _pid:
                     await _rag_runner.submit_paper(_pid, space_id)
             except Exception as _e:  # noqa: BLE001
-                print(f"[papers->rag] index failed: {_e}")
+                logger.exception("papers.rag_index_failed error=%s", _e)
 
         try:
             _loop = _asyncio.get_running_loop()
@@ -172,7 +174,7 @@ async def delete_paper(paper_id: str, space_id: str = Depends(get_space_id)):
                 await db.database.delete_rag_document(paper_id, space_id)
                 await db.database.delete_rag_document(f"{paper_id}#pdf", space_id)
             except Exception as _e:  # noqa: BLE001 - RAG 清理失败不影响删除结果
-                print(f"[papers->rag] cleanup failed: {_e}")
+                logger.exception("papers.rag_cleanup_failed error=%s", _e)
         return {"success": ok, "deleted": ok}
     except Exception as exc:
         raise APIError(str(exc), code="DELETE_FAILED")

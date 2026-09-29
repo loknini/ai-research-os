@@ -544,6 +544,9 @@ ai-research-os/
 | `APP_HOST` / `APP_PORT` | `0.0.0.0` / `8000` | 后端监听 |
 | `ADMIN_TOKEN` | `（空）` | 远程系统管理令牌；为空时只允许本机管理设置、备份、SwanLab 与 Skills |
 | `CORS_ORIGINS` | `*` | 允许的前端来源（逗号分隔，生产建议收敛） |
+| `LOG_DIR` | `<项目根>/logs` | 长期日志目录 |
+| `LOG_LEVEL` | `INFO` | 应用日志最低级别 |
+| `LOG_RETENTION_DAYS` | `30` | 按日轮转日志的保留天数 |
 
 ### Agent 工程（v0.3）
 
@@ -560,7 +563,7 @@ ai-research-os/
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `WEB_SEARCH_PROVIDER` | `bocha` | Agent 联网搜索：`bocha`（博查，国内直连）/ `wikipedia`（零密钥降级） |
+| `WEB_SEARCH_PROVIDER` | `duckduckgo` | Agent 联网搜索首选源：`duckduckgo`（零密钥）/ `bocha`（博查，国内直连）/ `wikipedia`（百科兜底） |
 | `BOCHA_API_KEY` | `（空）` | 博查搜索 API Key（bochaai.com 注册，含免费额度） |
 | `CRON_SCAN_INTERVAL` | `60` | Cron 调度器扫描间隔（秒） |
 | `CRON_SUBPROCESS_TIMEOUT` | `（空）` | command 型 Cron 任务子进程超时（秒） |

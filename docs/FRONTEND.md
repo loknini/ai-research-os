@@ -130,7 +130,7 @@ src/
 |---|---|
 | `paper/` | `PaperHub.tsx`(容器) · `config.ts` · `types.ts` · `hooks/usePaperData.ts` · `services/papersApi.ts` · `components/PaperFilters` `FetchPapersDialog` |
 | `task/` | `TaskHub.tsx` · `config.ts` · `hooks/useTaskData.ts` · `services/tasksApi.ts` · `utils/taskTree.ts` · `components/TaskItem`(递归) `TaskForm` |
-| `knowledge/` | `KnowledgeHub.tsx` · `config.ts` · `types.ts` · `hooks/useKnowledgeData.ts` · `services/notesApi.ts` `obsidianApi.ts` · `components/NoteCard` `NoteEditor` `ObsidianFileViewer` `VaultSelectorDialog` |
+| `knowledge/` | `KnowledgeHub.tsx` · `config.ts` · `types.ts` · `hooks/useKnowledgeData.ts` · `services/notesApi.ts` `obsidianApi.ts` · `utils/obsidianTree.ts` · `components/NoteCard` `NoteEditor` `ObsidianFileBrowser` `ObsidianFileViewer` `ServerDirectoryPicker` `VaultSelectorDialog` |
 | `software/` | `SoftwareHub.tsx` · `config.ts` · `hooks/useSoftwareData.ts` · `services/projectsApi.ts` · `components/ProjectCard` `ProjectDetail` `ProjectForm` `IdeaFormDialog` |
 | `chat/` | `ChatHub.tsx`（页面编排）· `hooks/useChatController.ts` · `services/chatApi.ts` `chatGenerationManager.ts` · 侧栏/顶部/消息列表/输入区等组件 |
 | `settings/` | `index.tsx`（页面编排）· `hooks/useSettingsController.ts` · 通用/集成/扩展/RAG 面板及独立管理组件 |

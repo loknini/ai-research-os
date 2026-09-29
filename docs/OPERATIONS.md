@@ -105,6 +105,9 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 | `APP_PORT` | `8000` | |
 | `ADMIN_TOKEN` | `""` | 远程系统管理令牌；本机免令牌，远程设置/备份/SwanLab/Skills 必须提供 |
 | `CORS_ORIGINS` | `*` | 逗号分隔；为 `*` 时自动关闭 credentials |
+| `LOG_DIR` | `<项目根>/logs` | 长期日志目录；相对路径以项目根解析 |
+| `LOG_LEVEL` | `INFO` | 应用日志最低级别 |
+| `LOG_RETENTION_DAYS` | `30` | app/error/access 按日轮转文件的保留天数 |
 
 ### 3.3 LLM 配置（三选一）
 
@@ -124,7 +127,13 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 
 > **多 worker 下改配置只有当前 worker 热生效**，其余 worker 靠 `.env` 在重启后对齐。生产环境改完 LLM 配置请重启服务。
 
-### 3.4 数据目录「设一次忘掉」
+### 3.4 Obsidian 服务端目录选择
+
+Knowledge Hub 的“添加 Vault”浏览的是**后端所在机器**的目录，而不是浏览器所在电脑的目录。目录浏览、添加 Vault 和扫描属于文件系统管理能力：本机访问免管理令牌；从内网其它设备访问时，必须先在设置页输入 `ADMIN_TOKEN`。手动输入仍受支持，但必须填写后端机器上的绝对路径。
+
+扫描结果保留 Vault 内的相对路径。前端默认将这些路径还原为可展开的目录树，也可切换到“最近修改”按文件修改时间倒序查看；搜索会匹配文件名、目录路径和标签，并自动展开匹配项的父目录。
+
+### 3.5 数据目录「设一次忘掉」
 
 在项目根创建 `.airos-data-dir` 文件，首行写数据目录绝对路径即可。优先级：
 
@@ -206,6 +215,7 @@ curl -X POST http://localhost:8000/api/backup/import -F "file=@airos-backup.zip"
 | 前端一直显示「离线」 | `curl http://localhost:8000/api/healthz`；检查后端是否起了、端口是否被占；Vite 代理目标 `VITE_API_TARGET` 是否正确 |
 | 所有接口返回 400 `SPACE_REQUIRED` | 未填空间口令或口令 < 4 字符。清 localStorage 的 `ai-research-os-storage` 重新填 |
 | Chat / 总结报 LLM 错误 | `curl http://localhost:8000/api/llm/status`；用「设置 → 测试连接」看具体 401/403/404/429 诊断 |
+| `web_search` 所有检索源超时 | 查看 `app.<PID>.log` 中的 `skill.attempt`。确认代理端口确实在监听且同时配置 HTTP/HTTPS 代理；国内网络建议配置 `BOCHA_API_KEY`，避免只依赖 DuckDuckGo/Wikipedia |
 | LLM 返回 404 | **Base URL 与 path 拼接重复**。确认 Base URL 自带 `/v1`，`LLM_HTTP_PATH` 只是 `/chat/completions` |
 | 改了 LLM 配置不生效 | 多 worker 下只有一个 worker 热更新。重启服务 |
 | `database is locked` | 检查是否两个进程/两台机器同时写同一个库；确认 WAL 生效（`PRAGMA journal_mode` 应为 wal） |
@@ -224,7 +234,23 @@ curl http://localhost:8000/api/healthz     # 版本 + DB 路径 + 是否存在
 curl http://localhost:8000/api/llm/status  # LLM 配置与可达性（30s 缓存）
 ```
 
-uvicorn 日志直接输出到启动终端，无独立日志文件。
+后端使用 Python 标准库 `logging` 保存长期日志，无需额外日志依赖：
+
+- `logs/app.<PID>.log`：应用启动、调度器、RAG、工具调用等运行日志。
+- `logs/error.<PID>.log`：仅 `ERROR` 及以上事件和异常堆栈。
+- `logs/access.<PID>.log`：Uvicorn HTTP 访问日志。
+- `<PID>` 隔离多 worker 的文件写入，避免多个进程竞争同一个轮转文件。
+- 文件每天午夜轮转，默认保留 30 天；通过 `LOG_DIR`、`LOG_LEVEL`、`LOG_RETENTION_DAYS` 调整。
+- 每个 HTTP 响应携带 `X-Request-ID`，相同 ID 会进入该请求产生的应用日志，便于串联排障。
+- 工具日志只记录工具名、参数字段名、检索源、耗时和状态，不记录 API Key 或完整请求内容。
+
+`start.ps1` 的 `backend.log` / `backend.err.log` 和前端对应文件是启动器 stdout/stderr 日志：重启时继续追加，超过 10 MB 后轮转并保留 5 份，不再在每次启动时清空。
+
+```powershell
+Get-Content logs\app.*.log -Tail 100
+Get-Content logs\error.*.log -Tail 100
+Select-String -Path logs\app.*.log -Pattern "skill.attempt|request_id="
+```
 
 ---
 

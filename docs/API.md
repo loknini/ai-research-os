@@ -386,14 +386,15 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 ## 19. Obsidian `obsidian.py` — prefix `/api/obsidian`
 
-经 `run_script("obsidian_service.py", ...)`，注入 `SPACE_ID`。
+Vault 元数据接口经 `run_script("obsidian_service.py", ...)` 注入 `SPACE_ID`。服务端目录浏览、添加 Vault 与扫描会读取部署机器的文件系统，因此额外受 `require_admin` 保护：本机免令牌，远程请求必须提供 `X-Admin-Token`。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/obsidian/vaults` | vault 列表 |
-| POST | `/api/obsidian/vaults` | 添加 vault（name / path） |
-| POST | `/api/obsidian/vaults/{vault_id}/scan` | 扫描（vault_id 为整数） |
-| GET | `/api/obsidian/vaults/{vault_id}/files` | 文件列表 |
+| GET | `/api/obsidian/directories?path=` | 浏览后端机器目录；省略 path 返回磁盘/根目录（管理员能力） |
+| POST | `/api/obsidian/vaults` | 添加 vault（name / 服务端绝对 path；管理员能力） |
+| POST | `/api/obsidian/vaults/{vault_id}/scan` | 扫描（vault_id 为整数；管理员能力） |
+| GET | `/api/obsidian/vaults/{vault_id}/files` | 完整 Markdown 文件列表（保留 Vault 相对路径，默认按修改时间倒序） |
 | GET | `/api/obsidian/files/{file_id}` | 读取文件内容 |
 
 ---

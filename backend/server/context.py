@@ -51,6 +51,31 @@ def estimate_tokens(messages: List[Dict]) -> int:
     return int(total)
 
 
+def estimate_request_tokens(
+    messages: List[Dict], tools: Optional[List[Dict]] = None
+) -> int:
+    """Estimate the complete request payload instead of message text only.
+
+    This is still tokenizer-independent, but includes role/framing fields,
+    tool-call metadata and the tool schema sent on every ReAct request.  It is
+    therefore a much closer context-window estimate than ``estimate_tokens``.
+    """
+    total = estimate_tokens(messages)
+    # OpenAI-style chat templates add a small fixed envelope per message.
+    total += 4 * len(messages) + 2
+    for message in messages:
+        extra = {
+            key: message[key]
+            for key in ("name", "tool_call_id", "tool_calls")
+            if message.get(key) is not None
+        }
+        if extra:
+            total += estimate_tokens([{"content": extra}])
+    if tools:
+        total += estimate_tokens([{"content": tools}]) + 8 * len(tools)
+    return int(total)
+
+
 def summarize_history(prefix_messages: List[Dict]) -> Optional[str]:
     """用 LLM 把一段历史压缩成摘要；失败返回 ``None``（调用方跳过压缩）。"""
     text = "\n\n".join(
@@ -112,6 +137,7 @@ __all__ = [
     "CONTEXT_TOKEN_LIMIT",
     "KEEP_LAST_MESSAGES",
     "estimate_tokens",
+    "estimate_request_tokens",
     "summarize_history",
     "compact_messages",
 ]

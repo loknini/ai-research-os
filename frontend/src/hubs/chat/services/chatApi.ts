@@ -1,5 +1,5 @@
 import { apiRequest, openEventStream } from '@/services/api'
-import { Conversation, Message, ToolResult, RagSource } from '../types'
+import { Conversation, Message, ToolResult, RagSource, TokenUsage } from '../types'
 
 // 书签式小 JSON 接口统一 15s 超时：后端抖动时快速失败，由调用方决定降级，
 // 避免 sendMessage 这类关键链路被某个慢请求 hang 住整条流水线。
@@ -26,7 +26,8 @@ const streamChatCompletion = async (
   signal?: AbortSignal,
   rag?: { enabled: boolean; sourceIds?: string[] },
   onRagSources?: (sources: RagSource[], mode: string) => void,
-  onRetrieving?: () => void
+  onRetrieving?: () => void,
+  onUsage?: (usage: TokenUsage) => void
 ): Promise<void> => {
   // 从后端 result payload 中提取可读摘要（优先 error，其次 message，再截断 results）
   const summarizeToolResult = (tool: string, raw: any): string => {
@@ -150,6 +151,15 @@ const streamChatCompletion = async (
             case 'retrieving':
               // 后端开始 RAG 检索（首字节事件）：此前十几秒无声是"以为卡死"的主因
               onRetrieving?.()
+              break
+            case 'usage':
+              if (parsed.total_tokens !== undefined) {
+                onUsage?.({
+                  prompt_tokens: Number(parsed.prompt_tokens) || 0,
+                  completion_tokens: Number(parsed.completion_tokens) || 0,
+                  total_tokens: Number(parsed.total_tokens) || 0,
+                })
+              }
               break
             default:
               // 未知事件类型：忽略（保持与旧后端/未来事件的前向兼容）

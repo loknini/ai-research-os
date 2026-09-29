@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -38,6 +39,8 @@ from fastapi.responses import StreamingResponse
 
 from .. import config
 from ..admin_access import require_admin
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/backup",
@@ -420,7 +423,7 @@ def recover_interrupted_import(wait_seconds: float = 30.0) -> bool:
         if failures:
             raise RuntimeError("备份导入自动恢复失败：" + "；".join(failures))
         journal_path.unlink(missing_ok=True)
-        print(f"[backup] recovered interrupted import from {backup_path}")
+        logger.warning("backup.interrupted_import_recovered path=%s", backup_path)
         return True
     finally:
         _release_backup_operation(operation_lock)

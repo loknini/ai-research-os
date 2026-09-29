@@ -30,10 +30,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +44,12 @@ SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
 
 # 模块加载时一次性发现（技能目录是静态配置，运行期不变；可用 reload_skills() 刷新）
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
+logger = logging.getLogger(__name__)
+
+
+def _safe_error(value: Any, limit: int = 240) -> str:
+    """Keep logs useful without copying full tool output or request data."""
+    return " ".join(str(value or "").split())[:limit]
 
 
 # --------------------------------------------------------------------------- #
@@ -322,10 +330,12 @@ def invoke_skill(
     """
     spec = _REGISTRY.get(name)
     if spec is None:
+        logger.warning("skill.unknown name=%s", name)
         return {"success": False, "error": f"未知或未启用的技能: {name}"}
 
     # —— 指令型：懒加载正文，作为工作指引回灌 —— #
     if spec["type"] == "instruction":
+        logger.info("skill.complete name=%s type=instruction success=true", name)
         return {
             "success": True,
             "skill": name,
@@ -338,6 +348,12 @@ def invoke_skill(
     env = dict(os.environ)
     env["X_SPACE_KEY"] = space_id or ""
     cwd = spec["dir"]
+    started = time.monotonic()
+    logger.info(
+        "skill.start name=%s type=tool parameter_keys=%s",
+        name,
+        ",".join(sorted(str(key) for key in params)),
+    )
 
     try:
         proc = subprocess.run(
@@ -349,15 +365,31 @@ def invoke_skill(
             timeout=spec.get("timeout", 60),
         )
     except subprocess.TimeoutExpired:
+        logger.warning(
+            "skill.complete name=%s success=false reason=timeout duration_ms=%d",
+            name,
+            round((time.monotonic() - started) * 1000),
+        )
         return {
             "success": False,
             "error": f"技能 '{name}' 执行超时（>{spec.get('timeout', 60)}s）",
         }
     except Exception as exc:  # 防御性兜底
+        logger.exception(
+            "skill.complete name=%s success=false reason=exception duration_ms=%d",
+            name,
+            round((time.monotonic() - started) * 1000),
+        )
         return {"success": False, "error": f"技能 '{name}' 执行异常: {exc}"}
 
     if proc.returncode != 0:
         err = (proc.stderr or b"").decode("utf-8", "replace").strip()[:800]
+        logger.warning(
+            "skill.complete name=%s success=false reason=exit_code exit_code=%d duration_ms=%d",
+            name,
+            proc.returncode,
+            round((time.monotonic() - started) * 1000),
+        )
         return {
             "success": False,
             "error": f"技能 '{name}' 退出码 {proc.returncode}: {err}",
@@ -365,10 +397,48 @@ def invoke_skill(
 
     out = (proc.stdout or b"").decode("utf-8", "replace").strip()
     if not out:
+        logger.info(
+            "skill.complete name=%s success=true empty_output=true duration_ms=%d",
+            name,
+            round((time.monotonic() - started) * 1000),
+        )
         return {"success": True, "output": ""}
     try:
-        return json.loads(out)
+        result = json.loads(out)
+        if isinstance(result, dict):
+            for attempt in result.get("attempts") or []:
+                if isinstance(attempt, dict):
+                    logger.info(
+                        "skill.attempt name=%s provider=%s success=%s duration_seconds=%s error=%s",
+                        name,
+                        attempt.get("provider") or "-",
+                        bool(attempt.get("ok")),
+                        attempt.get("durationSeconds", "-"),
+                        _safe_error(attempt.get("error")) or "-",
+                    )
+            success = bool(result.get("success", True))
+            log = logger.info if success else logger.warning
+            log(
+                "skill.complete name=%s success=%s provider=%s status=%s duration_ms=%d",
+                name,
+                success,
+                result.get("provider") or "-",
+                result.get("status") or "-",
+                round((time.monotonic() - started) * 1000),
+            )
+        else:
+            logger.info(
+                "skill.complete name=%s success=true duration_ms=%d",
+                name,
+                round((time.monotonic() - started) * 1000),
+            )
+        return result
     except json.JSONDecodeError:
+        logger.warning(
+            "skill.complete name=%s success=true non_json_output=true duration_ms=%d",
+            name,
+            round((time.monotonic() - started) * 1000),
+        )
         return {"success": True, "output": out}
 
 

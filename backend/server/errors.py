@@ -7,10 +7,13 @@ use the ``SSE_DONE`` sentinel and the ``sse_event`` / ``sse_error`` helpers.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict
 
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +58,10 @@ def sse_error(message: str) -> str:
 # Exception handlers
 # ---------------------------------------------------------------------------
 async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
+    logger.warning(
+        "api.error method=%s path=%s status=%s code=%s",
+        request.method, request.url.path, exc.status_code, exc.code,
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content=error_body(exc.code, exc.message),
@@ -69,6 +76,10 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception(
+        "api.unhandled method=%s path=%s error=%s",
+        request.method, request.url.path, exc,
+    )
     return JSONResponse(
         status_code=500,
         content=error_body("INTERNAL_ERROR", str(exc)),

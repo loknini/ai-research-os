@@ -25,3 +25,18 @@ export interface ObsidianFileDetail extends ObsidianFile {
   frontmatter: Record<string, unknown>
   links: Array<{ target: string; alias: string }>
 }
+
+/** One server-visible directory returned by the protected filesystem browser. */
+export interface ServerDirectory {
+  name: string
+  path: string
+  isVault: boolean
+}
+
+/** A single level of the backend machine's directory tree. */
+export interface ServerDirectoryListing {
+  success: boolean
+  currentPath: string | null
+  parentPath: string | null
+  directories: ServerDirectory[]
+}

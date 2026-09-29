@@ -7,10 +7,9 @@ parsing logic) so there are no new third-party dependencies.
 
 Contract:
   * ``call_llm(...)``  -> ``str | None``  (returns ``None`` on any failure; callers degrade)
-  * ``stream_llm(...)`` -> ``Generator[str | dict]`` (yields ``str`` text deltas;
-    after the stream ends it yields **at most one** ``dict`` with key
-    ``"tool_calls"`` when the model requested function/tool calls; raises
-    ``LLMUnavailableError`` on connection failure)
+  * ``stream_llm(...)`` -> ``Generator[str | dict]`` (yields ``str`` text deltas,
+    optional ``{"usage": ...}``, and at most one ``{"tool_calls": ...}``;
+    raises ``LLMUnavailableError`` on connection failure)
   * ``is_available()`` -> ``bool``
 
 Requests are sent to ``{LLM_BASE_URL}{LLM_HTTP_PATH}`` (default
@@ -148,6 +147,8 @@ class LLMClient:
 
         Contract:
           * Yields ``str`` text deltas as they arrive.
+          * May yield ``{"usage": {prompt_tokens, completion_tokens,
+            total_tokens}}`` when the provider supports streaming usage.
           * After the SSE stream ends, yields **at most one** ``dict`` with the
             key ``"tool_calls"`` (only when the model requested tool calls).
             Each entry has the shape
@@ -164,15 +165,31 @@ class LLMClient:
                                        temperature=temperature, max_tokens=max_tokens,
                                        tools=tools)
         timeout = timeout or eff.get("timeout")
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            self.endpoint, data=data, headers=self._headers(), method="POST"
-        )
+        # OpenAI-compatible providers return exact streaming usage only when
+        # requested. Older providers may reject this option; in that case we
+        # retry once without it before surfacing an availability error.
+        payload["stream_options"] = {"include_usage": True}
+
+        def open_stream(request_payload: Dict[str, Any]):
+            data = json.dumps(request_payload).encode("utf-8")
+            req = urllib.request.Request(
+                self.endpoint, data=data, headers=self._headers(), method="POST"
+            )
+            return urllib.request.urlopen(req, timeout=timeout)
         # Accumulate incremental function-call fragments across SSE deltas.
         # Keyed by the tool-call index (OpenAI emits them incrementally).
         tool_acc: Dict[int, Dict[str, Any]] = {}
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            try:
+                response = open_stream(payload)
+            except urllib.error.HTTPError as exc:
+                if exc.code not in (400, 422):
+                    raise
+                fallback_payload = dict(payload)
+                fallback_payload.pop("stream_options", None)
+                response = open_stream(fallback_payload)
+
+            with response as resp:
                 for raw in resp:
                     line = raw.decode("utf-8").strip()
                     if not line or line.startswith(":"):
@@ -186,7 +203,31 @@ class LLMClient:
                         obj = json.loads(chunk)
                     except json.JSONDecodeError:
                         continue
-                    delta = obj.get("choices", [{}])[0].get("delta", {})
+                    usage = obj.get("usage")
+                    if isinstance(usage, dict):
+                        prompt_tokens = usage.get("prompt_tokens", usage.get("input_tokens", 0))
+                        completion_tokens = usage.get(
+                            "completion_tokens", usage.get("output_tokens", 0)
+                        )
+                        try:
+                            prompt_tokens = int(prompt_tokens or 0)
+                            completion_tokens = int(completion_tokens or 0)
+                            total_tokens = int(
+                                usage.get("total_tokens")
+                                or prompt_tokens + completion_tokens
+                            )
+                        except (TypeError, ValueError):
+                            prompt_tokens = completion_tokens = total_tokens = 0
+                        if total_tokens > 0:
+                            yield {
+                                "usage": {
+                                    "prompt_tokens": prompt_tokens,
+                                    "completion_tokens": completion_tokens,
+                                    "total_tokens": total_tokens,
+                                }
+                            }
+                    choices = obj.get("choices") or []
+                    delta = choices[0].get("delta", {}) if choices else {}
                     content = delta.get("content")
                     if content:
                         yield content

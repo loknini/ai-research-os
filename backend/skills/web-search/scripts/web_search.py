@@ -431,13 +431,14 @@ def main() -> None:
 
     chain = _resolve_chain()
     attempts_all: list = []
-    last_err = ""
+    provider_failures: list[str] = []
     for prov in chain:
         if prov == "bocha":
             results, atts, warns, _ = _run_bocha(query, max_results, freshness)
             attempts_all.extend(atts)
             warnings.extend(warns)
             if results is None:
+                provider_failures.append(f"{prov}: 未配置可用密钥")
                 continue
         elif prov in ("duckduckgo", "wikipedia"):
             results, atts, warns = _run_simple_provider(prov, query, max_results)
@@ -447,7 +448,14 @@ def main() -> None:
             continue
 
         if not results:
-            last_err = f"{prov} 无可用结果"
+            errors = []
+            for attempt in atts:
+                if not attempt.get("ok") and attempt.get("error"):
+                    duration = attempt.get("durationSeconds")
+                    suffix = f" ({duration}s)" if duration is not None else ""
+                    errors.append(f"{attempt['error']}{suffix}")
+            reason = "；".join(dict.fromkeys(errors)) or "无可用结果"
+            provider_failures.append(f"{prov}: {reason}")
             continue
 
         print(
@@ -481,7 +489,9 @@ def main() -> None:
                 "results": [],
                 "uncertainty": [],
                 "warnings": warnings,
-                "error": f"所有检索源均失败：{last_err or '未知原因'}",
+                "error": "所有检索源均失败：" + (
+                    "；".join(provider_failures) if provider_failures else "未知原因"
+                ),
                 "attempts": attempts_all,
             },
             ensure_ascii=False,

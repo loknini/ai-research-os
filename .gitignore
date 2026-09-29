@@ -70,10 +70,7 @@ resume-agent-engineer.md
 # 构建/验证残留（各类 QA 构建测试输出目录，统一按点前缀目录模式排除）
 .vite-verify/
 .vite-verify-paper/
-.verify_final.txt
 frontend/dist-verify/
-frontend/.phase3b_build_test/
-frontend/.settings_build_test/
 frontend/*_build_test/
 frontend/vite.config.ts.timestamp-*.mjs
 

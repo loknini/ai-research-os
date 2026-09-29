@@ -4,7 +4,7 @@ const apiRequest = vi.hoisted(() => vi.fn())
 
 vi.mock('@/services/api', () => ({ apiRequest }))
 
-import { fetchObsidianFile } from './obsidianApi'
+import { browseServerDirectories, fetchObsidianFile } from './obsidianApi'
 
 describe('obsidianApi', () => {
   beforeEach(() => apiRequest.mockReset())
@@ -33,5 +33,24 @@ describe('obsidianApi', () => {
 
     await expect(fetchObsidianFile(8)).resolves.toBeNull()
     await expect(fetchObsidianFile(9)).resolves.toBeNull()
+  })
+
+  it('browses server directories and safely encodes absolute paths', async () => {
+    const listing = {
+      success: true,
+      currentPath: 'D:\\Notes & Papers',
+      parentPath: 'D:\\',
+      directories: [{ name: 'Vault', path: 'D:\\Notes & Papers\\Vault', isVault: true }],
+    }
+    apiRequest.mockResolvedValue(new Response(JSON.stringify(listing), { status: 200 }))
+
+    await expect(browseServerDirectories('D:\\Notes & Papers')).resolves.toEqual(listing)
+    expect(apiRequest).toHaveBeenCalledWith('/api/obsidian/directories?path=D%3A%5CNotes+%26+Papers')
+  })
+
+  it('surfaces server directory browsing errors', async () => {
+    apiRequest.mockResolvedValue(new Response(JSON.stringify({ detail: '没有权限读取该目录' }), { status: 403 }))
+
+    await expect(browseServerDirectories('D:\\Protected')).rejects.toThrow('没有权限读取该目录')
   })
 })

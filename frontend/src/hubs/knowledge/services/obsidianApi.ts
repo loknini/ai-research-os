@@ -9,11 +9,15 @@ import { apiRequest } from '@/services/api'
 //
 // - `fetchVaults` / `fetchVaultFiles` return an empty array on failure (matching the
 //   container's initial `[]` state, so a failed load is a no-op on mount).
-// - `scanVault` / `addVault` return `null` when `response.ok` is false, so the
-//   handler's existing `if (result?.success)` / `if (result)` flow reproduces the
-//   original behavior (non-OK responses were silently ignored in the source).
+// - Mutating and filesystem-browsing calls surface non-OK responses so the UI can
+//   explain missing remote administrator authorization instead of failing silently.
 
-import type { ObsidianVault, ObsidianFile, ObsidianFileDetail } from '../types'
+import type {
+  ObsidianVault,
+  ObsidianFile,
+  ObsidianFileDetail,
+  ServerDirectoryListing,
+} from '../types'
 
 /** Result shape of a vault scan, as returned by the backend. */
 export interface ScanResult {
@@ -56,12 +60,26 @@ export async function fetchObsidianFile(fileId: number): Promise<ObsidianFileDet
   return data.success && data.file ? data.file as ObsidianFileDetail : null
 }
 
-/** Trigger a scan of the given vault. Returns `null` when the response is not OK. */
+/** Browse one level of the backend machine's directory tree. */
+export async function browseServerDirectories(path?: string): Promise<ServerDirectoryListing> {
+  const query = path ? `?${new URLSearchParams({ path }).toString()}` : ''
+  const response = await apiRequest(`/api/obsidian/directories${query}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { detail?: string } | null
+    throw new Error(body?.detail || `无法浏览服务器目录（HTTP ${response.status}）`)
+  }
+  return (await response.json()) as ServerDirectoryListing
+}
+
+/** Trigger a scan of the given vault and surface server-side errors to the UI. */
 export async function scanVault(vaultId: number): Promise<ScanResult | null> {
   const response = await apiRequest(`/api/obsidian/vaults/${vaultId}/scan`, {
     method: 'POST'
   })
-  if (!response.ok) return null
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { detail?: string } | null
+    throw new Error(body?.detail || `无法扫描 Vault（HTTP ${response.status}）`)
+  }
   return (await response.json()) as ScanResult
 }
 
@@ -72,6 +90,9 @@ export async function addVault(name: string, path: string): Promise<AddVaultResu
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, path })
   })
-  if (!response.ok) return null
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { detail?: string } | null
+    throw new Error(body?.detail || `无法添加 Vault（HTTP ${response.status}）`)
+  }
   return (await response.json()) as AddVaultResult
 }

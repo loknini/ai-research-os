@@ -73,6 +73,7 @@ if ($Background -and $ShowTerminals) {
 if (-not $LogDir) {
     $LogDir = "$ProjectDir\logs"
 }
+$env:LOG_DIR = $LogDir
 # 项目内虚拟环境（不污染全局 Python）
 $VenvDir = "$ProjectDir\.venv"
 $VenvPython = "$VenvDir\Scripts\python.exe"
@@ -187,10 +188,20 @@ function Get-PortListener {
     return Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
-# 后台模式日志轮转：超 10MB 留一个 .1 备份，防止 uvicorn 日志无限增长
+# 启动器 stdout/stderr 日志轮转：超 10MB 后保留最近 5 份。
+# 应用自身的 app/error/access 日志由 Python logging 按日轮转。
 function Rotate-Log {
     param([string]$Path)
     if ((Test-Path -LiteralPath $Path) -and ((Get-Item -LiteralPath $Path).Length -gt 10MB)) {
+        if (Test-Path -LiteralPath "$Path.5") {
+            Remove-Item -LiteralPath "$Path.5" -Force
+        }
+        for ($index = 4; $index -ge 1; $index--) {
+            $source = "$Path.$index"
+            if (Test-Path -LiteralPath $source) {
+                Move-Item -LiteralPath $source -Destination "$Path.$($index + 1)" -Force
+            }
+        }
         Move-Item -LiteralPath $Path -Destination "$Path.1" -Force
     }
 }
@@ -357,8 +368,6 @@ if (-not $SkipBackend) {
         Rotate-Log "$LogDir\backend.err.log"
         # Windows venv 的 python.exe 是 redirector，外层 cmd.exe 同步等待真正的 Uvicorn；
         # PID 文件因此稳定指向可用于 taskkill /T 的完整后端进程树。
-        Set-Content -LiteralPath "$LogDir\backend.log" -Value "" -Encoding UTF8 -NoNewline
-        Set-Content -LiteralPath "$LogDir\backend.err.log" -Value "" -Encoding UTF8 -NoNewline
         if ($IsWindowsRuntime) {
             $backendCommand = '""{0}" -m backend.server.windows_daemon --port {1} 1>>"{2}" 2>>"{3}""' -f $VenvPython, $ApiPort, "$LogDir\backend.log", "$LogDir\backend.err.log"
         } else {
@@ -429,8 +438,6 @@ if (-not $SkipFrontend) {
         Rotate-Log "$LogDir\frontend.err.log"
         $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
         if (-not $npmCmd) { $npmCmd = "npm" }
-        Set-Content -LiteralPath "$LogDir\frontend.log" -Value "" -Encoding UTF8 -NoNewline
-        Set-Content -LiteralPath "$LogDir\frontend.err.log" -Value "" -Encoding UTF8 -NoNewline
         $frontendCommand = '""{0}" run dev -- --port {1} 1>>"{2}" 2>>"{3}""' -f $npmCmd, $FrontendPort, "$LogDir\frontend.log", "$LogDir\frontend.err.log"
         $feProc = Start-NoConsoleCommand -Command $frontendCommand -WorkingDirectory "$ProjectDir\frontend"
         Set-Content -LiteralPath "$LogDir\frontend.pid" -Value $feProc.Id -Encoding Ascii -NoNewline

@@ -236,9 +236,10 @@ def test_http_400_and_exemption() -> None:
                 "backup": client.post("/api/backup/export", headers=remote).status_code,
                 "swanlab": client.get("/api/swanlab/status", headers=remote).status_code,
                 "skills": client.get("/api/skills", headers=remote).status_code,
+                "obsidian_fs": client.get("/api/obsidian/directories", headers=remote).status_code,
             }
             record(
-                "B13 四类远程系统管理接口默认拒绝",
+                "B13 五类远程系统管理接口默认拒绝",
                 all(status == 403 for status in denied_statuses.values()),
                 f"statuses={denied_statuses}",
             )
@@ -560,6 +561,51 @@ def test_obsidian_file_detail() -> None:
     outsider = ObsidianService(space_id="obsidian-beta")
     hidden = bool(detail) and outsider.get_file_content(detail["id"]) is None
     record("I4 Obsidian file detail is hidden from another space", hidden)
+
+    browse_root = TMP / "obsidian-browser"
+    browser_vault = browse_root / "Server Vault"
+    (browser_vault / ".obsidian").mkdir(parents=True)
+    (browse_root / "Plain Folder").mkdir()
+    (browse_root / "not-a-directory.txt").write_text("ignored", encoding="utf-8")
+    from fastapi import HTTPException
+    from backend.server.routers.obsidian import browse_directories
+
+    payload = asyncio.run(browse_directories(str(browse_root)))
+    missing_status = 0
+    try:
+        asyncio.run(browse_directories(str(browse_root / "missing")))
+    except HTTPException as exc:
+        missing_status = exc.status_code
+    entries = {item["name"]: item for item in payload.get("directories", [])}
+    record(
+        "I5 server directory browser lists directories and identifies Vaults",
+        set(entries) == {"Plain Folder", "Server Vault"}
+        and entries["Server Vault"].get("isVault") is True,
+        f"entries={entries}",
+    )
+    record(
+        "I6 server directory browser rejects missing paths",
+        missing_status == 404,
+        f"status={missing_status}",
+    )
+    relative = owner.add_vault("Relative Vault", "relative-vault")
+    record(
+        "I7 manual Vault entry requires a server absolute path",
+        relative.get("success") is False and "绝对路径" in relative.get("message", ""),
+        str(relative),
+    )
+
+    for index in range(101):
+        nested = vault_path / "bulk" / f"group-{index // 20}"
+        nested.mkdir(parents=True, exist_ok=True)
+        (nested / f"note-{index:03}.md").write_text(f"# Note {index}\n", encoding="utf-8")
+    rescanned = owner.scan_vault(vault_id) if vault_id is not None else {}
+    complete_files = owner.get_vault_files(vault_id) if vault_id is not None else []
+    record(
+        "I8 Obsidian file listing is not truncated at 100 entries",
+        rescanned.get("success") is True and len(complete_files) == 102,
+        f"count={len(complete_files)}",
+    )
 
 
 # ---------------------------------------------------------------------------

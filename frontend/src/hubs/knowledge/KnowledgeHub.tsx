@@ -4,13 +4,12 @@
 // JSX assembly of the presentational components. External behavior, props and render
 // output are identical to the source.
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Header, HeaderAction } from '@/components/layout/header'
 import { cn } from '@/utils'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Badge } from '@/components/ui/badge'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { toast } from '@/components/ui/toast'
@@ -28,6 +27,7 @@ import {
   Link2,
   FunctionSquare,
   BrainCircuit,
+  History,
   X
 } from 'lucide-react'
 import { NOTE_TYPE_CONFIG } from './config'
@@ -39,6 +39,7 @@ import { NoteCard } from './components/NoteCard'
 import { NoteEditor } from './components/NoteEditor'
 import { VaultSelectorDialog } from './components/VaultSelectorDialog'
 import { ObsidianFileViewer } from './components/ObsidianFileViewer'
+import { ObsidianFileBrowser } from './components/ObsidianFileBrowser'
 import FormulaHub from '@/hubs/formula'
 import { TeamContextRunDialog } from '@/components/agent/team-context-run-dialog'
 import { useSearchParams } from 'react-router-dom'
@@ -68,6 +69,7 @@ export default function KnowledgeHub() {
   const [showVaultSelector, setShowVaultSelector] = useState(false)
   const [vaultPathInput, setVaultPathInput] = useState('')
   const [vaultNameInput, setVaultNameInput] = useState('')
+  const [obsidianViewMode, setObsidianViewMode] = useState<'tree' | 'recent'>('tree')
 
   // 筛选状态
   const [filterType, setFilterType] = useState<string>('all')
@@ -111,6 +113,15 @@ export default function KnowledgeHub() {
 
   // 派生数据
   const { stats, filteredNotes } = useKnowledgeData(notes, filterType, filterFavorite, searchQuery)
+  const filteredObsidianFiles = useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase()
+    if (!query) return obsidianFiles
+    return obsidianFiles.filter((file) =>
+      file.title.toLocaleLowerCase().includes(query)
+      || file.path.toLocaleLowerCase().includes(query)
+      || file.tags.some((tag) => tag.toLocaleLowerCase().includes(query)),
+    )
+  }, [obsidianFiles, searchQuery])
 
   // 加载数据
   const loadData = useCallback(async () => {
@@ -174,7 +185,11 @@ export default function KnowledgeHub() {
         loadObsidianVaults()
       }
     } catch (error) {
-      toast({ title: '扫描失败', description: '无法扫描 Vault', variant: 'error' })
+      toast({
+        title: '扫描失败',
+        description: error instanceof Error ? error.message : '无法扫描 Vault',
+        variant: 'error'
+      })
     } finally {
       setIsScanning(false)
     }
@@ -211,34 +226,11 @@ export default function KnowledgeHub() {
     setIsObsidianFileLoading(false)
   }
 
-  // 选择文件夹
-  const handleSelectDirectory = async () => {
-    try {
-      // @ts-expect-error - File System Access API is not in every TS DOM lib.
-      if (!window.showDirectoryPicker) {
-        toast({ title: '浏览器不支持', description: '请使用 Chrome/Edge 浏览器', variant: 'error' })
-        return
-      }
-
-      // @ts-expect-error - File System Access API is not in every TS DOM lib.
-      const dirHandle = await window.showDirectoryPicker()
-      if (dirHandle) {
-        // 尝试获取路径（注意：浏览器出于安全考虑不会返回完整路径）
-        // 我们只能获取文件夹名，完整路径需要后端配合或用户手动输入
-        const folderName = dirHandle.name
-        setVaultPathInput(folderName)
-
-        // 如果名称未填写，自动使用文件夹名
-        if (!vaultNameInput.trim()) {
-          setVaultNameInput(folderName)
-        }
-
-        toast({ title: '已选择文件夹', description: folderName, variant: 'success' })
-      }
-    } catch (err) {
-      // 用户取消选择
-      console.log('User cancelled directory picker')
-    }
+  // 从后端可见的服务器文件系统选择目录
+  const handleSelectDirectory = (path: string, folderName: string) => {
+    setVaultPathInput(path)
+    if (!vaultNameInput.trim()) setVaultNameInput(folderName)
+    toast({ title: '已选择服务端目录', description: path, variant: 'success' })
   }
 
   // 关闭 Vault 选择对话框并重置输入
@@ -268,7 +260,11 @@ export default function KnowledgeHub() {
         }
       }
     } catch (error) {
-      toast({ title: '添加失败', description: '无法添加 Vault', variant: 'error' })
+      toast({
+        title: '添加失败',
+        description: error instanceof Error ? error.message : '无法添加 Vault',
+        variant: 'error'
+      })
     }
   }
 
@@ -512,23 +508,44 @@ export default function KnowledgeHub() {
               <div className="relative flex-1 max-w-md">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
-                  placeholder="搜索笔记..."
+                  placeholder={activeTab === 'obsidian' ? '搜索 Obsidian 文件...' : '搜索笔记...'}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="pl-9"
                 />
               </div>
-              <Button
-                variant="outline"
-                onClick={() => setShowFilters(!showFilters)}
-                className={showFilters ? 'bg-muted' : ''}
-              >
-                <Filter className="w-4 h-4 mr-2" />
-                筛选
-              </Button>
+              {activeTab === 'local' ? (
+                <Button
+                  variant="outline"
+                  onClick={() => setShowFilters(!showFilters)}
+                  className={showFilters ? 'bg-muted' : ''}
+                >
+                  <Filter className="w-4 h-4 mr-2" />
+                  筛选
+                </Button>
+              ) : (
+                <div className="flex items-center rounded-md border bg-background p-1">
+                  <Button
+                    type="button"
+                    variant={obsidianViewMode === 'tree' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setObsidianViewMode('tree')}
+                  >
+                    <FolderOpen className="mr-1.5 h-4 w-4" />目录树
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={obsidianViewMode === 'recent' ? 'secondary' : 'ghost'}
+                    size="sm"
+                    onClick={() => setObsidianViewMode('recent')}
+                  >
+                    <History className="mr-1.5 h-4 w-4" />最近修改
+                  </Button>
+                </div>
+              )}
             </div>
 
-            {showFilters && (
+            {activeTab === 'local' && showFilters && (
               <div className="flex flex-wrap items-center gap-4 mt-4 p-4 bg-muted/50 rounded-lg">
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-muted-foreground">类型:</span>
@@ -606,38 +623,21 @@ export default function KnowledgeHub() {
                   <p>暂无 Obsidian 文件</p>
                   <p className="text-sm mt-1">点击"扫描"按钮导入 Vault 中的笔记</p>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  {obsidianFiles.map((file) => (
-                    <button
-                      type="button"
-                      key={file.id}
-                      className={cn(
-                        'w-full p-4 border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors text-left',
-                        selectedObsidianFile?.id === file.id && 'border-primary bg-primary/5',
-                      )}
-                      onClick={() => void handleOpenObsidianFile(file)}
-                      aria-pressed={selectedObsidianFile?.id === file.id}
-                    >
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1 min-w-0">
-                          <h3 className="font-medium truncate">{file.title}</h3>
-                          <p className="text-sm text-muted-foreground truncate mt-1">{file.path}</p>
-                          <div className="flex items-center gap-2 mt-2">
-                            {file.tags?.map((tag: string) => (
-                              <Badge key={tag} variant="secondary" className="text-xs">
-                                #{tag}
-                              </Badge>
-                            ))}
-                          </div>
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(file.modified_at * 1000).toLocaleDateString('zh-CN')}
-                        </span>
-                      </div>
-                    </button>
-                  ))}
+              ) : filteredObsidianFiles.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <Search className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>没有匹配的 Obsidian 文件</p>
+                  <p className="text-sm mt-1">可按文件名、目录路径或标签搜索</p>
                 </div>
+              ) : (
+                <ObsidianFileBrowser
+                  key={selectedVault || 'no-vault'}
+                  files={filteredObsidianFiles}
+                  mode={obsidianViewMode}
+                  selectedFileId={selectedObsidianFile?.id}
+                  forceExpand={Boolean(searchQuery.trim())}
+                  onOpen={(file) => void handleOpenObsidianFile(file)}
+                />
               )
             )}
           </ScrollArea>

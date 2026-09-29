@@ -65,6 +65,20 @@ interface RagSource {
   title?: string | null
 }
 
+interface TokenUsage {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+}
+
+interface ChatContextInfo {
+  estimated_tokens: number
+  limit: number
+  compressed: boolean
+  last_usage?: TokenUsage
+  cumulative_usage?: TokenUsage
+}
+
 // 会话类型
 interface Conversation {
   id: string
@@ -76,4 +90,14 @@ interface Conversation {
   metadata?: Record<string, any>  // 会话级配置（如 RAG 接地开关 / 来源筛选），按会话持久化
 }
 
-export type { ToolCall, ToolResult, Message, Conversation, ReasoningStep, RagSource, ChatContentPart }
+export type {
+  ToolCall,
+  ToolResult,
+  Message,
+  Conversation,
+  ReasoningStep,
+  RagSource,
+  ChatContentPart,
+  TokenUsage,
+  ChatContextInfo,
+}

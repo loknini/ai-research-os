@@ -35,7 +35,9 @@ auto 模式也要等待审批（如 ``create_note,create_task``）。
 from __future__ import annotations
 
 import json
+import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -48,6 +50,7 @@ POLICY_DANGEROUS = "dangerous"
 MODE_AUTO = "auto"
 MODE_MANUAL = "manual"
 MODE_STRICT = "strict"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -213,6 +216,7 @@ def execute(
 
     spec = _REGISTRY.get(name)
     if spec is None:
+        logger.warning("tool.unknown name=%s", name)
         return {"success": False, "message": f"未知工具: {name}"}
 
     # —— 策略判定 —— #
@@ -221,6 +225,12 @@ def execute(
         need_approval = True
     elif spec.policy == POLICY_DANGEROUS:
         if mode != MODE_STRICT:
+            logger.warning(
+                "tool.blocked name=%s policy=%s approval_mode=%s",
+                name,
+                spec.policy,
+                mode,
+            )
             return {
                 "success": False,
                 "blocked": True,
@@ -235,6 +245,12 @@ def execute(
 
     if need_approval:
         if approve is None:
+            logger.warning(
+                "tool.blocked name=%s policy=%s approval_mode=%s reason=no_approval_channel",
+                name,
+                spec.policy,
+                mode,
+            )
             return {
                 "success": False,
                 "blocked": True,
@@ -245,6 +261,12 @@ def execute(
             }
         ok = approve(name, parameters)
         if not ok:
+            logger.info(
+                "tool.denied name=%s policy=%s approval_mode=%s",
+                name,
+                spec.policy,
+                mode,
+            )
             return {
                 "success": False,
                 "blocked": True,
@@ -253,9 +275,35 @@ def execute(
             }
 
     # —— 执行 —— #
+    started = time.monotonic()
+    logger.info(
+        "tool.start name=%s source=%s policy=%s parameter_keys=%s",
+        name,
+        spec.source,
+        spec.policy,
+        ",".join(sorted(str(key) for key in parameters)),
+    )
     try:
-        return spec.handler(parameters, space_id=space_id)
+        result = spec.handler(parameters, space_id=space_id)
+        success = not isinstance(result, dict) or bool(result.get("success", True))
+        log = logger.info if success else logger.warning
+        log(
+            "tool.complete name=%s source=%s policy=%s success=%s duration_ms=%d",
+            name,
+            spec.source,
+            spec.policy,
+            success,
+            round((time.monotonic() - started) * 1000),
+        )
+        return result
     except Exception as exc:  # noqa: BLE001 - 工具失败必须以结果返回，不能抛给主循环
+        logger.exception(
+            "tool.complete name=%s source=%s policy=%s success=false duration_ms=%d",
+            name,
+            spec.source,
+            spec.policy,
+            round((time.monotonic() - started) * 1000),
+        )
         return {"success": False, "message": f"执行失败: {str(exc)}"}
 
 

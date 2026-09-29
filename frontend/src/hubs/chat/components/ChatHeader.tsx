@@ -3,17 +3,12 @@ import { BookOpen, ChevronDown, ChevronLeft, PanelLeft, Plus } from 'lucide-reac
 import { Button } from '@/components/ui/button'
 import { ContextRing } from './ContextRing'
 import { cn } from '@/utils'
+import type { ChatContextInfo } from '../types'
 
 interface BranchTip {
   index: number
   count: number
   role: string
-}
-
-interface ContextInfo {
-  estimated_tokens: number
-  limit: number
-  compressed: boolean
 }
 
 interface RagIndexSource {
@@ -31,7 +26,7 @@ interface ChatHeaderProps {
   hasConversation: boolean
   onNewConversation: () => void
   branchTip: BranchTip | null
-  contextInfo: ContextInfo | null
+  contextInfo: ChatContextInfo | null
   contextExpanded: boolean
   onToggleContext: () => void
   ragEnabled: boolean
@@ -117,6 +112,8 @@ export function ChatHeader({
                   value={contextInfo.estimated_tokens}
                   limit={contextInfo.limit}
                   compressed={contextInfo.compressed}
+                  lastUsage={contextInfo.last_usage}
+                  cumulativeUsage={contextInfo.cumulative_usage}
                   expanded={contextExpanded}
                   onToggle={onToggleContext}
                 />

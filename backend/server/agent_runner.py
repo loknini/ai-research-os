@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import time
@@ -9,6 +10,8 @@ import uuid
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from . import agent_service, agent_teams, db
+
+logger = logging.getLogger(__name__)
 
 RUN_CANCEL: Dict[str, threading.Event] = {}
 _RUN_THREADS: Dict[str, threading.Thread] = {}
@@ -77,7 +80,7 @@ def _worker(run_id: str, space_id: str, project_id: Optional[str], requirement: 
         loop.run_until_complete(_execute(
             run_id, space_id, project_id, requirement, roles, team_snapshot, input_context))
     except Exception as exc:  # pragma: no cover - final worker containment
-        print(f"[agent_runner] worker crashed for {run_id}: {exc}")
+        logger.exception("agent.worker_crashed run_id=%s error=%s", run_id, exc)
     finally:
         loop.close()
         _RUN_THREADS.pop(run_id, None)

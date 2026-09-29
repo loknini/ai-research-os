@@ -56,10 +56,18 @@ const MessageContent = ({
           return <p className="mb-3 last:mb-0 leading-[1.7]">{children}</p>
         },
         ul({ children }) {
-          return <ul className="list-disc list-inside mb-3 leading-[1.7]">{children}</ul>
+          return (
+            <ul className="list-disc list-outside pl-5 mb-3 leading-[1.7] [&>li>p]:mb-1">
+              {children}
+            </ul>
+          )
         },
         ol({ children }) {
-          return <ol className="list-decimal list-inside mb-3 leading-[1.7]">{children}</ol>
+          return (
+            <ol className="list-decimal list-outside pl-5 mb-3 leading-[1.7] [&>li>p]:mb-1">
+              {children}
+            </ol>
+          )
         },
         li({ children }) {
           return <li className="mb-1.5">{children}</li>

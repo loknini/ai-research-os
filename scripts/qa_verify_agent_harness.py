@@ -310,6 +310,11 @@ def test_context():
     # token 估算：接收消息列表；CJK 字符 ≈ 1 token
     n = ctx.estimate_tokens([{"role": "user", "content": "你好世界 Hello"}])
     check(isinstance(n, int) and n >= 5, f"estimate_tokens 返回整数且 ≥5（实际 {n}）")
+    request_n = ctx.estimate_request_tokens(
+        [{"role": "user", "content": "你好世界 Hello"}],
+        [{"type": "function", "function": {"name": "demo", "description": "测试工具"}}],
+    )
+    check(request_n > n, f"完整请求估算包含消息封装与工具定义（{n} -> {request_n}）")
 
     # 打桩摘要生成（避免真实 LLM 调用）
     _orig_summarize = ctx.summarize_history

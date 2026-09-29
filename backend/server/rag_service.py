@@ -21,6 +21,7 @@ import asyncio
 import hashlib
 import html as _html
 import heapq
+import logging
 import math
 import os
 import re
@@ -38,6 +39,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import db
 from .llm import llm_client
 from . import vector_index as _vindex
+
+logger = logging.getLogger(__name__)
 
 # PDF 解析为可选依赖：未安装时仅跳过 PDF，不阻断其它格式。
 try:  # pragma: no cover - 依赖在 requirements 中声明
@@ -799,7 +802,7 @@ async def index_source(
             await db.database.clear_rag_generation(
                 source_id, space_id, previous_generation, keep=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"[rag] deferred generation cleanup skipped: {exc}")
+            logger.exception("rag.deferred_generation_cleanup_failed error=%s", exc)
     await db.database.update_rag_source(
         source_id, space_id, status="indexing", error="",
         **({"progress": 0, "total_files": 0} if not is_resume else {}))
@@ -873,7 +876,7 @@ async def index_source(
                         reusedFiles=reused_files, skippedPaths=sorted(skipped_paths))
                     continue
         except Exception as exc:  # noqa: BLE001 - 单个文件失败不阻断整体
-            print(f"[rag] skip {fp}: {exc}")
+            logger.warning("rag.file_skipped path=%s error=%s", fp, exc)
             skipped_paths.add(normalized_path)
             continue
         finally:
@@ -1049,8 +1052,10 @@ async def index_source(
                 cacheHits=cache_hits, reusedFiles=reused_files,
                 embeddedChunks=done, totalChunks=total_chunks)
             if embed_batches == 1 or embed_batches % 20 == 0 or done >= total_chunks:
-                print(f"[rag] embedding {source_id[:8]}: batch {embed_batches} "
-                      f"({done}/{total_chunks} chunks)", flush=True)
+                logger.info(
+                    "rag.embedding_progress source_id=%s batch=%s completed=%s total=%s",
+                    source_id[:8], embed_batches, done, total_chunks,
+                )
 
     state = await db.database.get_rag_generation_state(source_id, space_id, generation_id)
     if state["embeddedCount"] == state["chunkCount"] and state["chunkCount"] > 0:
@@ -1187,7 +1192,7 @@ async def index_paper(paper_id: str, space_id: str) -> Dict[str, Any]:
                 pdf_text = meta.get("full_text", "")
                 pdf_bounds = meta.get("page_boundaries", [(1, 0, len(pdf_text))])
         except Exception as exc:  # noqa: BLE001 - PDF 失败仍索引摘要
-            print(f"[rag] paper pdf skip {arxiv_id}: {exc}")
+            logger.warning("rag.paper_pdf_skipped arxiv_id=%s error=%s", arxiv_id, exc)
     joint = f"{title}\n{abstract}\n{Path(local_path).stat().st_mtime if local_path and Path(local_path).exists() else ''}"
     chash = content_hash(joint + pdf_text[:1000])
     try:

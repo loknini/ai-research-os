@@ -1,4 +1,4 @@
-import type { ChatContentPart, Message } from './types'
+import type { ChatContentPart, Conversation, Message, TokenUsage } from './types'
 
 export function estimateTokensLocal(messages: Pick<Message, 'content'>[]): number {
   let total = 0
@@ -37,4 +37,36 @@ export function stripAssistantLeadingBreaks(content: string): string {
 /** Append an SSE text delta without allowing providers to create an empty first line. */
 export function appendAssistantDelta(current: string, delta: string): string {
   return stripAssistantLeadingBreaks(current + delta)
+}
+
+/**
+ * Replace the live streaming bubble with the persisted assistant message in
+ * the same React update. The subsequent detail reload still fills in branch
+ * metadata, but no network-sized blank frame is exposed to the user.
+ */
+export function appendFinalMessage(
+  conversation: Conversation | null,
+  message: Message,
+  conversationId: string
+): Conversation | null {
+  if (!conversation || conversation.id !== conversationId) return conversation
+  if (conversation.messages.some((item) => item.id === message.id)) return conversation
+
+  return {
+    ...conversation,
+    messages: [...conversation.messages, message],
+    currentLeafId: message.id,
+    updatedAt: Math.max(conversation.updatedAt, message.timestamp),
+  }
+}
+
+export function addTokenUsage(
+  previous: TokenUsage | undefined,
+  current: TokenUsage
+): TokenUsage {
+  return {
+    prompt_tokens: (previous?.prompt_tokens || 0) + current.prompt_tokens,
+    completion_tokens: (previous?.completion_tokens || 0) + current.completion_tokens,
+    total_tokens: (previous?.total_tokens || 0) + current.total_tokens,
+  }
 }
