@@ -1,9 +1,8 @@
-"""Formula (OCR) integration routes.
+"""公式 OCR 集成路由。
 
-``recognize`` shells out to ``scripts/formula_service.py`` (visual model).
-History reads/stats retain the compatible CLI path; writes use the shared
-async database layer directly, avoiding a subprocess/SQLite lock inversion.
-All operations remain isolated by ``space_id``.
+``recognize`` 通过子进程调用视觉模型脚本 ``scripts/formula_service.py``。历史读取与
+统计保留兼容 CLI 路径，写操作直接使用共享异步数据库层，避免子进程与 SQLite 的锁
+顺序反转；所有操作仍按 ``space_id`` 隔离。
 """
 from __future__ import annotations
 
@@ -16,7 +15,8 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .. import config, db
+from .. import db
+from ..core import config
 from ..deps import get_space_id
 from ..helpers import run_script
 
@@ -24,7 +24,7 @@ router = APIRouter(prefix="/api/formula", tags=["formula"])
 
 
 def _script_env(space_id: str) -> dict[str, str]:
-    """Child-process context; app lifespan has already initialized the DB."""
+    """子进程上下文；应用生命周期已经初始化数据库。"""
     return {"SPACE_ID": space_id, "AIROS_DB_ALREADY_INITIALIZED": "1"}
 
 

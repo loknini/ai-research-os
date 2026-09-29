@@ -36,7 +36,7 @@ _transformers = None
 
 
 def _model_cache_name(model_id: str, revision: str = "") -> str:
-    """Filesystem-safe cache key; revisions never become raw path fragments."""
+    """生成文件系统安全的缓存键，revision 不会直接成为路径片段。"""
     safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", model_id).strip("._") or "model"
     if revision:
         rev_hash = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
@@ -75,7 +75,7 @@ class LocalEmbedder:
         if p.is_dir():
             return p
         # 默认缓存目录：data/models/<sanitized_id>
-        from . import config
+        from ..core import config
         safe_name = _model_cache_name(model_id, revision)
         cache_dir = config.DATA_DIR / "models" / safe_name
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -214,11 +214,11 @@ class LocalEmbedder:
                 # 设备选择
                 self._device = _torch.device(
                     "cuda" if _torch.cuda.is_available() else "cpu")
-                # tokenizer
+                # 分词器
                 self._tokenizer = _transformers.AutoTokenizer.from_pretrained(
                     str(resolved), trust_remote_code=False, local_files_only=True,
                     padding_side="left", truncation_side="left")
-                # model
+                # 模型
                 self._model = _transformers.AutoModel.from_pretrained(
                     str(resolved), trust_remote_code=False, local_files_only=True,
                     use_safetensors=True).to(self._device)
@@ -263,7 +263,7 @@ class LocalEmbedder:
             eos = self._tokenizer.eos_token or ""
             if eos:
                 prepared = [text if text.endswith(eos) else text + eos for text in prepared]
-            # tokenize
+            # 分词
             batch_dict = self._tokenizer(
                 prepared,
                 padding=True,
@@ -275,7 +275,7 @@ class LocalEmbedder:
             # 推理
             with _torch.no_grad():
                 outputs = self._model(**batch_dict)
-            # last-token pooling
+            # 末位 token 池化
             last_hidden = outputs.last_hidden_state
             attention_mask = batch_dict["attention_mask"]
             left_padding = (
@@ -287,7 +287,7 @@ class LocalEmbedder:
                 bs = last_hidden.shape[0]
                 embeddings = last_hidden[
                     _torch.arange(bs, device=self._device), seq_lens]
-            # L2 normalize
+            # L2 归一化
             norms = _torch.norm(embeddings, p=2, dim=1, keepdim=True)
             embeddings = embeddings / (norms + 1e-8)
             # → python list
@@ -345,7 +345,7 @@ def scan_local_models() -> List[Dict[str, Any]]:
     ``incomplete=True``，供前端提示续传。
     返回 ``[{id, path, sizeMB, downloaded, incomplete}]``，按 id 排序。
     """
-    from . import config as _config
+    from ..core import config as _config
     models_dir = _config.DATA_DIR / "models"
     out: List[Dict[str, Any]] = []
     try:
@@ -401,7 +401,7 @@ def probe_local_model(model_id: str, revision: str = "") -> Dict[str, Any]:
         return {"configured": True, "resolvable": False,
                 "reason": "本地目录下载不完整（缺权重文件），可续传下载",
                 "path": str(p)}
-    from . import config as _config
+    from ..core import config as _config
     safe_name = _model_cache_name(model_id, revision)
     cache_dir = _config.DATA_DIR / "models" / safe_name
     if cache_dir.is_dir() and any(cache_dir.glob("config.json")):
@@ -454,7 +454,7 @@ def _sanitize_model_id(model_id: str) -> str:
 
 def _download_status_path(model_id: str) -> Optional[Path]:
     try:
-        from . import config as _config
+        from ..core import config as _config
         return _config.DATA_DIR / "models" / f".status_{_sanitize_model_id(model_id)}.json"
     except Exception:
         return None
@@ -564,7 +564,7 @@ def download_in_background(model_id: str, revision: str = "") -> Dict[str, Any]:
                 return {"model": model_id, "state": "busy", "sizeMB": 0.0,
                         "error": "", "activeModel": other_id,
                         "activeSizeMB": cur.get("sizeMB", 0.0)}
-        from . import config as _config
+        from ..core import config as _config
         target_dir = _config.DATA_DIR / "models" / _model_cache_name(model_id, revision)
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -593,7 +593,7 @@ def get_active_download() -> Optional[Dict[str, Any]]:
     import json as _json
     import time as _time
     try:
-        from . import config as _config
+        from ..core import config as _config
         models_dir = _config.DATA_DIR / "models"
         if not models_dir.is_dir():
             return None

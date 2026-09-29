@@ -1,16 +1,10 @@
-"""Skill management API.
+"""技能管理 API。
 
-Exposes the backend's skill registry (populated by ``SkillBridge`` from
-``backend/skills/<name>/SKILL.md``) for the management UI:
+向管理界面暴露由 ``SkillBridge`` 从 ``backend/skills/<name>/SKILL.md`` 构建的技能
+注册表，包括列表、运行时重新扫描、启停和直接调用端点。
 
-* ``GET  /api/skills``          list all skills (incl. disabled) with metadata
-* ``POST /api/skills/reload``    re-scan the skills directory at runtime
-* ``POST /api/skills/{name}/enabled``  enable/disable a skill (rewrites frontmatter)
-* ``POST /api/skills/{name}/run``       invoke a skill directly (reuses ``execute_tool``)
-
-Skills are a **global** config (the directory is fixed), so listing/reloading
-endpoints do not enforce ``space_id``. Running a skill, however, uses the current
-space so that any writes are isolated consistently with the chat path.
+技能目录是固定的全局配置，因此列表与重新扫描端点不要求 ``space_id``；执行技能时
+仍使用当前空间，使其写操作与聊天路径保持一致的隔离语义。
 """
 from __future__ import annotations
 
@@ -21,7 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..deps import get_space_id
-from ..admin_access import require_admin
+from ..core.admin_access import require_admin
 from ..skills_bridge import reload_skills, scan_skills, set_skill_enabled
 from scripts.chat_agent_stream import execute_tool, is_skill_tool
 

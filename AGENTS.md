@@ -31,20 +31,22 @@ D:\project\ai-research-os/
 ├── backend/               # 独立 FastAPI 后端（uvicorn backend.server.main:app，端口 8000，多 worker）
 │   ├── server/
 │   │   ├── main.py        # 应用入口，挂载 /api 路由 + 静态托管前端
-│   │   ├── config.py      # 配置单例（LLM_* / DB_PATH / CORS / DATA_DIR）
+│   │   ├── core/          # 配置、日志、安全边界、健康检查与生命周期
+│   │   ├── agents/        # Agent 服务、团队定义与后台 DAG 运行器
+│   │   ├── development/   # 研发工作区与后台运行器
+│   │   ├── rag/           # 文档切片、嵌入、索引、检索与后台任务
+│   │   ├── services/      # 备份、设置等应用服务
 │   │   ├── llm.py         # LLM 客户端（OpenAI 兼容，urllib，零额外依赖）
 │   │   ├── db.py          # 引导 database.py + init_db()
 │   │   ├── deps.py        # get_space_id 空间隔离依赖
-│   │   ├── agent_runner.py# 后台非阻塞 Agent / DAG 运行器
-│   │   ├── agent_teams.py # 团队定义校验、内置团队与上下文解析
 │   │   └── routers/       # tasks / projects / notes / papers / chat / agent / settings ...
+│   ├── resources/agents/  # Agent 角色、模板与内置团队 JSON
 │   ├── skills/            # Agent Skills（backend/skills/<name>/SKILL.md，零依赖约定）
 │   └── requirements.txt   # 后端依赖（不含 openai）
 ├── scripts/               # Python 后端脚本（业务逻辑，输出 JSON 供后端解析）
 │   ├── database.py        # SQLite 兼容门面（保留既有导入路径）
 │   ├── db/                # 连接内核、显式迁移与领域 repositories
 │   ├── fetch_arxiv.py     # arXiv 抓取
-│   ├── agent_service.py   # 兼容入口；可配置执行器真身位于 backend/server/
 │   └── ...
 ├── data/                  # 数据存储（SQLite / PDF / 导出，已 gitignore）
 ├── docs/                  # 架构与设计文档（见 docs/README.md 索引）
@@ -55,9 +57,10 @@ D:\project\ai-research-os/
 ```
 
 > **模块导入约定（2026-07-31 已规范化）**：各模块使用**正规包导入**，无 `sys.path` 注入 hack（`backend` 与 `scripts` 均为正规包，各有 `__init__.py`）。
-> - `backend/server/` 内模块互相引用：`from . import x`（包内相对），例如 `agent_runner.py` 用 `from . import agent_service, db`；`from .. import x` 现在也可用（`backend` 是正规包）。
+> - `backend/server/` 内按包层级使用相对导入，例如 `agents/runner.py` 引用同包服务时使用 `from . import service`，引用上层数据库门面时使用 `from .. import db`。
 > - 引用顶层 `scripts/` 包：`from scripts import database` / `from scripts.chat_agent_stream import execute_tool` 等。
-> - Agent 角色管线真身在 `backend/server/agent_service.py`（与 server 同包），由 `backend/agent_roles.json` 驱动。
+> - Agent 角色管线真身在 `backend/server/agents/service.py`，由
+>   `backend/resources/agents/agent_roles.json` 驱动；旧根级模块已经退役。
 
 ---
 
@@ -192,11 +195,11 @@ npm run dev
 | `docs/README.md` | 文档索引（架构/数据/API/Agent/前端/运维/技术债） |
 | `frontend/src/services/api.ts` | 前端唯一 HTTP transport，统一空间键、管理令牌、连接状态与响应适配 |
 | `backend/server/` | FastAPI 后端（路由、LLM 客户端、配置、空间隔离依赖） |
-| `backend/server/agent_service.py` | 角色化 Multi-Agent 真身（与 server 同包，由 `backend/agent_roles.json` 驱动） |
+| `backend/server/agents/service.py` | 角色化 Multi-Agent 真身（由 `backend/resources/agents/agent_roles.json` 驱动） |
 | `backend/server/tool_registry.py` | **工具注册表 + 审批策略内核**（`@register_tool` / safe-sensitive-dangerous / auto-manual-strict） |
 | `backend/server/tools/` | **内置工具目录**（`pkgutil` 自动发现，新增工具零改动主循环） |
 | `backend/server/context.py` | **共享上下文管理**（token 估算 / LLM 摘要 / `compact_messages`，Chat 与 Agent 共用） |
-| `backend/server/agent_runner.py` | 后台非阻塞 runner（消费 `__approval_required` 审批等待 + `__replay` 落库） |
+| `backend/server/agents/runner.py` | 后台非阻塞 runner（消费 `__approval_required` 审批等待 + `__replay` 落库） |
 | `scripts/database.py` | SQLite 兼容门面（初始化与既有 API re-export） |
 | `scripts/db/` | `core.py` 连接/事务；`migrations/` 显式版本；`repos/` 领域 SQL |
 | `scripts/qa_verify_agent_harness.py` | Agent 工程能力回归脚本（审批/重放/上下文/插件化，61 项） |
@@ -215,6 +218,6 @@ npm run dev
 
 ## 备注
 
-- 当前日期：2026-09-28
+- 当前日期：2026-09-29
 - 项目状态：功能基本完备，文档基于代码实况重构中
 - 版本：v0.5（隔离研发工作区 / 可配置专家团队 / 共享 LLM 助手 / 工具审批）

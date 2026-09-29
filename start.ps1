@@ -69,9 +69,20 @@ if ($Background -and $ShowTerminals) {
     exit 1
 }
 
-# 后台日志目录
+# 唯一正式日志根目录；启动器、运行日志、归档和 PID 状态分别存放。
 if (-not $LogDir) {
     $LogDir = "$ProjectDir\logs"
+}
+if (-not [System.IO.Path]::IsPathRooted($LogDir)) {
+    $LogDir = Join-Path $ProjectDir $LogDir
+}
+$LogDir = [System.IO.Path]::GetFullPath($LogDir)
+$LauncherLogDir = Join-Path $LogDir "launcher"
+$StateDir = Join-Path $LogDir "state"
+foreach ($path in @($LogDir, $LauncherLogDir, $StateDir)) {
+    if (-not (Test-Path -LiteralPath $path)) {
+        New-Item -ItemType Directory -Force -Path $path | Out-Null
+    }
 }
 $env:LOG_DIR = $LogDir
 # 项目内虚拟环境（不污染全局 Python）
@@ -281,6 +292,12 @@ if ($Restart) {
 # 跨端口重复实例预检：同端口残留由下方端口检查处理；这里查心跳文件，
 # 发现**其它端口**仍有活着的后端在用同一数据目录 → 直接 abort。
 # （双后端共享同一 SQLite 是慢性锁竞争之源，reindex 500 事故根因。）
+# 旧实例已经结束后再归档其 PID 日志，并在每次启动时执行期限/数量双重清理。
+& "$VenvPython" -m backend.server.core.log_maintenance prepare --log-dir "$LogDir" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "   ⚠️ 日志维护失败，本次启动继续；请运行日志维护命令检查" -ForegroundColor Yellow
+}
+
 if (-not $SkipBackend) {
     $hbFile = "$DataDir\.backend_supervisors.json"
     if (Test-Path $hbFile) {
@@ -360,22 +377,28 @@ if (-not $SkipBackend) {
     }
 }
 
+# 默认启动也可能在端口预检阶段结束旧后端；此时再归档一次，确保旧 Worker
+# 不会一直留在 runtime/ 等到下一次维护。
+& "$VenvPython" -m backend.server.core.log_maintenance prepare --log-dir "$LogDir" | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "   ⚠️ 旧 Worker 日志归档失败，本次启动继续" -ForegroundColor Yellow
+}
+
 if (-not $SkipBackend) {
     Write-Host "   🔌 启动 FastAPI 后端 (端口: $ApiPort, workers: $Workers)..." -ForegroundColor Cyan
     if ($UseBackground) {
-        if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
-        Rotate-Log "$LogDir\backend.log"
-        Rotate-Log "$LogDir\backend.err.log"
+        Rotate-Log "$LauncherLogDir\backend.log"
+        Rotate-Log "$LauncherLogDir\backend.err.log"
         # Windows venv 的 python.exe 是 redirector，外层 cmd.exe 同步等待真正的 Uvicorn；
         # PID 文件因此稳定指向可用于 taskkill /T 的完整后端进程树。
         if ($IsWindowsRuntime) {
-            $backendCommand = '""{0}" -m backend.server.windows_daemon --port {1} 1>>"{2}" 2>>"{3}""' -f $VenvPython, $ApiPort, "$LogDir\backend.log", "$LogDir\backend.err.log"
+            $backendCommand = '""{0}" -m backend.server.windows_daemon --port {1} 1>>"{2}" 2>>"{3}""' -f $VenvPython, $ApiPort, "$LauncherLogDir\backend.log", "$LauncherLogDir\backend.err.log"
         } else {
-            $backendCommand = '""{0}" -m uvicorn backend.server.main:app --port {1} --workers {2} 1>>"{3}" 2>>"{4}""' -f $VenvPython, $ApiPort, $Workers, "$LogDir\backend.log", "$LogDir\backend.err.log"
+            $backendCommand = '""{0}" -m uvicorn backend.server.main:app --port {1} --workers {2} 1>>"{3}" 2>>"{4}""' -f $VenvPython, $ApiPort, $Workers, "$LauncherLogDir\backend.log", "$LauncherLogDir\backend.err.log"
         }
         $beProc = Start-NoConsoleCommand -Command $backendCommand -WorkingDirectory $ProjectDir
-        Set-Content -LiteralPath "$LogDir\backend.pid" -Value $beProc.Id -Encoding Ascii -NoNewline
-        Write-Host "   🔇 后台运行中 (PID $($beProc.Id)，日志: $LogDir\backend.log)" -ForegroundColor Gray
+        Set-Content -LiteralPath "$StateDir\backend.pid" -Value $beProc.Id -Encoding Ascii -NoNewline
+        Write-Host "   🔇 后台运行中 (PID $($beProc.Id)，日志: $LauncherLogDir\backend.log)" -ForegroundColor Gray
     } else {
         Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ProjectDir'; & '$VenvPython' -m uvicorn backend.server.main:app --port $ApiPort --workers $Workers" -WindowStyle Normal
     }
@@ -407,13 +430,13 @@ if (-not $SkipBackend) {
             $backendExitCode = $beProc.ExitCode
         } catch {}
         Write-Host "   ❌ 后端进程在健康检查完成前退出 (exit code: $backendExitCode)" -ForegroundColor Red
-        Write-Host "      错误日志: $LogDir\backend.err.log" -ForegroundColor Yellow
-        if (Test-Path -LiteralPath "$LogDir\backend.err.log") {
-            Get-Content -LiteralPath "$LogDir\backend.err.log" -Tail 20 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+        Write-Host "      错误日志: $LauncherLogDir\backend.err.log" -ForegroundColor Yellow
+        if (Test-Path -LiteralPath "$LauncherLogDir\backend.err.log") {
+            Get-Content -LiteralPath "$LauncherLogDir\backend.err.log" -Tail 20 | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
         }
         exit 1
     } else {
-        $diagnosticTarget = if ($UseBackground) { "$LogDir\backend.err.log" } else { "后端窗口日志" }
+        $diagnosticTarget = if ($UseBackground) { "$LauncherLogDir\backend.err.log" } else { "后端窗口日志" }
         Write-Host "   ⚠️  后端启动中或健康检查失败，请查看 $diagnosticTarget" -ForegroundColor Yellow
     }
 }
@@ -433,15 +456,14 @@ if (-not $SkipFrontend) {
 
     Write-Host "   🎨 启动前端开发服务器 (端口: $FrontendPort)..." -ForegroundColor Cyan
     if ($UseBackground) {
-        if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
-        Rotate-Log "$LogDir\frontend.log"
-        Rotate-Log "$LogDir\frontend.err.log"
+        Rotate-Log "$LauncherLogDir\frontend.log"
+        Rotate-Log "$LauncherLogDir\frontend.err.log"
         $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
         if (-not $npmCmd) { $npmCmd = "npm" }
-        $frontendCommand = '""{0}" run dev -- --port {1} 1>>"{2}" 2>>"{3}""' -f $npmCmd, $FrontendPort, "$LogDir\frontend.log", "$LogDir\frontend.err.log"
+        $frontendCommand = '""{0}" run dev -- --port {1} 1>>"{2}" 2>>"{3}""' -f $npmCmd, $FrontendPort, "$LauncherLogDir\frontend.log", "$LauncherLogDir\frontend.err.log"
         $feProc = Start-NoConsoleCommand -Command $frontendCommand -WorkingDirectory "$ProjectDir\frontend"
-        Set-Content -LiteralPath "$LogDir\frontend.pid" -Value $feProc.Id -Encoding Ascii -NoNewline
-        Write-Host "   🔇 后台运行中 (PID $($feProc.Id)，日志: $LogDir\frontend.log)" -ForegroundColor Gray
+        Set-Content -LiteralPath "$StateDir\frontend.pid" -Value $feProc.Id -Encoding Ascii -NoNewline
+        Write-Host "   🔇 后台运行中 (PID $($feProc.Id)，日志: $LauncherLogDir\frontend.log)" -ForegroundColor Gray
     } else {
         Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ProjectDir\frontend'; npm run dev -- --port $FrontendPort" -WindowStyle Normal
     }
@@ -472,11 +494,11 @@ if ($UseBackground) {
     Write-Host @"
 
 🔇 后台模式已启用（无新终端）：
-   后端日志: $LogDir\backend.log
-   后端错误: $LogDir\backend.err.log
-   前端日志: $LogDir\frontend.log
-   前端错误: $LogDir\frontend.err.log
+   后端启动日志: $LauncherLogDir\backend.log
+   后端启动错误: $LauncherLogDir\backend.err.log
+   前端启动日志: $LauncherLogDir\frontend.log
+   前端启动错误: $LauncherLogDir\frontend.err.log
    停止服务: .\stop.ps1
-   实时跟踪: Get-Content $LogDir\backend.log -Wait -Tail 50
+   统一查看: & "$VenvPython" -m scripts.log_view --kind all --follow
 "@ -ForegroundColor Yellow
 }

@@ -21,8 +21,8 @@ import threading
 import uuid
 from typing import Dict, List, Optional
 
-from . import db
-from . import rag_service
+from .. import db
+from . import service as rag_service
 
 logger = logging.getLogger(__name__)
 

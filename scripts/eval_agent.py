@@ -2,7 +2,8 @@
 """Agent 10题小跑：自动合成 + agnes-2.5-flash Judge"""
 import asyncio, json, random, pathlib, time
 from scripts import database as db
-from backend.server import agent_runner, db as sdb
+from backend.server import db as sdb
+from backend.server.agents import runner as agent_runner
 
 TASKS = [
     "为论文中心加标签批量导出",

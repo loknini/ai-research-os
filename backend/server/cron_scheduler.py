@@ -31,7 +31,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import config
+from .core import config
 from . import db
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ async def dispatch_job(
     job: Dict[str, Any],
     space_id: Optional[str] = None,
 ) -> Tuple[str, str]:
-    """Execute one job through the canonical dispatcher and persist history."""
+    """通过统一分派器执行单个任务，并持久化执行历史。"""
     job_id = job["id"]
     resolved_space_id = space_id or job.get("space_id") or "__default__"
     run_id = str(uuid.uuid4())
@@ -154,7 +154,7 @@ async def dispatch_job(
 
 
 async def execute_job(job: Dict[str, Any], space_id: str) -> Tuple[str, str]:
-    """Run a job without changing scheduling metadata or writing history."""
+    """执行任务，但不修改调度元数据，也不写入执行历史。"""
     job_type = job.get("job_type") or job.get("jobType") or "command"
     if job_type == "command":
         return await _exec_command(job, space_id)
@@ -224,7 +224,8 @@ async def _exec_agent_run(job: Dict[str, Any], space_id: str) -> Tuple[str, str]
                   "context": {"kind": "papers", "entityIds": []}}
     未传 teamId 时继续接受旧 roles 数组。
     """
-    from . import agent_runner, agent_teams
+    from .agents import runner as agent_runner
+    from .agents import teams as agent_teams
 
     payload, payload_error = _parse_payload(job)
     if payload_error or payload is None:

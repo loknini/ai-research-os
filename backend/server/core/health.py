@@ -1,4 +1,4 @@
-"""Health & LLM status endpoints."""
+"""健康检查与 LLM 状态端点。"""
 from __future__ import annotations
 
 import asyncio
@@ -8,8 +8,8 @@ import time
 from fastapi import APIRouter
 
 from . import config
-from .llm import llm_client
-from .utils import mask_key
+from ..llm import llm_client
+from ..utils import mask_key
 
 router = APIRouter(tags=["health"])
 
@@ -62,7 +62,7 @@ async def healthz() -> dict:
 
 @router.get("/api/llm/status")
 async def llm_status() -> dict:
-    """Detailed LLM configuration / reachability (on-demand, non-blocking)."""
+    """按需、非阻塞地返回 LLM 配置与可达性详情。"""
     reachable = await asyncio.to_thread(_reachable_cached)
     s = config.settings
     return {

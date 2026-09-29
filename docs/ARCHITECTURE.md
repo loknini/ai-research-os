@@ -1,6 +1,6 @@
 # 系统架构
 
-> 核对日期：2026-09-28；事实数字以 `docs/_meta.json` 为准（当前 `hubs=12 / routers=22 / tables=36`）。
+> 核对日期：2026-09-29；事实数字以 `docs/_meta.json` 为准（当前 `hubs=12 / routers=22 / tables=37`）。
 > 索引：[README](./README.md) · [DATA-MODEL](./DATA-MODEL.md) · [API](./API.md) · [AGENT-LLM](./AGENT-LLM.md) · [FRONTEND](./FRONTEND.md) · [OPERATIONS](./OPERATIONS.md)
 
 ## 1. 定位与硬约束
@@ -19,12 +19,12 @@
 浏览器 React SPA --fetch /api + X-Space-Key--> Vite :5173 --proxy--> FastAPI :8000 --import--> scripts/database.py（兼容门面）
                                                                                   `-> scripts/db/{core,migrations,repos}
                                                               |-> subprocess: scripts/*.py
-                                                              |-> 守护线程: agent_runner / development_runner / cron_scheduler
+                                                              |-> 守护线程: agents/runner / development/runner / cron_scheduler
                                                               `-> SQLite WAL + 文件系统 / LLM / arXiv / Crossref / SwanLab
 ```
 
-- `backend/server/main.py`：CORS → 异常处理 → 挂载 `routers`（22个，见 `_meta.json`）→ `lifespan: init_db + start_scheduler + start_development_runner` → 生产态托管 `frontend/dist`。
-- `backend/server/admin_access.py`：部署级管理边界；本机 loopback 免令牌，远程 settings/backup/SwanLab/Skills 请求必须通过 `X-Admin-Token`，与 space-key 软隔离职责分离。
+- `backend/server/main.py`：装配 CORS、异常处理、22 个路由（见 `_meta.json`）与生产态 `frontend/dist`；`backend/server/core/lifecycle.py` 负责数据库初始化、恢复检查及各后台调度器的启动/停止。
+- `backend/server/core/admin_access.py`：部署级管理边界；本机 loopback 免令牌，远程 settings/backup/SwanLab/Skills 请求必须通过 `X-Admin-Token`，与 space-key 软隔离职责分离。
 - `frontend/src/App.tsx`：12 个 Hub 全部 `React.lazy` 分割；业务请求统一经过 `services/api.ts`。
 - `scripts/`：同时是**被 import 的库**（`database/chat_agent_stream/fetch_arxiv`）和**被 subprocess 调的 CLI**（`swanlab/citation/formula/obsidian`），后者经 `SPACE_ID` 环境变量透传空间。
 - `scripts/db/`：`core.py` 管理连接与事务，`migrations/` 用显式版本账本单向升级，`repos/` 按业务域承载 SQL；多 Worker 启动由迁移锁串行化。
@@ -39,7 +39,7 @@
 
 **Agent 后台**：`POST /api/agent/runs` → `submit_run` 落库+`threading.Event`+守护线程（`new_event_loop`）→ 按 DAG 拓扑/`maxConcurrency` 并发节点，`__approval_required/__replay` 内部事件，帧逐条落 `agent_run_events` → 前端 DB 轮询 SSE（`after_id` 游标，0.6s）→ 双层取消（内存 Event + DB `cancelled`）。
 
-**研发 Runner**：`development_runner` 固定 `analysis→implementation→testing→review` 循环，模型只返完整文件 JSON，服务端 `safe_path` 校验+原子写入，验证命令白名单（`pytest/unittest` / `npm run <script>`），产物与 `awaiting_apply` 需显式 `apply`（带 `baseRevision/diffDigest` 校验）。
+**研发 Runner**：`backend/server/development/runner.py` 固定 `analysis→implementation→testing→review` 循环，模型只返完整文件 JSON，`development/workspace.py` 负责 `safe_path` 校验和原子写入；验证命令限于 `pytest/unittest` 与 `npm run <script>`，产物与 `awaiting_apply` 需显式 `apply`（带 `baseRevision/diffDigest` 校验）。
 
 **Cron**：每 Worker 60s 扫描，单条 `UPDATE ... WHERE next_run=?` 原子领取（旧值作乐观锁），三类 `command/agent_run/arxiv_fetch` 共用 `dispatch_job`。
 
@@ -80,5 +80,7 @@ embedding profile 下以 `chunk_hash` 复用向量缓存，无变化重扫不会
 
 ## 6. 研发/团队
 
-- 专家团队：`backend/agent_teams/*.json` 内置，`agent_teams.py` 校验 `schemaVersion=1` DAG（无环/可达/工具白名单），提交时快照 `teamSnapshot/inputContext`，`agent_run_nodes` 跟踪节点状态。
+- 专家团队：`backend/resources/agents/teams/*.json` 内置，`agents/teams.py` 校验
+  `schemaVersion=1` DAG（无环/可达/工具白名单），提交时快照
+  `teamSnapshot/inputContext`，`agent_run_nodes` 跟踪节点状态。
 - 研发团队：`LabHub` 合并原 `software/experiment`（`/software→/lab` 重定向），隔离工作区 `data/dev_workspaces/<space>/<run>/`。

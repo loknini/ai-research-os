@@ -1,18 +1,5 @@
-"""FastAPI application entrypoint for the AI-Research-OS backend.
-
-Run with::
-    uvicorn backend.server.main:app --port 8000
-
-Responsibilities:
-  * CORS (``*`` in dev, configurable via ``CORS_ORIGINS``)
-  * Mount all routers under ``/api``
-  * Initialise the SQLite schema on startup
-  * In production, serve the built ``frontend/dist`` SPA (if present)
-"""
+"""AI-Research-OS 后端入口：创建 FastAPI 应用并装配中间件、路由和静态站点。"""
 from __future__ import annotations
-
-from contextlib import asynccontextmanager
-import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,22 +7,18 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import FileResponse, JSONResponse, Response
 
-from . import config
-from . import db
-from .cron_scheduler import start_scheduler
-from .development_runner import start_development_runner
-from .errors import register_exception_handlers
-from .llm import llm_client
-from .logging_config import RequestIdMiddleware, configure_logging
+from .core import config
+from .core.errors import register_exception_handlers
+from .core.lifecycle import lifespan
+from .core.logging import RequestIdMiddleware, configure_logging
 from .routers import routers
 
 FRONTEND_DIST = config.PROJECT_ROOT / "frontend" / "dist"
 configure_logging()
-logger = logging.getLogger(__name__)
 
 
 class SPAStaticFiles(StaticFiles):
-    """Serve built assets and fall back to index.html for client-side routes."""
+    """提供构建产物；非 API 路径不存在时回退到 SPA 的 ``index.html``。"""
 
     async def get_response(self, path: str, scope) -> Response:
         try:
@@ -48,64 +31,6 @@ class SPAStaticFiles(StaticFiles):
             return FileResponse(FRONTEND_DIST / "index.html")
         return response
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # A worker may have died between two atomic file replacements during a
-    # backup import. Recover the durable journal before opening/migrating DB.
-    from .routers.backup import recover_interrupted_import
-    recover_interrupted_import()
-    # Initialise the database schema once, idempotently, before serving.
-    # `init_db` applies the aiosqlite WAL pragmas and the idempotent
-    # `space_id` column migration for legacy/user tables.
-    await db.init_db()
-    from .admin_access import startup_security_message
-    security_message = startup_security_message()
-    if "WARNING" in security_message:
-        logger.warning(security_message)
-    else:
-        logger.info(security_message)
-    # 跨端口重复实例心跳：登记自己 + 发现同 DB 的其它 supervisor。
-    # 双后端共享同一 SQLite 是慢性锁竞争（reindex 500 事故根因），这里只做
-    # 可见性（ERROR 日志 + /api/healthz siblings），不强制单例。
-    import asyncio as _asyncio
-
-    from .health import _INSTANCE_ID
-    from .instance_guard import beat, heartbeat_loop, list_siblings
-    _beat_stop: "asyncio.Event | None" = None
-    try:
-        beat()
-        sibs = list_siblings()
-        if sibs:
-            logger.error(
-                "检测到 %s 个其它后端实例共享同一数据库: %s（本实例 %s）。"
-                "请只保留一个，否则必然出现 database is locked。",
-                len(sibs),
-                [(s.get("supervisorPid"), s.get("port")) for s in sibs],
-                _INSTANCE_ID,
-            )
-        else:
-            logger.info("backend.instance_started instance_id=%s siblings=0", _INSTANCE_ID)
-        _beat_stop = _asyncio.Event()
-        _asyncio.create_task(heartbeat_loop(_beat_stop))
-    except Exception as exc:  # noqa: BLE001 - 心跳失败绝不阻断启动
-        logger.exception("backend.instance_heartbeat_disabled error=%s", exc)
-    # 启动 cron 调度器守护线程（多 Worker 各跑一个，靠 DB 原子领取防重）。
-    start_scheduler()
-    start_development_runner()
-    # RAG 索引 dispatcher（P1 单写者：每 worker 一个认领循环，原子认领互斥，
-    # 全局同时只有一个执行者在写库）。
-    from . import rag_runner
-    _rag_stop = _asyncio.Event()
-    _asyncio.create_task(rag_runner.dispatcher(_rag_stop))
-    try:
-        yield
-    finally:
-        if _beat_stop is not None:
-            _beat_stop.set()
-        _rag_stop.set()
-
-
 app = FastAPI(
     title="AI-Research-OS Backend",
     version="0.5.0",
@@ -113,7 +38,7 @@ app = FastAPI(
 )
 app.add_middleware(RequestIdMiddleware)
 
-# CORS ----------------------------------------------------------------------
+# 跨域配置 ------------------------------------------------------------------
 origins = config.get_cors_origins()
 app.add_middleware(
     CORSMiddleware,
@@ -123,10 +48,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Unified error handling ----------------------------------------------------
+# 统一异常处理 ---------------------------------------------------------------
 register_exception_handlers(app)
 
-# Routers -------------------------------------------------------------------
+# 路由装配 ------------------------------------------------------------------
 for _router in routers:
     app.include_router(_router)
 
@@ -137,15 +62,14 @@ for _router in routers:
     include_in_schema=False,
 )
 async def api_not_found(unmatched_path: str) -> JSONResponse:
-    """Keep unknown API requests JSON-shaped instead of serving the SPA."""
+    """未知 API 始终返回 JSON，不能被 SPA 回退页面吞掉。"""
     return JSONResponse(
         {"success": False, "error": "NOT_FOUND", "message": f"API route not found: /api/{unmatched_path}"},
         status_code=404,
     )
 
-# Production SPA hosting -----------------------------------------------------
-# Mounted last so that /api/* routes take precedence.  Only mounted when the
-# frontend has been built (``npm run build`` -> frontend/dist).
+# 生产 SPA 托管 --------------------------------------------------------------
+# 最后挂载以保证 /api/* 优先；仅在前端已经构建时启用。
 if FRONTEND_DIST.exists():
     app.mount("/", SPAStaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa")
 

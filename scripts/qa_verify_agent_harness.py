@@ -33,12 +33,12 @@ os.environ.setdefault("LLM_BASE_URL", "http://127.0.0.1:9/none")
 ROOT = Path(__file__).resolve().parent.parent
 
 import backend.server as _bs  # noqa: F401
-from backend.server import agent_service
+from backend.server.agents import service as agent_service
 from backend.server import tool_registry as reg
 from backend.server import context as ctx
 from scripts import database as db
-import backend.server.agent_runner as agent_runner
-from backend.server.agent_runner import submit_run
+from backend.server.agents import runner as agent_runner
+from backend.server.agents.runner import submit_run
 
 PASS = 0
 FAIL = 0

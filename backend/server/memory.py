@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional
 
-from . import config
+from .core import config
 
 # 记忆目录：data/memory/<space_id>.md
 _MEMORY_DIR = config.DATA_DIR / "memory"

@@ -45,8 +45,8 @@ def _chunks(n: int, src: str = "s1", doc: str = "d1", dim: int = DIM,
 
 
 async def test_roundtrip_parity() -> None:
-    from backend.server import vec_store
-    from backend.server import vector_index as _vi
+    from backend.server.rag import vec_store
+    from backend.server.rag import vector_index as _vi
 
     assert vec_store.available(), "sqlite-vec 未安装"
     assert await database.upsert_rag_embedding_profile({
@@ -80,7 +80,7 @@ async def test_roundtrip_parity() -> None:
 
 async def test_cross_space_vec_identity() -> None:
     """相同 chunk/doc/source ID 跨空间不得在 vec/FTS/主表互相覆盖或误删。"""
-    from backend.server import vec_store
+    from backend.server.rag import vec_store
 
     other = "qa_vec_other"
     await database.create_rag_source("s1", other, "s1", [], True, [], status="ready")
@@ -105,7 +105,7 @@ async def test_cross_space_vec_identity() -> None:
 
 
 async def test_source_filter_and_delete() -> None:
-    from backend.server import vec_store
+    from backend.server.rag import vec_store
 
     await database.create_rag_source("s2", SPACE, "s2", [], True, [], status="ready")
     await database.create_rag_document("d2", SPACE, "s2", "/t2", "t2", "txt",
@@ -134,7 +134,7 @@ async def test_source_filter_and_delete() -> None:
 
 
 async def test_dims_mismatch_fallback() -> None:
-    from backend.server import vec_store
+    from backend.server.rag import vec_store
 
     # 换维度写入 → 重建 + ready=False
     await database.create_rag_source("s3", SPACE, "s3", [], True, [], status="ready")
@@ -157,7 +157,7 @@ async def test_dims_mismatch_fallback() -> None:
 
 
 async def test_retrieve_switch() -> None:
-    from backend.server import rag_service as rag
+    from backend.server.rag import service as rag
     from backend.server.llm import llm_client
 
     llm_client.settings.llm_api_key = "test"
@@ -196,7 +196,7 @@ async def test_retrieve_switch() -> None:
 async def test_backfill() -> None:
     from scripts import backfill_vec as mod
     # 模拟存量：清空 vec 表但保留 JSON（维度一致时 backfill 应补回）
-    from backend.server import vec_store
+    from backend.server.rag import vec_store
 
     async with database.get_db() as conn:
         assert await vec_store.load_extension(conn)

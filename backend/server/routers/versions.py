@@ -1,7 +1,6 @@
-"""Version history routes -> in-process ``scripts/database.py``.
+"""版本历史路由，进程内调用 ``scripts/database.py``。
 
-Every handler resolves ``space_id`` via ``Depends(get_space_id)`` so version
-snapshots stay scoped to the owning space.
+每个处理器都解析 ``space_id``，使版本快照始终归属于对应空间。
 """
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ from pydantic import BaseModel
 
 from .. import db
 from ..deps import get_space_id
-from ..errors import APIError
+from ..core.errors import APIError
 
 router = APIRouter(prefix="/api/versions", tags=["versions"])
 

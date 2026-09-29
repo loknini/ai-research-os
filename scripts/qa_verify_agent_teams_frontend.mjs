@@ -32,7 +32,7 @@ const knowledge = read('frontend/src/hubs/knowledge/KnowledgeHub.tsx')
 const development = read('frontend/src/hubs/software/components/DevelopmentWorkspace.tsx')
 const projectApi = read('frontend/src/hubs/software/services/projectsApi.ts')
 const floatingChat = read('frontend/src/components/chat/chat-panel.tsx')
-const chatHub = read('frontend/src/hubs/chat/ChatHub.tsx')
+const chatController = read('frontend/src/hubs/chat/hooks/useChatController.ts')
 const packageJson = JSON.parse(read('frontend/package.json'))
 
 check(app.includes("path=\"/teams\"") && app.includes("@/hubs/teams"), '专家团队注册为独立一级路由')
@@ -63,7 +63,7 @@ check(projectApi.includes('/development-runs') && development.includes('审阅�
 check(development.includes('workspaceWrites') && development.includes('verificationCommands'), '研发运行明确展示并提交有边界授权')
 check(floatingChat.includes('chatGenerationManager.start') && floatingChat.includes('createConversationAPI'), '浮动 AI 助手复用真实 Chat/LLM 会话与流式生成')
 check(!floatingChat.includes('useAIAgent') && !fs.existsSync(path.join(root, 'frontend/src/services/aiAgent.ts')), '旧前端关键词助手执行路径已删除')
-check(chatHub.includes('let targetId = currentConversationId') && chatHub.includes('chatGenerationManager.start(updatedMessages, targetId'), 'Chat Hub 首次发送会创建会话并在同一动作中启动生成')
+check(chatController.includes('let targetId = currentConversationId') && chatController.includes('chatGenerationManager.start(updatedMessages, targetId'), 'Chat Hub 首次发送会创建会话并在同一动作中启动生成')
 
 console.log(`\nAgent teams frontend QA: ${passed}/${passed + failed} passed`)
 process.exitCode = failed ? 1 : 0

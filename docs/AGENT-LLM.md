@@ -2,7 +2,7 @@
 
 ## 0. 0.5.0 实际研发 Runner 与可配置专家团队
 
-`development_runner.py` 负责固定的分析、实现、测试、审查循环。模型输出结构化完整文件，`development_workspace.py` 在服务器绑定的隔离根目录下校验相对路径并原子写入；验证命令使用 `shell=False`，只接受 pytest/unittest 与 package.json scripts。运行、阶段、租约、检查点和证据都落 SQLite，服务重启后可安全重新领取。
+`backend/server/development/runner.py` 负责固定的分析、实现、测试、审查循环。模型输出结构化完整文件，`development/workspace.py` 在服务器绑定的隔离根目录下校验相对路径并原子写入；验证命令使用 `shell=False`，只接受 pytest/unittest 与 package.json scripts。运行、阶段、租约、检查点和证据都落 SQLite，服务重启后可安全重新领取。
 
 Git 项目在独立 worktree/分支中运行，普通目录复制到受控副本。Runner 通过测试且审查接受后只进入 `awaiting_apply`，不会自动修改原项目；应用端点再次校验 base revision 和差异摘要，冲突时不做部分写入。这是工作区隔离与命令白名单，不是容器级沙箱。
 
@@ -10,11 +10,13 @@ Git 项目在独立 worktree/分支中运行，普通目录复制到受控副本
 
 ## 0.1 0.4.0 可配置专家团队
 
-`backend/server/agent_teams.py` 负责加载版本控制内的内置团队、校验用户团队、解析当前空间的论文/笔记上下文，并按边数组顺序拼装汇合输入。`agent_runner.py` 在旧顺序 `roles` 入口之外增加静态 DAG 拓扑调度：ready 节点在团队 `maxConcurrency`（1–4）内并行执行，节点状态和输出写入 `agent_run_nodes`。
+`backend/server/agents/teams.py` 负责加载版本控制内的内置团队、校验用户团队、解析当前空间的论文/笔记上下文，并按边数组顺序拼装汇合输入。`agents/runner.py` 在旧顺序 `roles` 入口之外增加静态 DAG 拓扑调度：ready 节点在团队 `maxConcurrency`（1–4）内并行执行，节点状态和输出写入 `agent_run_nodes`。
 
 团队节点可覆盖模型、temperature、maxTokens，且只能看到 `allowedTools` 白名单。工具安全等级仍由注册表决定，团队不能降级策略。JSON Schema 输出由 `jsonschema` 校验，首次失败后执行一次无工具修复；仍失败则节点失败，后代跳过，主要输出未完成时整次运行失败。
 
-内置定义位于 `backend/agent_teams/*.json`，用户团队和角色模板按 space-key 入库。每次运行保存团队与输入上下文快照；旧 `backend/agent_roles.json` 和 `roles` 请求继续可用。
+内置定义位于 `backend/resources/agents/teams/*.json`，用户团队和角色模板按
+space-key 入库。每次运行保存团队与输入上下文快照；
+`backend/resources/agents/agent_roles.json` 和旧 `roles` 请求继续可用。
 
 > 版本以 `docs/_meta.json` 为准；核对日期：2026-09-02
 
@@ -64,7 +66,7 @@ endpoint = LLM_BASE_URL.rstrip("/") + LLM_HTTP_PATH
 | `routers/papers.py` | `call_llm` | 降级 `generate_fallback_summary()`，响应标 `source:"fallback"` |
 | `server/memory.py` | `call_llm(temperature=0.2, max_tokens=600)` | 不提炼，原样保留 |
 | `chat.py::_summarize` | `call_llm(temperature=0.2, max_tokens=800)` | 不压缩，直接截断 |
-| `agent_service.py` | `llm_client.call_llm()`，导入失败回退本地 `_legacy_call_llm` | 产出 `error` 事件 |
+| `agents/service.py` | `llm_client.call_llm()`，导入失败回退本地 `_legacy_call_llm` | 产出 `error` 事件 |
 | `routers/settings.py` | **绕过 LLMClient**，自己用 urllib 打 `/models` 与 ping | — |
 
 **核心原则**：所有 CRUD / 检索 / 版本 / 备份功能都不依赖 LLM。只有「论文总结、Chat、Agent、记忆提炼」四类需要。
@@ -121,7 +123,7 @@ endpoint = LLM_BASE_URL.rstrip("/") + LLM_HTTP_PATH
 | `developer` | 开发者 | 无 | 纯文本 |
 | `reviewer` | 评审者 | 无 | 纯文本 |
 
-### 3.2 配置 `backend/agent_roles.json`
+### 3.2 配置 `backend/resources/agents/agent_roles.json`
 
 ```json
 { "roles": [
@@ -148,11 +150,16 @@ endpoint = LLM_BASE_URL.rstrip("/") + LLM_HTTP_PATH
 
 ### 3.4 模块导入约定（已规范化）
 
-`agent_service` 现为 `backend/server/agent_service.py`（与 `agent_runner`、`db` 同包）。各模块统一使用**正规包导入**，历史上的「导入陷阱」（`sys.path` 注入 hack）已在 2026-07-31 根除：
+Agent 实现位于 `backend/server/agents/`；旧的根级 Agent 模块已经删除。各模块统一使用
+**正规包导入**，历史上的「导入陷阱」（`sys.path` 注入 hack）已在 2026-07-31 根除：
 
-- `backend/server/` 内模块互相引用：`from . import x`（包内相对），例如 `agent_runner.py` 用 `from . import agent_service, db`。
+- `backend/server/` 内按包层级使用相对导入，例如 `agents/runner.py` 用 `from . import service` 引用同包服务，并用 `from .. import db` 引用上层数据库门面。
 - `backend/server/` 引用顶层 `scripts/` 包内模块：`from scripts import database` / `from scripts import fetch_arxiv` / `from scripts.chat_agent_stream import execute_tool` / `from scripts.summarize_paper import ...`。
-- `agent_service.py` 引用 LLM 客户端：`from backend.server.llm import llm_client, LLMUnavailableError`（带 try/except 回退到本地 `_legacy_call_llm`）。
+- `agents/service.py` 通过 `from ..llm import llm_client, LLMUnavailableError` 引用 LLM 客户端（带 try/except 回退到本地 `_legacy_call_llm`）。
+
+Agent CLI 继续保留，正式入口为
+`python -m backend.server.agents.service <architect|planner|workflow|roles>`；旧根级 CLI
+入口不再支持。
 
 顶层 `scripts/` 已是正规包（`scripts/__init__.py`），与后端共享同一模块对象，因此 QA 脚本通过 `from scripts import database` 覆盖 `DB_PATH` 的隔离手段仍然有效，真实库不会被测试污染。
 

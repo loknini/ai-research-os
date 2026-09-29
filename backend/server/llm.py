@@ -1,20 +1,18 @@
-"""LLM client (OpenAI-compatible, zero extra dependencies).
+"""零额外依赖的 OpenAI 兼容 LLM 客户端。
 
-Implements the agreed decision: **do not** use the ``openai`` SDK.  The client is
-built with the Python standard library ``urllib`` (mirroring the existing
-``scripts/agent_service.py`` ``call_llm`` and ``scripts/chat_agent_stream.py`` SSE
-parsing logic) so there are no new third-party dependencies.
+本项目不使用 ``openai`` SDK，客户端基于 Python 标准库 ``urllib`` 实现，并沿用
+``scripts/chat_agent_stream.py`` 的 SSE 解析约定。
 
-Contract:
-  * ``call_llm(...)``  -> ``str | None``  (returns ``None`` on any failure; callers degrade)
-  * ``stream_llm(...)`` -> ``Generator[str | dict]`` (yields ``str`` text deltas,
-    optional ``{"usage": ...}``, and at most one ``{"tool_calls": ...}``;
-    raises ``LLMUnavailableError`` on connection failure)
-  * ``is_available()`` -> ``bool``
+接口约定：
+  * ``call_llm(...)`` -> ``str | None``；失败时返回 ``None``，由调用方降级；
+  * ``stream_llm(...)`` -> ``Generator[str | dict]``；逐段产生文本、可选的
+    ``{"usage": ...}``，以及至多一组 ``{"tool_calls": ...}``，连接失败时抛出
+    ``LLMUnavailableError``；
+  * ``is_available()`` -> ``bool``。
 
-Requests are sent to ``{LLM_BASE_URL}{LLM_HTTP_PATH}`` (default
-``/chat/completions``) with ``Authorization: Bearer {LLM_API_KEY}``.
-Base URL should include the ``/v1`` prefix (OpenAI SDK convention).
+请求发送到 ``{LLM_BASE_URL}{LLM_HTTP_PATH}``，默认路径为
+``/chat/completions``，并携带 ``Authorization: Bearer {LLM_API_KEY}``。
+Base URL 应包含 OpenAI 兼容接口常用的 ``/v1`` 前缀。
 """
 from __future__ import annotations
 
@@ -24,16 +22,16 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, Generator, List, Optional
 
-from . import config
+from .core import config
 from .utils import mask_key
 
 
 class LLMUnavailableError(Exception):
-    """Raised when the configured LLM endpoint cannot be reached (streaming)."""
+    """流式调用无法连接已配置的 LLM 端点时抛出。"""
 
 
 class LLMClient:
-    """OpenAI-compatible LLM client implemented with urllib (no SDK)."""
+    """使用 urllib 实现的 OpenAI 兼容 LLM 客户端，不依赖 SDK。"""
 
     def __init__(self, settings: Any = None) -> None:
         self.settings = settings or config.settings
@@ -55,11 +53,11 @@ class LLMClient:
             }
 
     # ------------------------------------------------------------------
-    # Properties
+    # 属性
     # ------------------------------------------------------------------
     @property
     def configured(self) -> bool:
-        """Whether an API key + base URL are present."""
+        """是否同时配置了 API Key 和 Base URL。"""
         eff = self._eff()
         key = (eff.get("apiKey") or "").strip()
         base = (eff.get("baseUrl") or "").strip()
@@ -73,7 +71,7 @@ class LLMClient:
         return f"{base}{path}"
 
     # ------------------------------------------------------------------
-    # Helpers
+    # 内部辅助方法
     # ------------------------------------------------------------------
     def _headers(self) -> Dict[str, str]:
         eff = self._eff()
@@ -105,7 +103,7 @@ class LLMClient:
         return payload
 
     # ------------------------------------------------------------------
-    # Public API
+    # 公共 API
     # ------------------------------------------------------------------
     def call_llm(
         self,
@@ -116,7 +114,7 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         timeout: Optional[int] = None,
     ) -> Optional[str]:
-        """Non-streaming call. Returns the text, or ``None`` on any failure."""
+        """非流式调用；成功时返回文本，任何失败均返回 ``None``。"""
         eff = self._eff()
         payload = self._build_payload(messages, stream=False, model=model,
                                        temperature=temperature, max_tokens=max_tokens)
@@ -130,7 +128,7 @@ class LLMClient:
                 result = json.loads(resp.read().decode("utf-8"))
             return result["choices"][0]["message"]["content"]
         except Exception:
-            # Any connection / parse / HTTP error -> degrade gracefully.
+            # 连接、解析或 HTTP 错误均按不可用结果优雅降级。
             return None
 
     def stream_llm(
@@ -143,31 +141,20 @@ class LLMClient:
         timeout: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> Generator[Any, None, None]:
-        """Streaming call with native OpenAI function calling support.
+        """支持 OpenAI 原生 function calling 的流式调用。
 
-        Contract:
-          * Yields ``str`` text deltas as they arrive.
-          * May yield ``{"usage": {prompt_tokens, completion_tokens,
-            total_tokens}}`` when the provider supports streaming usage.
-          * After the SSE stream ends, yields **at most one** ``dict`` with the
-            key ``"tool_calls"`` (only when the model requested tool calls).
-            Each entry has the shape
-            ``{"id": str, "name": str, "arguments": <parsed json object>}``
-            where ``arguments`` is the result of ``json.loads`` on the
-            accumulated argument string (falls back to the raw string on error).
-          * Raises ``LLMUnavailableError`` on connection failure.
-
-        When ``tools`` is falsy the behaviour is unchanged from before
-        (text deltas only).
+        逐段产生文本；服务支持流式用量时可能产生 ``{"usage": ...}``。SSE 结束后，
+        仅当模型请求工具时才至多产生一次 ``{"tool_calls": [...]}``；其中累计的参数
+        会尝试解析为 JSON，失败则保留原字符串。连接失败时抛出
+        ``LLMUnavailableError``。未传 ``tools`` 时仍只产生文本增量。
         """
         eff = self._eff()
         payload = self._build_payload(messages, stream=True, model=model,
                                        temperature=temperature, max_tokens=max_tokens,
                                        tools=tools)
         timeout = timeout or eff.get("timeout")
-        # OpenAI-compatible providers return exact streaming usage only when
-        # requested. Older providers may reject this option; in that case we
-        # retry once without it before surfacing an availability error.
+        # OpenAI 兼容服务仅在显式请求时返回精确的流式用量。旧服务可能拒绝该选项；
+        # 遇到这种情况先移除该选项重试一次，再向上报告可用性错误。
         payload["stream_options"] = {"include_usage": True}
 
         def open_stream(request_payload: Dict[str, Any]):
@@ -176,8 +163,8 @@ class LLMClient:
                 self.endpoint, data=data, headers=self._headers(), method="POST"
             )
             return urllib.request.urlopen(req, timeout=timeout)
-        # Accumulate incremental function-call fragments across SSE deltas.
-        # Keyed by the tool-call index (OpenAI emits them incrementally).
+        # 跨 SSE 增量累计函数调用片段，并按工具调用索引归并；
+        # OpenAI 兼容接口会分段返回这些字段。
         tool_acc: Dict[int, Dict[str, Any]] = {}
         try:
             try:
@@ -231,7 +218,7 @@ class LLMClient:
                     content = delta.get("content")
                     if content:
                         yield content
-                    # Accumulate native function-calling tool calls.
+                    # 累计原生 function-calling 工具调用片段。
                     for tc in (delta.get("tool_calls") or []):
                         idx = tc.get("index", 0)
                         slot = tool_acc.setdefault(
@@ -264,18 +251,18 @@ class LLMClient:
             yield {"tool_calls": calls}
 
     # ------------------------------------------------------------------
-    # Embeddings (OpenAI-compatible /v1/embeddings)
+    # 向量嵌入（OpenAI 兼容的 /v1/embeddings）
     # ------------------------------------------------------------------
     @property
     def embedding_endpoint(self) -> str:
-        """Embeddings endpoint: ``{base}/embeddings`` (base already has /v1)."""
+        """嵌入端点 ``{base}/embeddings``；base 已包含 ``/v1``。"""
         eff = self._eff()
         base = (eff.get("baseUrl") or "").rstrip("/")
         return f"{base}/embeddings"
 
     @property
     def embedding_model(self) -> str:
-        """Embedding model name; falls back to the chat model when unset."""
+        """嵌入模型名；未配置时回退为聊天模型名。"""
         eff = self._eff()
         return (eff.get("embedModel") or "").strip() or (eff.get("model") or "")
 
@@ -286,11 +273,10 @@ class LLMClient:
         model: Optional[str] = None,
         timeout: Optional[int] = None,
     ) -> Optional[List[List[float]]]:
-        """Non-streaming embeddings call (OpenAI-compatible).
+        """OpenAI 兼容的非流式嵌入调用。
 
-        Sends ``input`` as a list of strings to ``{base}/embeddings`` and
-        returns a list of float vectors in the same order. Returns ``None`` on
-        any failure so callers can degrade to keyword retrieval.
+        把字符串列表作为 ``input`` 发送到 ``{base}/embeddings``，并按原顺序返回
+        浮点向量列表；任何失败均返回 ``None``，供调用方回退到关键词检索。
         """
         if not texts:
             return []
@@ -314,7 +300,7 @@ class LLMClient:
             return None
 
     # ------------------------------------------------------------------
-    # Embeddings with fallback (API → local → None)
+    # 带回退的向量嵌入（API → 本地模型 → None）
     # ------------------------------------------------------------------
     def embed_with_fallback(
         self,
@@ -381,7 +367,7 @@ class LLMClient:
         if not model_path:
             return None
         try:
-            from .local_embed import get_local_embedder
+            from .rag.local_embed import get_local_embedder
             embedder = get_local_embedder()
             if not embedder.load(model_path, revision=revision):
                 return None
@@ -398,13 +384,13 @@ class LLMClient:
         return (eff.get("embedProvider") or "").strip() or "api"
 
     def is_available(self) -> bool:
-        """Whether the LLM is configured *and* reachable."""
+        """LLM 是否已配置且网络可达。"""
         if not self.configured:
             return False
         return self._reachable()
 
     def _reachable(self) -> bool:
-        """Lightweight TCP reachability check for the configured base URL."""
+        """对已配置 Base URL 执行轻量 TCP 可达性检查。"""
         from urllib.parse import urlparse
 
         try:
@@ -420,7 +406,7 @@ class LLMClient:
             return False
 
     def status(self) -> Dict[str, Any]:
-        """Structured status used by ``/api/llm/status`` and ``/api/healthz``."""
+        """供 ``/api/llm/status`` 与 ``/api/healthz`` 使用的结构化状态。"""
         eff = self._eff()
         return {
             "configured": self.configured,
@@ -430,7 +416,7 @@ class LLMClient:
             "apiKeyMasked": mask_key(eff.get("apiKey") or ""),
         }
 
-# Singleton used across the app.
+# 应用共享的客户端单例。
 llm_client = LLMClient()
 
 

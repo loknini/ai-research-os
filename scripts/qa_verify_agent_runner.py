@@ -26,10 +26,10 @@ os.environ.setdefault("LLM_BASE_URL", "http://127.0.0.1:9/none")  # 不应被用
 ROOT = Path(__file__).resolve().parent.parent
 
 import backend.server as _bs  # noqa: F401  确保 backend 包已导入（不再依赖 sys.path 注入）
-from backend.server import agent_service  # backend/server/agent_service.py（正规包导入）
+from backend.server.agents import service as agent_service
 from scripts import database as db  # scripts/database.py（与后端同一模块对象）
-import backend.server.agent_runner as agent_runner
-from backend.server.agent_runner import submit_run, cancel_run  # noqa: F401
+from backend.server.agents import runner as agent_runner
+from backend.server.agents.runner import submit_run, cancel_run  # noqa: F401
 
 PASS = 0
 FAIL = 0

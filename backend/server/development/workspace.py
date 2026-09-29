@@ -1,8 +1,7 @@
-"""Isolated, review-before-apply workspaces for autonomous development runs.
+"""用于自动研发任务的隔离工作区，所有结果均需审查后才能应用。
 
-This is deliberately a constrained workspace boundary, not a container sandbox.
-All subprocesses use argv arrays with ``shell=False`` and all model-authored paths
-are resolved below the server-owned workspace root.
+这里提供的是受约束的工作区边界，并非容器级沙箱。所有子进程都使用参数数组和
+``shell=False``；模型生成的路径必须解析到服务端管理的工作区根目录之下。
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from . import config
+from ..core import config
 
 WORKSPACES_ROOT = config.DATA_DIR / "dev_workspaces"
 PROJECTS_ROOT = config.DATA_DIR / "dev_projects"

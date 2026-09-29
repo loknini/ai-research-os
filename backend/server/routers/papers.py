@@ -1,12 +1,9 @@
-"""Paper Hub routes.
+"""论文中心路由。
 
-CRUD + arXiv fetch/download are in-process ``scripts/database.py`` /
-``scripts/fetch_arxiv.py`` calls.  The AI summary uses the configurable
-``llm.py`` client and degrades to ``summarize_paper.generate_fallback_summary``
-when the LLM is unavailable.
-
-All data handlers resolve ``space_id`` via ``Depends(get_space_id)`` and pass it
-through to the DB layer for soft isolation.
+CRUD、arXiv 抓取与下载在进程内调用 ``scripts/database.py`` 和
+``scripts/fetch_arxiv.py``。AI 摘要使用可配置的 ``llm.py`` 客户端；LLM 不可用时
+降级为 ``summarize_paper.generate_fallback_summary``。所有数据处理器都解析并向
+数据库层传递 ``space_id``，实现软隔离。
 """
 from __future__ import annotations
 
@@ -17,9 +14,10 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from .. import config, db
+from .. import db
+from ..core import config
 from ..deps import get_space_id
-from ..errors import APIError
+from ..core.errors import APIError
 from ..llm import llm_client
 from ..schemas import BatchImportPapersRequest, FetchPapersRequest
 
@@ -35,7 +33,7 @@ def _schedule_paper_index(space_id: str, paper_id: Optional[str] = None,
 
         async def _run() -> None:
             try:
-                from .. import rag_runner as _rag_runner
+                from ..rag import runner as _rag_runner
                 _pid = paper_id
                 if not _pid and arxiv_id:
                     _p = await db.database.get_paper_by_arxiv(arxiv_id, space_id)

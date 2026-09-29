@@ -29,7 +29,7 @@ BATCH = 500
 
 
 async def backfill_space(space_id: str, batch: int = BATCH) -> dict:
-    from backend.server import vec_store
+    from backend.server.rag import vec_store
 
     if not vec_store.available():
         return {"space": space_id, "skipped": "sqlite-vec 未安装"}
@@ -109,7 +109,7 @@ async def backfill_space(space_id: str, batch: int = BATCH) -> dict:
 
 async def _ensure(conn, dims: int) -> tuple:
     """建表/重建（只碰 vec 表；元信息由调用方在事务外维护）。返回 (ok, recreated)。"""
-    from backend.server import vec_store
+    from backend.server.rag import vec_store
 
     exists, cur_dims, compatible = await vec_store.table_state(conn)
     if exists and (cur_dims != dims or not compatible):

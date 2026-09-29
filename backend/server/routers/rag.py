@@ -23,12 +23,12 @@ from fastapi.responses import JSONResponse
 
 from .. import db
 from ..deps import get_space_id
-from ..errors import APIError
+from ..core.errors import APIError
 from ..llm import llm_client
-from .. import rag_runner
-from .. import rag_service
-from .. import vector_index as _vindex
-from .. import vec_store
+from ..rag import runner as rag_runner
+from ..rag import service as rag_service
+from ..rag import vector_index as _vindex
+from ..rag import vec_store
 from ..schemas import RagIndexRequest, RagQueryRequest, RagWebRequest
 
 router = APIRouter(prefix="/api/rag", tags=["rag"])
@@ -40,7 +40,7 @@ _SYSTEM_SOURCES = {rag_service.PAPER_SOURCE_ID, rag_service.WEB_SOURCE_ID}
 
 @router.get("/capabilities")
 async def capabilities(space_id: str = Depends(get_space_id)):
-    from .. import config
+    from ..core import config
     eff = config.get_effective_llm_settings()
     return {
         "success": True,
@@ -68,7 +68,7 @@ def _pdf_available() -> bool:
 
 def _local_model_available() -> bool:
     """检查本地嵌入模型是否已配置。"""
-    from .. import config
+    from ..core import config
     eff = config.get_effective_llm_settings()
     model_path = (eff.get("embedLocalModel") or "").strip()
     return bool(model_path)

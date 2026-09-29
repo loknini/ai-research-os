@@ -29,7 +29,7 @@ database.configure_paths(data_dir=TMP, db_path=TMP / "qa_rag.db")
 shutil.rmtree(TMP, ignore_errors=True)
 TMP.mkdir(parents=True, exist_ok=True)
 
-from backend.server import rag_service  # noqa: E402
+from backend.server.rag import service as rag_service  # noqa: E402
 from backend.server.llm import llm_client  # noqa: E402
 
 # 让 llm_client 视为「已配置」，并打桩嵌入 / 对话。
@@ -206,14 +206,14 @@ async def main() -> None:
     print("PASS RRF融合检索:", r4["mode"])
 
     # 11) vector_index：暴力余弦 + faiss 缺省回退
-    from backend.server import vector_index as _vi
+    from backend.server.rag import vector_index as _vi
     assert abs(_vi.cosine([1.0, 0.0], [1.0, 0.0]) - 1.0) < 1e-6
     assert _vi.backend_name() == "brute"  # 默认不自动启用 faiss
     assert _vi.faiss_topk([1.0], [("a", [1.0])], 1) is None  # 未显式启用返回 None
     print("PASS vector_index 默认行为")
 
     # 12) 本地模型只读扫描/探针（不触发下载、不加载 torch）
-    from backend.server import local_embed as _le
+    from backend.server.rag import local_embed as _le
     scanned = _le.scan_local_models()
     assert isinstance(scanned, list)
     p0 = _le.probe_local_model("")
@@ -226,7 +226,7 @@ async def main() -> None:
 
     # 13) 后台下载状态机（mock 真实下载：失败落 failed、可重调重试）
     # backend config DATA_DIR 同步隔离，避免污染真实 data/models
-    import backend.server.config as _cfg
+    from backend.server.core import config as _cfg
     _orig_dd = _cfg.DATA_DIR
     _cfg.DATA_DIR = TMP / "dl_isolated"
     _orig_dl = _le.LocalEmbedder._download_modelscope
@@ -324,7 +324,7 @@ async def main() -> None:
     print("PASS 路径穿越拦截")
 
     # 15) 进行中扫描 + 过期改写 + 单飞行 + 残缺识别（backend DATA_DIR 隔离）
-    import backend.server.config as _cfg
+    from backend.server.core import config as _cfg
     import threading as _th
     _orig_dd = _cfg.DATA_DIR
     _cfg.DATA_DIR = TMP / "dlstate"
@@ -391,8 +391,8 @@ async def main() -> None:
     print("PASS with_busy_retry（锁重试 + 非锁直抛）")
 
     # 17) instance_guard：心跳登记/同胞检测/过期修剪（backend DATA_DIR 隔离）
-    import backend.server.config as _cfg2
-    import backend.server.instance_guard as _ig
+    from backend.server.core import config as _cfg2
+    from backend.server.core import instance_guard as _ig
     import os as _os
     _orig_dd2 = _cfg2.DATA_DIR
     _orig_app_port = _os.environ.get("APP_PORT")

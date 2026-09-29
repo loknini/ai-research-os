@@ -1,6 +1,6 @@
-"""Global search route -> in-process ``scripts/database.py`` (global_search).
+"""全局搜索路由，进程内调用 ``scripts/database.py`` 的 ``global_search``。
 
-Scoped to the caller's ``space_id`` so cross-space results never leak.
+结果按调用方 ``space_id`` 限定，防止跨空间泄漏。
 """
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 
 from .. import db
 from ..deps import get_space_id
-from ..errors import APIError
+from ..core.errors import APIError
 
 router = APIRouter(prefix="/api", tags=["search"])
 

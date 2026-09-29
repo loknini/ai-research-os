@@ -97,7 +97,7 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 | `LLM_TIMEOUT` | `120` | 秒 |
 | `LLM_HTTP_PATH` | `/chat/completions` | 与 base 拼接成最终 endpoint |
 | `CONTEXT_TOKEN_LIMIT` | `16000` | Chat 上下文压缩阈值（`backend/server/context.py:24`） |
-| `AGENT_CONTEXT_TOKEN_LIMIT` | `24000` | Agent 角色内上下文阈值（`backend/server/agent_service.py:387`） |
+| `AGENT_CONTEXT_TOKEN_LIMIT` | `24000` | Agent 角色内上下文阈值（实现位于 `backend/server/agents/service.py`） |
 | `AGENT_CONTEXT_KEEP_LAST` | `6` | Agent 保留末尾消息数 |
 | `DB_PATH` | 无 | 直接指定 DB 文件，优先级高于 `DATA_DIR` |
 | `DATA_DIR` | `<项目根>/data` | 数据目录，脚本与文件归档均以此为根 |
@@ -107,7 +107,8 @@ cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --
 | `CORS_ORIGINS` | `*` | 逗号分隔；为 `*` 时自动关闭 credentials |
 | `LOG_DIR` | `<项目根>/logs` | 长期日志目录；相对路径以项目根解析 |
 | `LOG_LEVEL` | `INFO` | 应用日志最低级别 |
-| `LOG_RETENTION_DAYS` | `30` | app/error/access 按日轮转文件的保留天数 |
+| `LOG_RETENTION_DAYS` | `30` | 运行日志及归档的保留天数 |
+| `LOG_MAX_FILES` | `500` | 日志文件总数上限；活跃 Worker 文件不会被删除 |
 
 ### 3.3 LLM 配置（三选一）
 
@@ -234,22 +235,45 @@ curl http://localhost:8000/api/healthz     # 版本 + DB 路径 + 是否存在
 curl http://localhost:8000/api/llm/status  # LLM 配置与可达性（30s 缓存）
 ```
 
-后端使用 Python 标准库 `logging` 保存长期日志，无需额外日志依赖：
+后端使用 Python 标准库 `logging` 保存长期日志，无需额外日志依赖。项目根目录
+`logs/` 是唯一正式日志入口，`backend/logs/` 已永久废弃：
 
-- `logs/app.<PID>.log`：应用启动、调度器、RAG、工具调用等运行日志。
-- `logs/error.<PID>.log`：仅 `ERROR` 及以上事件和异常堆栈。
-- `logs/access.<PID>.log`：Uvicorn HTTP 访问日志。
-- `<PID>` 隔离多 worker 的文件写入，避免多个进程竞争同一个轮转文件。
-- 文件每天午夜轮转，默认保留 30 天；通过 `LOG_DIR`、`LOG_LEVEL`、`LOG_RETENTION_DAYS` 调整。
-- 每个 HTTP 响应携带 `X-Request-ID`，相同 ID 会进入该请求产生的应用日志，便于串联排障。
+```text
+logs/
+├── launcher/                 # 启动器 stdout/stderr，10 MB 轮转、保留 5 份
+│   ├── backend.log
+│   ├── backend.err.log
+│   ├── frontend.log
+│   └── frontend.err.log
+├── runtime/                  # 活跃 Worker 的独立 PID 日志
+│   ├── app/app.<PID>.log
+│   ├── access/access.<PID>.log
+│   └── error/error.<PID>.log
+├── archive/<日期>/<类别>/    # 已退出 Worker 的日志
+└── state/                    # backend.pid / frontend.pid
+```
+
+- `<PID>` 隔离多 Worker 写入，避免 Windows 多进程竞争同一个轮转文件。
+- `stop.ps1` 和 `start.sh` 停止服务后会把已退出 Worker 日志按日期归档。
+- 启动时先迁移旧平铺日志，再按 `LOG_RETENTION_DAYS` 和 `LOG_MAX_FILES` 双重清理；活跃日志始终受保护。
+- `python -m scripts.qa_verify_*` 自动使用系统临时日志目录，进程退出后删除，不污染正式日志。
+- 每个 HTTP 响应携带 `X-Request-ID`，相同 ID 会进入应用日志，便于串联排障。
 - 工具日志只记录工具名、参数字段名、检索源、耗时和状态，不记录 API Key 或完整请求内容。
 
-`start.ps1` 的 `backend.log` / `backend.err.log` 和前端对应文件是启动器 stdout/stderr 日志：重启时继续追加，超过 10 MB 后轮转并保留 5 份，不再在每次启动时清空。
+统一查看命令会自动合并多个 PID 文件，无需人工寻找最新 Worker：
 
 ```powershell
-Get-Content logs\app.*.log -Tail 100
-Get-Content logs\error.*.log -Tail 100
-Select-String -Path logs\app.*.log -Pattern "skill.attempt|request_id="
+# 最近 100 行应用日志
+.\.venv\Scripts\python.exe -m scripts.log_view --kind app --lines 100
+
+# 持续跟踪全部当前日志，并自动发现新 Worker
+.\.venv\Scripts\python.exe -m scripts.log_view --kind all --follow
+
+# 查询错误日志及历史归档
+.\.venv\Scripts\python.exe -m scripts.log_view --kind error --include-archive --lines 200
+
+# 手动执行归档与双重清理
+.\.venv\Scripts\python.exe -m backend.server.core.log_maintenance prepare
 ```
 
 ---
@@ -257,15 +281,18 @@ Select-String -Path logs\app.*.log -Pattern "skill.attempt|request_id="
 ## 7. 验收脚本
 
 ```powershell
-# 空间隔离（26 项）
+# 空间隔离与管理边界（46 项）
 python -m scripts.qa_verify_space
+
+# 后端目录、公开入口与依赖方向
+python -m scripts.qa_verify_backend_architecture
 
 # 后台 Agent runner（19 项）
 python -m scripts.qa_verify_agent_runner
 
 # 正确性修复（论文旧库迁移、Cron 并发/API、公式、版本、RAG、CLI）
 python -m scripts.qa_verify_correctness
-python -m scripts.qa_verify_agent_teams
+python -m scripts.qa_verify_agent_teams       # 专家团队与 DAG（39 项）
 
 # Python 语法与全部独立 QA（PowerShell）
 python -m compileall -q backend scripts

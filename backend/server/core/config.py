@@ -1,11 +1,11 @@
-"""Application configuration for the AI-Research-OS FastAPI backend.
+"""AI-Research-OS FastAPI 后端配置。
 
-Reads settings from environment variables / ``.env`` files and exposes a
-single ``settings`` instance plus resolved DB paths.
+从环境变量和 ``.env`` 文件读取配置，并暴露唯一的 ``settings`` 实例及解析后的
+数据库路径。
 
-Critical detail: ``os.environ['DATA_DIR']`` is set *before* ``scripts/database.py``
-is imported so the SQLite path stays consistent between this backend and the
-legacy scripts (which read ``DATA_DIR`` at import time).
+关键约束：必须在导入 ``scripts/database.py`` 前设置
+``os.environ['DATA_DIR']``，因为脚本会在导入时读取该变量；这样后端与脚本使用的
+SQLite 路径才能保持一致。
 """
 from __future__ import annotations
 
@@ -16,13 +16,12 @@ from typing import List, Optional
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Project root = parent of ``backend/`` (i.e. the ai-research-os directory).
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# 项目根目录是 ``backend/`` 的父目录，即 ai-research-os 目录。
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 
-# Load both the project-root .env and backend/.env (if present) into the
-# environment so that pydantic-settings can pick them up.  Manual loading keeps
-# us independent of which file the operator chose to create.
+# 若存在项目根目录的 .env 或 backend/.env，则依次载入环境变量，供
+# pydantic-settings 读取。显式载入可以兼容运维人员选择其中任一配置文件。
 for _env_candidate in (PROJECT_ROOT / ".env", PROJECT_ROOT / "backend" / ".env"):
     if _env_candidate.exists():
         load_dotenv(dotenv_path=str(_env_candidate), override=False)
@@ -37,7 +36,7 @@ if _old_base.endswith("/v1") and _old_path.startswith("/v1/"):
 
 
 class Settings(BaseSettings):
-    """Runtime configuration loaded from the environment."""
+    """从环境变量加载的运行时配置。"""
 
     model_config = SettingsConfigDict(
         env_prefix="",
@@ -45,7 +44,7 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # ---- LLM (OpenAI-compatible) ----
+    # ---- LLM（OpenAI 兼容） ----
     # 默认留空：启动后请在「设置 → LLM API 配置」中填写（硅基流动 / 智谱 / Ollama 等）。
     llm_base_url: str = ""
     llm_api_key: str = ""
@@ -74,11 +73,11 @@ class Settings(BaseSettings):
     # 向量维度：0 = 自动检测（Qwen3-Embedding-0.6B 为 1024）
     embed_local_dims: int = 0
 
-    # ---- Database ----
+    # ---- 数据库 ----
     db_path: Optional[str] = None
     data_dir: Optional[str] = None
 
-    # ---- Server ----
+    # ---- 服务端 ----
     app_host: str = "0.0.0.0"
     app_port: int = 8000
     cors_origins: str = "*"
@@ -99,28 +98,25 @@ class Settings(BaseSettings):
         return self.resolved_data_dir / "ai_research_os.db"
 
 
-# Instantiate singleton.
+# 创建配置单例。
 settings = Settings()
 
-# Ensure the data directory exists and export it to the environment *before*
-# any script (notably ``scripts/database.py``) is imported.
+# 在导入任何脚本（尤其是 ``scripts/database.py``）之前创建数据目录，
+# 并把最终路径写入环境变量。
 _RESOLVED_DIR = settings.resolved_data_dir
 _RESOLVED_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["DATA_DIR"] = str(_RESOLVED_DIR)
 if settings.db_path:
     os.environ["DB_PATH"] = str(settings.resolved_db_path)
 
-# Convenience exports used across the app.
+# 为应用内高频配置提供便捷导出。
 DATA_DIR: Path = _RESOLVED_DIR
 DB_PATH: Path = settings.resolved_db_path
 SCRIPTS_DIR: Path = PROJECT_ROOT / "scripts"
 
 
 def get_cors_origins() -> List[str]:
-    """Parse CORS origins.
-
-    ``*`` (the dev default) means allow all origins.
-    """
+    """解析 CORS 来源；开发默认值 ``*`` 表示允许全部来源。"""
     if not settings.cors_origins or settings.cors_origins.strip() == "*":
         return ["*"]
     return [o.strip() for o in settings.cors_origins.split(",") if o.strip()]

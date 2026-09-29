@@ -1,16 +1,12 @@
-"""Stable Windows background entrypoint for the FastAPI backend.
+"""FastAPI 后端稳定的 Windows 后台入口。
 
-The normal Uvicorn CLI treats ``SIGINT``/``SIGBREAK`` as shutdown requests.
-That is desirable in an interactive terminal, but Windows IDE task runners can
-send console-control events to descendants even when their windows are hidden.
-For the detached ``start.ps1`` path we deliberately ignore those two console
-signals and keep only Uvicorn's non-console termination handling.
+常规 Uvicorn CLI 把 ``SIGINT``、``SIGBREAK`` 视为关闭请求，这适合交互终端；但
+Windows IDE 任务运行器即使隐藏窗口，也可能向后代进程发送控制台事件。因此通过
+``start.ps1`` 分离启动时会忽略这两个控制台信号，只保留 Uvicorn 的非控制台终止处理。
 
-This entrypoint is intentionally single-worker.  Uvicorn's Windows
-multiprocess supervisor translates and rebroadcasts console signals to spawned
-workers; a single async worker avoids that signal fan-out as well as needless
-SQLite write-lock contention.  Interactive/manual launches remain free to use
-the regular Uvicorn CLI with multiple workers.
+该入口有意使用单 Worker。Uvicorn 的 Windows 多进程监管器会转换并向子 Worker
+重播控制台信号；单异步 Worker 既避免信号扩散，也减少不必要的 SQLite 写锁竞争。
+交互或手动启动仍可使用常规 Uvicorn CLI 的多 Worker 模式。
 """
 
 from __future__ import annotations
@@ -25,7 +21,7 @@ from uvicorn import server as uvicorn_server
 
 
 def configure_background_signals() -> None:
-    """Ignore Windows console interrupts for the detached service process."""
+    """让分离运行的服务进程忽略 Windows 控制台中断。"""
 
     if os.name != "nt":
         return
@@ -38,7 +34,7 @@ def configure_background_signals() -> None:
     for sig in ignored:
         signal.signal(sig, signal.SIG_IGN)
 
-    # Server.capture_signals() otherwise replaces SIG_IGN when serving starts.
+    # 否则 Server.capture_signals() 会在服务启动时覆盖 SIG_IGN。
     uvicorn_server.HANDLED_SIGNALS = tuple(
         sig for sig in uvicorn_server.HANDLED_SIGNALS if sig not in ignored
     )

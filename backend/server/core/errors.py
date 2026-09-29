@@ -1,8 +1,8 @@
-"""Shared error handling and SSE helpers.
+"""共享的错误处理与 SSE 辅助函数。
 
-All REST errors are returned as JSON ``{success: false, error, message}`` so the
-frontend (which depends on this shape) keeps working.  SSE streaming endpoints
-use the ``SSE_DONE`` sentinel and the ``sse_event`` / ``sse_error`` helpers.
+所有 REST 错误统一返回 ``{success: false, error, message}`` JSON，以维持前端依赖的
+响应结构。SSE 流式端点使用 ``SSE_DONE`` 结束标记，以及 ``sse_event``、
+``sse_error`` 辅助函数。
 """
 from __future__ import annotations
 
@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# SSE constants
+# SSE 常量
 # ---------------------------------------------------------------------------
 SSE_DONE = "[DONE]"
 SSE_EVENT_TYPES = {"phase_start", "start", "progress", "complete", "error"}
 
 
 class APIError(Exception):
-    """Application-level error that maps to a JSON error body."""
+    """可映射为 JSON 错误响应体的应用级异常。"""
 
     def __init__(self, message: str, code: str = "INTERNAL_ERROR", status_code: int = 500) -> None:
         super().__init__(message)
@@ -34,28 +34,28 @@ class APIError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Response body helpers
+# 响应体辅助函数
 # ---------------------------------------------------------------------------
 def error_body(code: str, message: str, **extra: Any) -> Dict[str, Any]:
-    """Build a standard error response body."""
+    """构建标准错误响应体。"""
     body: Dict[str, Any] = {"success": False, "error": code, "message": message}
     body.update(extra)
     return body
 
 
 def sse_event(event_type: str, **payload: Any) -> str:
-    """Format a single SSE ``data:`` line as JSON."""
+    """把单个 SSE ``data:`` 行格式化为 JSON。"""
     data = {"type": event_type, **payload}
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 def sse_error(message: str) -> str:
-    """Format an SSE error event."""
+    """格式化 SSE 错误事件。"""
     return sse_event("error", message=message)
 
 
 # ---------------------------------------------------------------------------
-# Exception handlers
+# 异常处理器
 # ---------------------------------------------------------------------------
 async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
     logger.warning(
@@ -87,7 +87,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 
 def register_exception_handlers(app) -> None:
-    """Attach the unified exception handlers to the FastAPI app."""
+    """把统一异常处理器挂载到 FastAPI 应用。"""
     app.add_exception_handler(APIError, api_error_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)

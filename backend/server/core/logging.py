@@ -1,8 +1,7 @@
-"""Long-lived application logging using only Python's standard library.
+"""仅使用 Python 标准库实现的长期应用日志。
 
-Each process writes its own files so interactive/production multi-worker runs
-never race while rotating a shared file.  Files rotate at local midnight and
-old files from exited processes are removed by retention age during startup.
+每个进程写入独立文件，避免交互模式或生产多 Worker 在轮转共享文件时发生竞争。
+日志按本地午夜轮转；启动时归档退出进程的日志，并按期限与文件数双重清理。
 """
 from __future__ import annotations
 
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import config
+from .log_maintenance import maintain_logs, prepare_layout
 
 _request_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "airos_request_id", default="-"
@@ -31,7 +31,7 @@ class RequestContextFilter(logging.Filter):
 
 
 class RequestIdMiddleware:
-    """Pure ASGI middleware that adds a safe request ID to logs/responses."""
+    """为日志和响应添加安全请求 ID 的纯 ASGI 中间件。"""
 
     def __init__(self, app):
         self.app = app
@@ -76,18 +76,6 @@ def _positive_int(name: str, default: int) -> int:
         return default
 
 
-def _cleanup_expired_logs(log_dir: Path, retention_days: int) -> None:
-    cutoff = time.time() - retention_days * 86400
-    for pattern in ("app.*.log*", "error.*.log*", "access.*.log*"):
-        for path in log_dir.glob(pattern):
-            try:
-                if path.is_file() and path.stat().st_mtime < cutoff:
-                    path.unlink()
-            except OSError:
-                # Logging setup must never prevent the application from starting.
-                pass
-
-
 def _file_handler(path: Path, level: int, retention_days: int) -> logging.Handler:
     handler = TimedRotatingFileHandler(
         path,
@@ -108,7 +96,7 @@ def _file_handler(path: Path, level: int, retention_days: int) -> logging.Handle
 
 
 def configure_logging(log_dir: Optional[Path] = None) -> Path:
-    """Configure durable app/error logs once per process and return the directory."""
+    """每个进程只配置一次持久化应用/错误日志，并返回日志目录。"""
     global _configured_pid
     pid = os.getpid()
     configured_dir = Path(log_dir or os.environ.get("LOG_DIR") or config.PROJECT_ROOT / "logs")
@@ -116,13 +104,18 @@ def configure_logging(log_dir: Optional[Path] = None) -> Path:
     if _configured_pid == pid:
         return resolved
 
-    resolved.mkdir(parents=True, exist_ok=True)
+    layout = prepare_layout(resolved)
     retention_days = _positive_int("LOG_RETENTION_DAYS", 30)
-    _cleanup_expired_logs(resolved, retention_days)
+    max_files = _positive_int("LOG_MAX_FILES", 500)
+    maintain_logs(
+        layout.root,
+        retention_days=retention_days,
+        max_files=max_files,
+    )
 
     root = logging.getLogger()
-    # A spawned/forked worker may inherit handlers from its parent. Only remove
-    # handlers owned by this module; keep Uvicorn's console handler intact.
+    # 派生 Worker 可能继承父进程的处理器；这里只移除本模块创建的处理器，
+    # 保留 Uvicorn 自身的控制台处理器。
     for logger in (
         root,
         logging.getLogger("uvicorn"),
@@ -136,15 +129,23 @@ def configure_logging(log_dir: Optional[Path] = None) -> Path:
 
     level_name = (os.environ.get("LOG_LEVEL") or "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
-    app_handler = _file_handler(resolved / f"app.{pid}.log", level, retention_days)
-    error_handler = _file_handler(resolved / f"error.{pid}.log", logging.ERROR, retention_days)
-    access_handler = _file_handler(resolved / f"access.{pid}.log", level, retention_days)
+    app_handler = _file_handler(layout.kind_dir("app") / f"app.{pid}.log", level, retention_days)
+    error_handler = _file_handler(
+        layout.kind_dir("error") / f"error.{pid}.log",
+        logging.ERROR,
+        retention_days,
+    )
+    access_handler = _file_handler(
+        layout.kind_dir("access") / f"access.{pid}.log",
+        level,
+        retention_days,
+    )
     root.setLevel(min(level, logging.ERROR))
     root.addHandler(app_handler)
     root.addHandler(error_handler)
 
-    # Uvicorn's loggers stop propagation, so explicitly attach the same durable
-    # handlers while leaving its normal console handlers in place.
+    # Uvicorn 日志器会停止向上传播，因此显式挂载同一组持久化处理器，
+    # 同时保留其原有控制台处理器。
     uvicorn_logger = logging.getLogger("uvicorn")
     uvicorn_logger.propagate = False
     uvicorn_logger.addHandler(app_handler)
@@ -159,7 +160,10 @@ def configure_logging(log_dir: Optional[Path] = None) -> Path:
 
     _configured_pid = pid
     logging.getLogger(__name__).info(
-        "logging.ready directory=%s retention_days=%s", resolved, retention_days
+        "logging.ready directory=%s retention_days=%s max_files=%s",
+        layout.root,
+        retention_days,
+        max_files,
     )
     return resolved
 

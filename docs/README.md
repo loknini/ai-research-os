@@ -15,6 +15,7 @@ flowchart TB
 | 想做什么 | 看哪里 |
 |---|---|
 | 架构、分层、生命周期、决策 | [ARCHITECTURE.md](./ARCHITECTURE.md) |
+| 后端目录职责、依赖方向、兼容策略 | [BACKEND-STRUCTURE.md](./BACKEND-STRUCTURE.md) |
 | 表结构、隔离、迁移 | [DATA-MODEL.md](./DATA-MODEL.md) |
 | 路由、SSE、curl | [API.md](./API.md)（以 `/docs` OpenAPI 为准） |
 | LLM、Agent、上下文、Skills | [AGENT-LLM.md](./AGENT-LLM.md) |

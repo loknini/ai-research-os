@@ -1,8 +1,7 @@
-"""Chat route -> SSE streaming via the in-process ``llm.py`` client.
+"""聊天路由：通过进程内 ``llm.py`` 客户端输出 SSE 流。
 
-Mirrors the legacy ``scripts/chat_agent_stream.py`` behaviour (system prompt +
-tool calls) but performs the actual streaming through ``LLMClient.stream_llm``,
-so the LLM endpoint is fully configurable and never spawns a subprocess.
+行为与历史 ``scripts/chat_agent_stream.py`` 的系统提示和工具调用保持一致，但实际
+流式请求由 ``LLMClient.stream_llm`` 完成，因此 LLM 端点可完整配置且无需启动子进程。
 
 本文件在原有 ReAct 循环基础上叠加了三项增强（对应近期需求）：
 1. **指令型 skill 注入 system prompt**：指令型技能被调用时，把 SKILL.md 正文注入
@@ -23,11 +22,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..deps import get_space_id
-from ..errors import SSE_DONE, sse_error
+from ..core.errors import SSE_DONE, sse_error
 from ..llm import LLMUnavailableError, llm_client
 from ..memory import memory_prompt
 from ..schemas import ChatRequest
-from .. import rag_service
+from ..rag import service as rag_service
 from scripts.chat_agent_stream import SYSTEM_PROMPT, execute_tool, is_skill_tool, TOOLS
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -42,7 +41,7 @@ from ..context import (
 
 
 def _usage_sse(item: Any) -> Optional[str]:
-    """Convert an optional LLM usage item to the browser SSE contract."""
+    """把可选的 LLM 用量项转换为浏览器端 SSE 契约。"""
     if not isinstance(item, dict) or not isinstance(item.get("usage"), dict):
         return None
     usage = item["usage"]
@@ -391,9 +390,8 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
         # 避免把检索 top-k 全部展示造成的“乱引用”。
         cited_sources = _filter_cited_sources(final_answer_text, rag_sources_payload)
         yield f"data: {json.dumps({'type': 'rag_sources', 'sources': cited_sources, 'mode': rag_mode, 'enabled': req.rag_enabled}, ensure_ascii=False)}\n\n"
-        # Refresh the estimate after the answer: this reflects the persisted
-        # conversation that will be sent on the next turn, rather than staying
-        # one assistant reply behind until the user sends another message.
+        # 回答结束后刷新估算，使数值对应下一轮将发送的已持久化对话，
+        # 避免在用户再次发送消息前始终少计算一条助手回复。
         next_turn_messages = formatted + [{"role": "assistant", "content": final_answer_text}]
         yield f"data: {json.dumps({'type': 'context', 'estimated_tokens': _estimate_request_tokens(next_turn_messages, TOOLS), 'limit': CONTEXT_TOKEN_LIMIT, 'compressed': False}, ensure_ascii=False)}\n\n"
         yield f"data: {SSE_DONE}\n\n"

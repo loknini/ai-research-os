@@ -4,7 +4,8 @@ Multi-Agent Service - 可配置角色管线（Phase 3）
 
 职责：把一个需求依次交给若干「角色（role）」处理，每个角色的输出作为下一个角色的输入。
 
-* 角色管线由 ``backend/agent_roles.json`` 配置驱动（顺序 = 管线顺序，``enabled`` 控制是否启用）。
+* 角色管线由 ``backend/resources/agents/agent_roles.json`` 配置驱动
+  （顺序 = 管线顺序，``enabled`` 控制是否启用）。
   不修改代码即可增删角色、调整顺序、开关某一角色。
 * 内置角色：``architect``（架构师）、``planner``（规划师）、``developer``（开发者）、
   ``reviewer``（评审者）。前端 ``agent-workflow.tsx`` 的 developer/reviewer 占位由此真正生效。
@@ -27,7 +28,7 @@ from jsonschema import ValidationError, validate as validate_json
 
 if __name__ == "__main__" and not __package__:
     print(
-        "Run this package CLI with: python -m backend.server.agent_service <command> [args]",
+        "请使用包 CLI：python -m backend.server.agents.service <command> [args]",
         file=sys.stderr,
     )
     raise SystemExit(2)
@@ -42,11 +43,11 @@ except Exception:
         pass
 
 # 共享上下文管理（token 估算 / 历史摘要 / 消息压缩）
-from .context import compact_messages
+from ..context import compact_messages
 
 # 工具审批策略（工具注册表提供）
 try:
-    from .tool_registry import tool_needs_approval
+    from ..tool_registry import tool_needs_approval
 except Exception:  # pragma: no cover - 独立 CLI 回退
     def tool_needs_approval(name, mode=None):
         return False, ""
@@ -229,8 +230,8 @@ BUILTIN_ROLES: Dict[str, Dict[str, Any]] = {
     "reviewer":  {"label": "评审者", "system": ReviewerAgent.SYSTEM_PROMPT,  "parser": None},
 }
 
-# 配置文件路径：backend/agent_roles.json
-_ROLES_CONFIG = Path(__file__).resolve().parent.parent / "agent_roles.json"
+# 配置文件路径：backend/resources/agents/agent_roles.json
+_ROLES_CONFIG = Path(__file__).resolve().parents[2] / "resources" / "agents" / "agent_roles.json"
 
 # 缺省管线（配置文件不存在时使用）：架构 -> 规划 -> 评审
 _DEFAULT_PIPELINE = ["architect", "planner", "reviewer"]
@@ -524,7 +525,7 @@ def _parse_json_output(text: str) -> Any:
 def run_node(node_spec: Dict[str, Any], input_text: str,
              space_id: str | None = None,
              approval_mode: str = "manual") -> Generator[Dict[str, Any], None, None]:
-    """Execute a snapshotted DAG node; ``run_role`` remains the legacy wrapper."""
+    """执行已快照的 DAG 节点；``run_role`` 继续作为旧角色入口。"""
     node_id = str(node_spec.get("id") or "node")
     return run_role(node_id, input_text, space_id=space_id,
                     enable_tools=True, node_spec=node_spec, approval_mode=approval_mode)
@@ -603,8 +604,8 @@ def run_planner_agent(design_output: str) -> Generator[Dict[str, Any], None, Non
 if __name__ == '__main__':
     import sys
     if len(sys.argv) < 2:
-        print("Usage: python -m backend.server.agent_service <command> [args]", file=sys.stderr)
-        print("Commands: architect, planner, workflow, roles", file=sys.stderr)
+        print("用法：python -m backend.server.agents.service <command> [args]", file=sys.stderr)
+        print("命令：architect、planner、workflow、roles", file=sys.stderr)
         sys.exit(1)
     command = sys.argv[1]
     if command == "roles":

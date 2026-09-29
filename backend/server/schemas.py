@@ -1,4 +1,4 @@
-"""Pydantic request/response models shared across routers."""
+"""路由共享的 Pydantic 请求/响应模型。"""
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 
 class ChatRequest(BaseModel):
-    """Request body for ``POST /api/chat/completions``."""
+    """``POST /api/chat/completions`` 请求体。"""
 
     messages: List[dict] = []
     message: Optional[str] = None
@@ -19,10 +19,10 @@ class ChatRequest(BaseModel):
 
 
 class AgentRunRequest(BaseModel):
-    """Request body for ``POST /api/agent/runs``.
+    """``POST /api/agent/runs`` 请求体。
 
-    ``teamId`` selects a snapshotted DAG; without it, ``roles`` and the historic
-    ``message`` alias remain supported by the legacy role pipeline.
+    ``teamId`` 选择已快照的 DAG；未提供时，旧角色管线仍支持 ``roles`` 和历史
+    ``message`` 别名。
     """
 
     requirement: str = ""
@@ -35,13 +35,13 @@ class AgentRunRequest(BaseModel):
 
 
 class ApprovalDecision(BaseModel):
-    """Request body for ``POST /api/agent/runs/{run_id}/approvals/{approval_id}``."""
+    """``POST /api/agent/runs/{run_id}/approvals/{approval_id}`` 请求体。"""
 
     approved: bool = True
 
 
 class SessionCreate(BaseModel):
-    """Request body for ``POST /api/agent/sessions``."""
+    """``POST /api/agent/sessions`` 请求体。"""
 
     projectId: Optional[str] = None
     sessionType: str = "multi_agent_workflow"
@@ -49,7 +49,7 @@ class SessionCreate(BaseModel):
 
 
 class FetchPapersRequest(BaseModel):
-    """Request body for ``POST /api/papers/fetch``."""
+    """``POST /api/papers/fetch`` 请求体。"""
 
     keywords: Optional[List[str]] = None
     query: Optional[str] = None
@@ -58,13 +58,13 @@ class FetchPapersRequest(BaseModel):
 
 
 class BatchImportPapersRequest(BaseModel):
-    """Request body for ``POST /api/papers/batch``."""
+    """``POST /api/papers/batch`` 请求体。"""
 
     papers: List[Dict[str, Any]] = []
 
 
 class RagIndexRequest(BaseModel):
-    """Request body for ``POST /api/rag/index``.
+    """``POST /api/rag/index`` 请求体。
 
     ``paths`` 支持一个或多个目标路径（文件或目录）；``fileTypes`` 为空则接受全部
     受支持类型（pdf/txt/md）。嵌入模型一律走全局 LLM 配置（单空间单向量空间，
@@ -77,13 +77,13 @@ class RagIndexRequest(BaseModel):
 
 
 class RagWebRequest(BaseModel):
-    """Request body for ``POST /api/rag/web``（P0：用户粘贴 URL，无递归爬取）。"""
+    """``POST /api/rag/web`` 请求体（P0：用户粘贴 URL，无递归爬取）。"""
 
     urls: List[str] = []
 
 
 class RagQueryRequest(BaseModel):
-    """Request body for ``POST /api/rag/query``."""
+    """``POST /api/rag/query`` 请求体。"""
 
     question: str = ""
     topK: int = 5

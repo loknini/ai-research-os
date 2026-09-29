@@ -54,7 +54,8 @@ def verify_modules_are_importable() -> None:
 
 
 def verify_backend_subprocess_contract() -> None:
-    from backend.server import config, helpers
+    from backend.server import helpers
+    from backend.server.core import config
 
     completed = subprocess.CompletedProcess([], 0, '{"success": true}', "")
     with patch.object(helpers.subprocess, "run", return_value=completed) as mocked_run:

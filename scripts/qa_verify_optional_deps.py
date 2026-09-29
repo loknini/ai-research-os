@@ -16,8 +16,8 @@ from unittest import mock
 
 PROJECT = Path(__file__).resolve().parent.parent
 
-from backend.server import local_embed as _le  # noqa: E402
-from backend.server import rag_service  # noqa: E402
+from backend.server.rag import local_embed as _le  # noqa: E402
+from backend.server.rag import service as rag_service  # noqa: E402
 
 
 def test_mupdf_stderr_suppressed() -> None:
@@ -71,7 +71,7 @@ def test_stderr_restored_on_error() -> None:
 
 def test_local_embed_last_error() -> None:
     emb = _le.LocalEmbedder()
-    with mock.patch("backend.server.local_embed._ensure_imports",
+    with mock.patch("backend.server.rag.local_embed._ensure_imports",
                     side_effect=ImportError("No module named 'torch'")):
         ok = emb.load("whatever")
     assert ok is False

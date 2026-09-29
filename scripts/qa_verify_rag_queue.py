@@ -80,7 +80,7 @@ async def test_cancel() -> None:
 
 
 async def test_dispatcher_e2e() -> None:
-    from backend.server import rag_runner
+    from backend.server.rag import runner as rag_runner
 
     corpus = TMP / "corpus"
     corpus.mkdir(exist_ok=True)

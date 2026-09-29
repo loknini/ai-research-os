@@ -61,7 +61,7 @@ def _keys(text: str, limit: int = 3) -> list:
 
 
 async def build(space: str = "__default__", n: int = TARGET_N) -> list:
-    from backend.server import rag_service as rag  # noqa: F401  # 确保管线可 import
+    from backend.server.rag import service as rag  # noqa: F401  # 确保管线可 import
 
     await db.init_db()
     papers = await db.get_all_papers(space_id=space, limit=50)
@@ -137,7 +137,7 @@ async def run(space: str = "__default__", max_items: int = 0) -> dict:
 
 
 async def _run_slice(space: str, max_items: int) -> dict:
-    from backend.server import rag_service as rag
+    from backend.server.rag import service as rag
 
     await db.init_db()
     golden = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))

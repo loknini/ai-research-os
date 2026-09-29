@@ -359,16 +359,16 @@ def verify_clis() -> None:
     )
 
     direct = subprocess.run(
-        [sys.executable, str(PROJECT_ROOT / "backend/server/agent_service.py")],
+        [sys.executable, str(PROJECT_ROOT / "backend/server/agents/service.py")],
         cwd=PROJECT_ROOT, env=env, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=30,
     )
     module = subprocess.run(
-        [sys.executable, "-m", "backend.server.agent_service", "roles"],
+        [sys.executable, "-m", "backend.server.agents.service", "roles"],
         cwd=PROJECT_ROOT, env=env, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=30,
     )
-    check("Agent 文件直跑给出模块用法", direct.returncode == 2 and "python -m backend.server.agent_service" in direct.stderr)
+    check("Agent 文件直跑给出模块用法", direct.returncode == 2 and "python -m backend.server.agents.service" in direct.stderr)
     check("Agent 模块 CLI 保持可用", module.returncode == 0 and "architect" in module.stdout)
 
 

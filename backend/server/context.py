@@ -23,7 +23,7 @@ from .llm import llm_client
 # 默认上下文预算（随模型动态，默认 512K 回落，未命中 MODEL_CONTEXT 时512K）。
 def _default_context_limit() -> int:
     try:
-        from .config import get_effective_llm_settings
+        from .core.config import get_effective_llm_settings
 
         return int(get_effective_llm_settings().get("contextWindow", 512_000))
     except Exception:
@@ -54,14 +54,14 @@ def estimate_tokens(messages: List[Dict]) -> int:
 def estimate_request_tokens(
     messages: List[Dict], tools: Optional[List[Dict]] = None
 ) -> int:
-    """Estimate the complete request payload instead of message text only.
+    """估算完整请求载荷，而不仅是消息正文。
 
-    This is still tokenizer-independent, but includes role/framing fields,
-    tool-call metadata and the tool schema sent on every ReAct request.  It is
-    therefore a much closer context-window estimate than ``estimate_tokens``.
+    该算法仍不依赖具体 tokenizer，但会计入角色与消息框架字段、工具调用元数据，
+    以及每次 ReAct 请求都会发送的工具 schema，因此比 ``estimate_tokens`` 更接近
+    实际上下文窗口占用。
     """
     total = estimate_tokens(messages)
-    # OpenAI-style chat templates add a small fixed envelope per message.
+    # OpenAI 风格的聊天模板会为每条消息附加少量固定结构开销。
     total += 4 * len(messages) + 2
     for message in messages:
         extra = {

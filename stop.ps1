@@ -5,7 +5,7 @@
 #   .\stop.ps1 -ApiPort 9000    # 后端用了自定义端口时保持一致
 #
 # 说明:
-#   - 优先读 logs\*.pid 精准结束（taskkill /T 连子进程树一起，避免 npm 残留 node/vite 孤儿）；
+#   - 优先读 logs\state\*.pid 精准结束（taskkill /T 连子进程树一起，避免 npm 残留 node/vite 孤儿）；
 #   - pid 文件缺失/过期时回退到端口探测（与 start.ps1 同一逻辑）；
 #   - 只动本应用进程：pid 对不上 python/node/uvicorn 时跳过并提示手动处理。
 
@@ -22,6 +22,12 @@ $ProjectDir = $PSScriptRoot
 if (-not $LogDir) {
     $LogDir = "$ProjectDir\logs"
 }
+if (-not [System.IO.Path]::IsPathRooted($LogDir)) {
+    $LogDir = Join-Path $ProjectDir $LogDir
+}
+$LogDir = [System.IO.Path]::GetFullPath($LogDir)
+$StateDir = Join-Path $LogDir "state"
+$VenvPython = Join-Path $ProjectDir ".venv\Scripts\python.exe"
 
 function Get-PortListener {
     param([int]$Port)
@@ -52,6 +58,11 @@ function Stop-ByPidFile {
     }
     Write-Host "   🔄 停止 $Name (PID $pidInt)..." -ForegroundColor Yellow
     taskkill /PID $pidInt /T /F 2>$null | Out-Null
+    $waited = 0
+    while ($waited -lt 30 -and (Get-Process -Id $pidInt -ErrorAction SilentlyContinue)) {
+        Start-Sleep -Milliseconds 200
+        $waited++
+    }
     return $true
 }
 
@@ -84,11 +95,21 @@ function Stop-ByPort {
 
 Write-Host "`n🛑 停止 AI-Research-OS..." -ForegroundColor Yellow
 
-$beStopped = Stop-ByPidFile "后端" "$LogDir\backend.pid" '^(cmd|python|uvicorn|powershell|pwsh)$'
-$feStopped = Stop-ByPidFile "前端" "$LogDir\frontend.pid" '^(node|npm|cmd)$'
+$backendPidFile = if (Test-Path -LiteralPath "$StateDir\backend.pid") { "$StateDir\backend.pid" } else { "$LogDir\backend.pid" }
+$frontendPidFile = if (Test-Path -LiteralPath "$StateDir\frontend.pid") { "$StateDir\frontend.pid" } else { "$LogDir\frontend.pid" }
+$beStopped = Stop-ByPidFile "后端" $backendPidFile '^(cmd|python|uvicorn|powershell|pwsh)$'
+$feStopped = Stop-ByPidFile "前端" $frontendPidFile '^(node|npm|cmd)$'
 
 # pid 文件缺失/过期/复用时，用端口兜底（-Restart 杀不干净的重灾区）
 if (-not $beStopped) { Stop-ByPort "后端" $ApiPort '^(python|uvicorn)$' }
 if (-not $feStopped) { Stop-ByPort "前端" $FrontendPort '^(node|npm)$' }
+
+# 进程树退出后，把所有已退出 Worker 的 PID 日志按日期归档。
+if (Test-Path -LiteralPath $VenvPython) {
+    & $VenvPython -m backend.server.core.log_maintenance prepare --log-dir "$LogDir" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "   ⚠️ 服务已停止，但日志归档失败；可稍后手动运行维护命令" -ForegroundColor Yellow
+    }
+}
 
 Write-Host "`n✅ 停止完成" -ForegroundColor Green

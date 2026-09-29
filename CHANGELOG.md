@@ -6,6 +6,7 @@
 
 ## [Unreleased] - 2026-09-17 · RAG 2.1 正确性与可恢复性
 
+- 日志统一收口到项目根 `logs/`：启动器、运行期、归档与 PID 状态分层存放；多 Worker 继续按 PID 安全写入，服务停止后按日期归档，启动时按保留天数和最大文件数双重清理。QA 自动使用临时日志目录，并新增跨 PID 统一查看命令。
 - 数据库层从 5,168 行单文件拆为连接内核、版本化迁移与 13 个领域仓储模块；`scripts/database.py` 保留兼容门面。新增 `schema_migrations` 账本、迁移校验和、跨进程启动锁、未来版本拒绝、事务回滚和专项 QA。
 - 系统级设置、备份、SwanLab 与 Skills 增加管理访问边界：本机免登录，远程必须使用 `ADMIN_TOKEN` / `X-Admin-Token`；Vite 转发保留真实客户端地址，启动时明确报告保护状态。
 - 备份导入改为完整暂存、SQLite 预检、原子文件替换和失败自动回滚；导入/导出增加跨 Worker 互斥锁，并用持久导入日志在 Worker 崩溃后的下次启动自动恢复一致性快照。
@@ -129,7 +130,7 @@
 延续上节，再偿还 3 项，并将 T3 旧端点彻底移除：
 - **T3 旧 Agent 端点彻底删除**：用户确认无调用方后，`routers/agent.py` 的 `/api/agent/run`、`/api/agent/collaborate` 两个遗留一次性 SSE 端点整体删除（含仅服务它们的 `import agent_service`、`LLMUnavailableError`）；前端唯一活调用方 `services/aiAgent.ts` 第 368 行的 `/api/agent/run` 回退分支改为优雅降级（「复杂任务请到 Agent 面板处理」）。
 - **T6 前端流式协议核查 → 伪债关闭**：全仓流式解析点仅 2 处且分属不同功能（Chat=NDJSON `chatApi.ts`、Agent=SSE `agent-workflow.tsx`），无重复实现；`aiAgent.ts` 仅做本地工具分发，从不实现第二套聊天流。关闭。
-- **T9 导入陷阱彻底解决**：`agent_service` 从 `backend/scripts/` 移入 `backend/server/agent_service.py`，删除 `backend/scripts/` 目录；`backend/server/__init__.py` 去除全部 `sys.path` 注入；后端改正规包导入（`from scripts import database` / `from . import agent_service` 等）；QA 脚本同步。两套隔离 QA 全绿（space 26/26、agent-runner 19/0），DB 路径隔离仍有效。
+- **T9 导入陷阱彻底解决**：`agent_service` 从 `backend/scripts/` 移入后端正规包（当前正式路径为 `backend/server/agents/service.py`），删除 `backend/scripts/` 目录；`backend/server/__init__.py` 去除全部 `sys.path` 注入；后端改用正规包导入，QA 脚本同步。两套隔离 QA 全绿（space 26/26、agent-runner 19/0），DB 路径隔离仍有效。
 
 待办（仅剩）：**T10 初始化 git + 固化 QA 脚本为回归**（需用户决策是否引入版本控制）。
 

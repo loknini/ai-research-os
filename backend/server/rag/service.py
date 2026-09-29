@@ -36,8 +36,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import db
-from .llm import llm_client
+from .. import db
+from ..llm import llm_client
 from . import vector_index as _vindex
 
 logger = logging.getLogger(__name__)
@@ -347,9 +347,9 @@ def content_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()
 
 
-# Local source structure-aware chunking and stable index signature.
+# 面向本地来源的结构感知切片，以及稳定的索引签名。
 def _estimate_tokens(text: str) -> int:
-    """Cheap tokenizer-independent estimate suitable for chunk budgeting."""
+    """不依赖 tokenizer 的低成本估算，用于切片预算。"""
     cjk = len(re.findall(r"[\u3400-\u9fff\uf900-\ufaff]", text))
     other = len(re.findall(
         r"[A-Za-z0-9_]+|[^\sA-Za-z0-9_\u3400-\u9fff\uf900-\ufaff]", text))
@@ -376,7 +376,7 @@ def _structured_spans(
     target_tokens: int = _LOCAL_CHUNK_TARGET_TOKENS,
     overlap_tokens: int = _LOCAL_CHUNK_OVERLAP_TOKENS,
 ) -> List[Tuple[int, int]]:
-    """Split on Markdown sections, then paragraphs/sentences within a token budget."""
+    """先按 Markdown 章节分割，再在 token 预算内按段落或句子细分。"""
     headings = [match.start() for match in re.finditer(r"(?m)^#{1,6}[ \t]+\S", text)]
     section_bounds = sorted(set([0, *headings, len(text)]))
     spans: List[Tuple[int, int]] = []
@@ -413,7 +413,7 @@ def chunk_local_document(
     full_text: str,
     bounds: List[Tuple[int, int, int]],
 ) -> List[Dict[str, Any]]:
-    """Token-budgeted local chunking that preserves Markdown heading boundaries."""
+    """按 token 预算切分本地文档，并保留 Markdown 标题边界。"""
     chunks: List[Dict[str, Any]] = []
     for start, end in _structured_spans(full_text):
         page_start, page_end = _pages_for_range(bounds, start, end)
@@ -501,7 +501,7 @@ async def _embed_texts(texts: List[str], model: Optional[str] = None,
 
 def _current_embedding_spec() -> Optional[Dict[str, Any]]:
     """返回当前配置的不可混用嵌入规格；API endpoint 变化也视为新 revision。"""
-    from . import config
+    from ..core import config
     eff = config.get_effective_llm_settings()
     provider = (eff.get("embedProvider") or "api").strip().lower()
     if provider == "local":
@@ -546,7 +546,7 @@ def _embedding_profile(spec: Dict[str, Any], dims: int) -> Dict[str, Any]:
 
 def _local_embed_available() -> bool:
     """检查本地嵌入是否可用（provider=local 且模型已配置）。"""
-    from . import config
+    from ..core import config
     eff = config.get_effective_llm_settings()
     return ((eff.get("embedProvider") or "").strip() == "local"
             and bool((eff.get("embedLocalModel") or "").strip()))
@@ -770,7 +770,7 @@ async def index_source(
     generation_id: Optional[str] = None,
     checkpoint: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Build an invisible generation with file- and batch-level crash recovery."""
+    """构建尚不可见的索引代，并支持文件级和批次级崩溃恢复。"""
     generation_id = generation_id or uuid.uuid4().hex
     checkpoint_data: Dict[str, Any] = dict(checkpoint or {})
     skipped_paths = set(checkpoint_data.get("skippedPaths") or [])
@@ -797,7 +797,7 @@ async def index_source(
     preserve_active_embeddings = _embedding_profile_matches_spec(
         previous_profile, embed_spec)
     if not is_resume and previous_generation:
-        # Retain the active generation and discard older abandoned staging data.
+        # 保留当前活动代，并清理更早且已废弃的暂存数据。
         try:
             await db.database.clear_rag_generation(
                 source_id, space_id, previous_generation, keep=True)

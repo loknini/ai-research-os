@@ -1,6 +1,6 @@
-"""Multi-Agent collaboration routes.
+"""Multi-Agent 协作路由。
 
-The Agent system runs in the **background** (non-blocking):
+Agent 系统在后台非阻塞运行：
 
   POST /api/agent/runs             -> 落库即返 run_id（非阻塞）
   GET  /api/agent/runs             -> 运行列表
@@ -8,10 +8,9 @@ The Agent system runs in the **background** (non-blocking):
   GET  /api/agent/runs/{id}/stream -> DB 轮询式 SSE 进度（跨 worker 安全）
   POST /api/agent/runs/{id}/cancel -> 取消
 
-Session CRUD (backed by ``scripts/database.py``, scoped to ``space_id``) and the
-background runner (``backend.server.agent_runner``) are the only surfaces left.
-The legacy one-shot SSE endpoints ``/api/agent/run`` and ``/api/agent/collaborate``
-were removed on 2026-07-31.
+当前只保留按 ``space_id`` 隔离、由 ``scripts/database.py`` 支持的会话 CRUD，以及
+``backend.server.agents.runner`` 后台运行器。旧的一次性 SSE 端点
+``/api/agent/run`` 和 ``/api/agent/collaborate`` 已于 2026-07-31 删除。
 """
 from __future__ import annotations
 
@@ -22,9 +21,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .. import db, agent_runner, agent_teams
+from .. import db
+from ..agents import runner as agent_runner
+from ..agents import teams as agent_teams
 from ..deps import get_space_id
-from ..errors import SSE_DONE, sse_error, APIError
+from ..core.errors import SSE_DONE, sse_error, APIError
 from ..schemas import AgentRunRequest, SessionCreate, ApprovalDecision
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -60,7 +61,7 @@ async def get_session_messages(session_id: str, space_id: str = Depends(get_spac
 
 
 # ---------------------------------------------------------------------------
-# Configurable expert teams
+# 可配置专家团队
 # ---------------------------------------------------------------------------
 @router.get("/teams")
 async def list_teams(space_id: str = Depends(get_space_id)):

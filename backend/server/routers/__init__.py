@@ -1,4 +1,4 @@
-"""Aggregate all API routers for the FastAPI app."""
+"""汇总 FastAPI 应用的全部 API 路由。"""
 from .agent import router as agent_router
 from .chat import router as chat_router
 from .citation import router as citation_router
@@ -6,7 +6,7 @@ from .conversations import router as conversations_router
 from .cron import router as cron_router
 from .experiments import router as experiments_router
 from .formula import router as formula_router
-from ..health import router as health_router
+from ..core.health import router as health_router
 from .notes import router as notes_router
 from .obsidian import router as obsidian_router
 from .papers import router as papers_router

@@ -1,8 +1,7 @@
-"""Knowledge Hub (notes) CRUD routes -> in-process ``scripts/database.py``.
+"""知识库笔记 CRUD 路由，进程内调用 ``scripts/database.py``。
 
-Every handler resolves ``space_id`` via ``Depends(get_space_id)`` and passes it
-through to the DB layer for soft isolation.  ``update_note`` in the DB layer
-auto-creates a version snapshot (also space-scoped).
+每个处理器都解析并向数据库层传递 ``space_id`` 以实现软隔离；数据库层的
+``update_note`` 会自动创建同样按空间隔离的版本快照。
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ from pydantic import BaseModel
 
 from .. import db
 from ..deps import get_space_id
-from ..errors import APIError
+from ..core.errors import APIError
 
 router = APIRouter(prefix="/api/notes", tags=["notes"])
 

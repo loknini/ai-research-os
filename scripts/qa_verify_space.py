@@ -49,8 +49,8 @@ from scripts import database  # noqa: E402  (scripts/database.py，与后端同�
 database.configure_paths(data_dir=TMP, db_path=TMP / "ai_research_os.db")
 
 from backend.server.main import app  # noqa: E402
-from backend.server import config as server_config  # noqa: E402
-import backend.server.routers.backup as backup_module  # noqa: E402
+from backend.server.core import config as server_config  # noqa: E402
+import backend.server.services.backup as backup_module  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # 极简测试账本
@@ -265,7 +265,7 @@ def test_http_400_and_exemption() -> None:
 
         # 直接远程连接即使伪造 loopback XFF 也不能绕过：仅信任来自本机代理的转发头。
         from starlette.requests import Request
-        from backend.server.admin_access import request_is_local
+        from backend.server.core.admin_access import request_is_local
         spoofed_scope = {
             "type": "http",
             "method": "GET",

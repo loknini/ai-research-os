@@ -1,7 +1,7 @@
 # 数据模型与空间隔离
 
 > 实现目录：`scripts/db/`；兼容门面：`scripts/database.py`；引导壳：`backend/server/db.py`。
-> 版本与数量以 `docs/_meta.json` 为准（当前 36 张业务/运行表，另有内部迁移账本 `schema_migrations`；31 张列入 `SPACE_TABLES` 兼容迁移）。
+> 版本与数量以 `docs/_meta.json` 为准（当前 37 张业务/运行表，另有内部迁移账本 `schema_migrations`；31 张列入 `SPACE_TABLES` 兼容迁移）。
 > 核对日期：2026-09-28
 
 ---
@@ -172,7 +172,8 @@ CREATE INDEX IF NOT EXISTS idx_<table>_space ON <table>(space_id);
 
 **`software_projects.development_config`** — JSON，保存运行时、包管理器、测试/构建参数数组和忽略路径。
 
-**`agent_teams`** — 当前空间的用户团队元数据与完整 DAG JSON；内置团队保存在 `backend/agent_teams/*.json`，不写入数据库。
+**`agent_teams`** — 当前空间的用户团队元数据与完整 DAG JSON；内置团队保存在
+`backend/resources/agents/teams/*.json`，不写入数据库。
 
 **`agent_role_templates`** — 当前空间的用户角色模板。拖入团队时复制节点快照，不形成共享引用。
 

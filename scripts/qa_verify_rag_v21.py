@@ -37,7 +37,7 @@ with sqlite3.connect(TMP / "ai_research_os.db") as legacy:
     ''')
 
 from scripts import database  # noqa: E402
-from backend.server import rag_service  # noqa: E402
+from backend.server.rag import service as rag_service  # noqa: E402
 
 
 async def main() -> None:

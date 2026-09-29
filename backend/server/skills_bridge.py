@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 
 def _safe_error(value: Any, limit: int = 240) -> str:
-    """Keep logs useful without copying full tool output or request data."""
+    """保留有用日志摘要，同时避免复制完整工具输出或请求数据。"""
     return " ".join(str(value or "").split())[:limit]
 
 

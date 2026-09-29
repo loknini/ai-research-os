@@ -1,15 +1,12 @@
-"""FastAPI dependencies for space-key soft isolation.
+"""用于 space-key 软隔离的 FastAPI 依赖。
 
-A request's ``space_id`` is derived from the ``X-Space-Key`` header:
+请求的 ``space_id`` 来自 ``X-Space-Key`` 请求头：
 
-* ``normalize_space_key`` trims and lower-cases the raw key (no hashing — the
-  key *is* the anonymous identity dimension).
-* ``get_space_id`` is injected at the **handler** level on every data route so
-  the resolved value can be passed straight through to the DB layer.
+* ``normalize_space_key`` 去除首尾空白并转为小写；不做哈希，因为键本身就是匿名身份维度；
+* 每条数据路由都在处理器层注入 ``get_space_id``，把解析结果直接传给数据库层。
 
-System routes (``settings`` / ``healthz`` / ``backup``) deliberately do NOT use
-this dependency — they are global configuration / liveness / global-backup
-endpoints and remain exempt from isolation.
+``settings``、``healthz``、``backup`` 等系统路由有意不使用此依赖，因为它们分别属于
+全局配置、存活检查和全局备份端点，不参与空间隔离。
 """
 from __future__ import annotations
 
@@ -23,26 +20,19 @@ MIN_KEY_LEN = 4
 
 
 def normalize_space_key(raw: str) -> str:
-    """Trim + lower-case normalization; no hashing (soft isolation).
+    """去除首尾空白并转为小写，不做哈希。
 
-    Args:
-        raw: The raw ``X-Space-Key`` header value.
-
-    Returns:
-        The normalized space key, or ``""`` when the input is missing.
+    参数 ``raw`` 是原始 ``X-Space-Key`` 请求头；输入缺失时返回空字符串，否则返回
+    规范化后的空间键。
     """
     return (raw or "").strip().lower()
 
 
 async def get_space_id(x_space_key: str = Header(default=None, alias="X-Space-Key")) -> str:
-    """Resolve ``space_id`` from the ``X-Space-Key`` request header.
+    """从 ``X-Space-Key`` 请求头解析 ``space_id``。
 
-    * Missing / empty header      -> HTTP 400 (``MISSING_SPACE_KEY``)
-    * Normalized length < 4       -> HTTP 400 (``INVALID_SPACE_KEY``)
-
-    Returns:
-        The normalized ``space_id``. A value exactly equal to ``__default__``
-        resolves to the legacy / shared space.
+    请求头缺失或为空时返回 HTTP 400；规范化后长度小于 4 时也返回 HTTP 400。
+    成功时返回规范化后的 ``space_id``；``__default__`` 精确对应历史共享空间。
     """
     if not x_space_key or not x_space_key.strip():
         raise HTTPException(status_code=400, detail="Missing X-Space-Key header")

@@ -1,4 +1,4 @@
-"""Persistent background runner for legacy role pipelines and team DAGs."""
+"""用于角色管线与专家团队 DAG 的持久化后台运行器。"""
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +9,9 @@ import time
 import uuid
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
-from . import agent_service, agent_teams, db
+from .. import db
+from . import service as agent_service
+from . import teams as agent_teams
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ async def submit_run(
     team_snapshot: Optional[Dict[str, Any]] = None,
     input_context: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Persist a run and immediately start its daemon worker."""
+    """持久化运行记录，并立即启动对应的守护 Worker。"""
     run_id = str(uuid.uuid4())
     created = await db.database.create_agent_run(
         run_id, space_id, project_id, requirement, roles,
@@ -79,7 +81,7 @@ def _worker(run_id: str, space_id: str, project_id: Optional[str], requirement: 
     try:
         loop.run_until_complete(_execute(
             run_id, space_id, project_id, requirement, roles, team_snapshot, input_context))
-    except Exception as exc:  # pragma: no cover - final worker containment
+    except Exception as exc:  # pragma: no cover - Worker 最终异常边界
         logger.exception("agent.worker_crashed run_id=%s error=%s", run_id, exc)
     finally:
         loop.close()
@@ -94,7 +96,7 @@ async def _execute(run_id: str, space_id: str, project_id: Optional[str], requir
             await _execute_dag(run_id, space_id, requirement, team_snapshot, input_context or {})
         else:
             await _execute_legacy(run_id, space_id, requirement, roles)
-    except Exception as exc:  # noqa: BLE001 - persist all terminal failures
+    except Exception as exc:  # noqa: BLE001 - 持久化所有终止性失败
         await db.database.finish_agent_run(
             run_id, space_id, "failed",
             {"type": "error", "message": f"run failed: {exc}"},
@@ -121,7 +123,7 @@ def _advance_generator(generator: Generator[Dict[str, Any], Any, None],
 async def _drive_generator(run_id: str, space_id: str, phase: str,
                            generator: Generator[Dict[str, Any], Any, None],
                            node_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Drive one blocking LLM generator without blocking sibling DAG nodes."""
+    """驱动单个阻塞式 LLM 生成器，同时不阻塞同级 DAG 节点。"""
     alive, event = await asyncio.to_thread(_advance_generator, generator)
     last: Optional[Dict[str, Any]] = None
     while alive and event is not None:
@@ -186,7 +188,7 @@ async def _execute_dag(run_id: str, space_id: str, requirement: str,
                        team: Dict[str, Any], context: Dict[str, Any]) -> None:
     nodes = {node["id"]: node for node in team["nodes"]}
     predecessors: Dict[str, List[str]] = {node_id: [] for node_id in nodes}
-    for edge in team["edges"]:  # list order is the fan-in prompt order
+    for edge in team["edges"]:  # 边数组顺序即汇合提示词中的输入顺序
         predecessors[edge["target"]].append(edge["source"])
     statuses = {node_id: "pending" for node_id in nodes}
     results: Dict[str, Dict[str, Any]] = {}
@@ -255,9 +257,8 @@ async def _execute_dag(run_id: str, space_id: str, requirement: str,
                                                 for source in predecessors[node_id])]
         if not ready:
             break
-        # Only queue work that can start now.  Creating tasks for every ready
-        # node would let semaphore waiters begin after a sibling has failed,
-        # even though the primary output can no longer succeed.
+        # 只把当前确实可以启动的节点放入队列。若一次性为所有就绪节点创建任务，
+        # 信号量中的等待者可能在同级节点失败后仍继续启动，但此时主输出已不可能成功。
         ready = ready[:team.get("maxConcurrency", 2)]
         for node_id in ready:
             statuses[node_id] = "ready"

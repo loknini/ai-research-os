@@ -16,8 +16,9 @@ ROOT = Path(__file__).resolve().parent.parent
 TEMP = tempfile.TemporaryDirectory(prefix="qa_development_")
 os.environ["DATA_DIR"] = str(Path(TEMP.name) / "data")
 
-from backend.server import agent_teams, development_runner
-from backend.server.development_workspace import (
+from backend.server.agents import teams as agent_teams
+from backend.server.development import runner as development_runner
+from backend.server.development.workspace import (
     WorkspaceError, apply_workspace, commit_iteration, prepare_workspace,
     safe_path, validate_project, workspace_diff, write_files,
 )

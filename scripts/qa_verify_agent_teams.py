@@ -17,7 +17,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from fastapi.testclient import TestClient
 
-from backend.server import agent_runner, agent_service, agent_teams
+from backend.server.agents import runner as agent_runner
+from backend.server.agents import service as agent_service
+from backend.server.agents import teams as agent_teams
 from backend.server.main import app
 from scripts import database
 

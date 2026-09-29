@@ -1,8 +1,7 @@
-"""Citation integration routes.
+"""引用集成路由。
 
-Lightweight subprocess calls to ``scripts/citation_service.py``
-(``search`` / ``generate`` actions).  The script prints JSON which is parsed
-and forwarded.
+通过轻量子进程调用 ``scripts/citation_service.py`` 的 ``search``、``generate`` 操作，
+解析脚本输出的 JSON 后转发。
 """
 from __future__ import annotations
 

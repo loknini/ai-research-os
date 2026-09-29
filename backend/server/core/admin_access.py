@@ -1,16 +1,13 @@
-"""Access boundary for deployment-wide administrative APIs.
+"""部署级管理 API 的访问边界。
 
-AI-Research-OS intentionally has no user-account system.  Space keys isolate
-ordinary research data, but they are not credentials and therefore must not
-authorize deployment-wide operations such as backup restore or secret/config
-updates.
+AI-Research-OS 有意不引入用户账号系统。空间键只隔离普通研究数据，并非身份凭据，
+因此不能授权备份恢复、密钥或配置更新等部署级操作。
 
-Policy:
-* genuinely local requests are allowed without a token, preserving the
-  zero-login desktop workflow;
-* non-local requests must present ``X-Admin-Token`` matching ``ADMIN_TOKEN``;
-* proxy headers and browser Origin/Referer are considered so a LAN request
-  forwarded through the Vite development proxy is not mistaken for localhost.
+策略：
+* 真正的本机请求无需令牌，以保留零登录桌面工作流；
+* 非本机请求必须提供与 ``ADMIN_TOKEN`` 匹配的 ``X-Admin-Token``；
+* 同时检查代理请求头及浏览器 Origin/Referer，避免经 Vite 开发代理转发的局域网请求
+  被误判为本机请求。
 """
 from __future__ import annotations
 
@@ -26,13 +23,13 @@ ADMIN_HEADER = "X-Admin-Token"
 
 
 def _is_loopback_host(value: str | None) -> bool:
-    """Return whether a hostname/IP denotes this machine's loopback."""
+    """判断主机名或 IP 是否表示本机回环地址。"""
     raw = (value or "").strip().lower().strip("[]")
     if not raw:
         return False
-    if raw in {"localhost", "testclient"}:  # testclient is Starlette's in-process host.
+    if raw in {"localhost", "testclient"}:  # testclient 是 Starlette 进程内测试主机名。
         return True
-    # Header values may contain a port.  Bracketed IPv6 was stripped above.
+    # 请求头中的地址可能带端口；上一步已经移除了 IPv6 的方括号。
     if raw.count(":") == 1 and raw.rsplit(":", 1)[1].isdigit():
         raw = raw.rsplit(":", 1)[0]
     try:
@@ -46,7 +43,7 @@ def _is_loopback_host(value: str | None) -> bool:
 
 
 def _header_url_is_local(value: str | None) -> bool:
-    """Validate a browser Origin/Referer; opaque or malformed values are remote."""
+    """校验浏览器 Origin/Referer；不透明或格式错误的值按远程来源处理。"""
     if not value:
         return True
     try:
@@ -56,16 +53,15 @@ def _header_url_is_local(value: str | None) -> bool:
 
 
 def request_is_local(request: Request) -> bool:
-    """Conservatively decide whether the original caller is local.
+    """保守判断原始调用方是否来自本机。
 
-    ``X-Forwarded-For`` wins over the socket peer.  This is important for the
-    Vite proxy, which connects to FastAPI from loopback on behalf of a browser.
-    A browser Origin/Referer, when present, must also be loopback.
+    ``X-Forwarded-For`` 优先于套接字对端地址，这对代表浏览器从回环地址连接 FastAPI
+    的 Vite 代理很重要。浏览器携带 Origin/Referer 时，它们也必须指向回环地址。
     """
     peer = request.client.host if request.client else ""
     forwarded = request.headers.get("x-forwarded-for", "")
-    # Only trust forwarding metadata from a local reverse proxy. A direct
-    # remote client must not be able to spoof X-Forwarded-For: 127.0.0.1.
+    # 仅信任本机反向代理提供的转发信息，防止远程客户端直接伪造
+    # X-Forwarded-For: 127.0.0.1 绕过管理令牌校验。
     if forwarded and _is_loopback_host(peer):
         caller = forwarded.split(",", 1)[0].strip()
     else:
@@ -89,7 +85,7 @@ async def require_admin(
     request: Request,
     x_admin_token: str | None = Header(default=None, alias=ADMIN_HEADER),
 ) -> None:
-    """FastAPI dependency protecting deployment-wide sensitive operations."""
+    """保护部署级敏感操作的 FastAPI 依赖。"""
     if request_is_local(request) or admin_token_matches(x_admin_token):
         return
     configured = bool(config.settings.admin_token.strip())
@@ -102,7 +98,7 @@ async def require_admin(
 
 
 def startup_security_message() -> str:
-    """Return a visible startup summary without ever exposing the token."""
+    """返回不泄露令牌的可见启动安全摘要。"""
     host = config.settings.app_host.strip()
     public_bind = host not in {"127.0.0.1", "::1", "localhost"}
     configured = bool(config.settings.admin_token.strip())

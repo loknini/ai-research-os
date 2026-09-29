@@ -1,8 +1,7 @@
-"""SwanLab integration routes.
+"""SwanLab 集成路由。
 
-Kept as lightweight subprocess calls to ``scripts/swanlab_api.py`` (per the
-agreed decision) rather than refactored into importable functions.  The script
-prints a JSON object which ``run_script`` parses and forwards to the client.
+继续通过轻量子进程调用 ``scripts/swanlab_api.py``，不改造成可导入函数。脚本输出
+JSON 对象，再由 ``run_script`` 解析并转发给客户端。
 """
 from __future__ import annotations
 
@@ -13,7 +12,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from ..helpers import run_script
-from ..admin_access import require_admin
+from ..core.admin_access import require_admin
 
 router = APIRouter(
     prefix="/api/swanlab",

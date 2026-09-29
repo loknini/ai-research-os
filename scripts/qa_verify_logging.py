@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""QA: durable stdlib logging, retention cleanup, and request IDs."""
+"""QA：标准库长期日志、分层目录、归档清理和请求 ID。"""
 from __future__ import annotations
 
 import asyncio
@@ -10,7 +10,9 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.server.logging_config import RequestIdMiddleware, configure_logging
+from backend.server.core.logging import RequestIdMiddleware, configure_logging
+from backend.server.core.log_maintenance import prepare_layout, prune_logs
+from scripts.log_view import discover_logs
 
 
 def _close_managed_handlers() -> None:
@@ -59,14 +61,19 @@ async def _exercise_request_id() -> tuple[list[dict], list[dict]]:
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="airos-logging-qa-") as tmp:
         log_dir = Path(tmp)
-        expired = log_dir / "app.999999.log"
+        layout = prepare_layout(log_dir)
+        expired = log_dir / "app.99999999.log"
         expired.write_text("expired", encoding="utf-8")
         old = time.time() - 3 * 86400
         os.utime(expired, (old, old))
+        inactive = log_dir / "access.99999998.log"
+        inactive.write_text("inactive", encoding="utf-8")
+        legacy_launcher = log_dir / "backend.log"
+        legacy_launcher.write_text("legacy launcher", encoding="utf-8")
 
         with patch.dict(
             os.environ,
-            {"LOG_LEVEL": "INFO", "LOG_RETENTION_DAYS": "1"},
+            {"LOG_LEVEL": "INFO", "LOG_RETENTION_DAYS": "1", "LOG_MAX_FILES": "20"},
             clear=False,
         ):
             configure_logging(log_dir)
@@ -91,10 +98,34 @@ def main() -> int:
         _close_managed_handlers()
 
         pid = os.getpid()
-        app_text = (log_dir / f"app.{pid}.log").read_text(encoding="utf-8")
-        error_text = (log_dir / f"error.{pid}.log").read_text(encoding="utf-8")
-        access_text = (log_dir / f"access.{pid}.log").read_text(encoding="utf-8")
+        app_path = layout.kind_dir("app") / f"app.{pid}.log"
+        error_path = layout.kind_dir("error") / f"error.{pid}.log"
+        access_path = layout.kind_dir("access") / f"access.{pid}.log"
+        app_text = app_path.read_text(encoding="utf-8")
+        error_text = error_path.read_text(encoding="utf-8")
+        access_text = access_path.read_text(encoding="utf-8")
         response_headers = dict(messages[0]["headers"])
+        inactive_archived = not inactive.exists() and any(
+            layout.archive.glob("*/access/access.99999998.log")
+        )
+        launcher_migrated = not legacy_launcher.exists() and (
+            layout.launcher / "backend.log"
+        ).exists()
+
+        # 当前进程的 3 个运行日志受保护；额外制造 4 个归档文件，验证总数上限。
+        archive_dir = layout.archive / "2026-01-01" / "app"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        for index in range(4):
+            archived = archive_dir / f"app.{90000000 + index}.log"
+            archived.write_text(str(index), encoding="utf-8")
+            os.utime(archived, (old + index, old + index))
+        prune_result = prune_logs(log_dir, retention_days=3650, max_files=4)
+        managed_count = sum(
+            1
+            for root in (layout.launcher, layout.runtime, layout.archive)
+            for path in root.rglob("*")
+            if path.is_file()
+        )
 
         checks = {
             "app log": "app-message" in app_text,
@@ -104,6 +135,11 @@ def main() -> int:
             "request id in log": "request_id=qa-request-123" in app_text,
             "request id response": response_headers.get(b"x-request-id") == b"qa-request-123",
             "expired cleanup": not expired.exists(),
+            "runtime layout": app_path.exists() and error_path.exists() and access_path.exists(),
+            "inactive archive": inactive_archived,
+            "launcher migration": launcher_migrated,
+            "max file cleanup": prune_result["excess"] >= 1 and managed_count <= 4,
+            "unified viewer discovery": app_path in discover_logs(layout, "app"),
             "tool lifecycle": "tool.start name=__qa_logging_tool" in app_text
             and "tool.complete name=__qa_logging_tool" in app_text,
             "skill lifecycle": "skill.start name=demo_echo" in app_text

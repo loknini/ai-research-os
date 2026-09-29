@@ -1,9 +1,8 @@
-"""Cron job routes.
+"""Cron 定时任务路由。
 
-Cron jobs are stored in the ``cron_jobs`` table (space-scoped).  Each handler
-resolves ``space_id`` via ``Depends(get_space_id)``. Manual and scheduled runs
-share the same command / Agent / arXiv dispatcher and history writer; command
-children inherit ``SPACE_ID`` / ``DATA_DIR``.
+任务按空间存储在 ``cron_jobs`` 表中，每个处理器都通过 ``Depends(get_space_id)``
+解析 ``space_id``。手动与定时运行共用命令、Agent、arXiv 分派器和历史写入器；
+命令子进程继承 ``SPACE_ID`` 与 ``DATA_DIR``。
 
 Phase 4 扩展：
   * ``job_type`` 字段区分任务类型（command / agent_run / arxiv_fetch）。
@@ -26,7 +25,7 @@ from pydantic import BaseModel
 from .. import db
 from ..cron_scheduler import compute_next_run, dispatch_job
 from ..deps import get_space_id
-from ..errors import APIError
+from ..core.errors import APIError
 
 router = APIRouter(prefix="/api/cron", tags=["cron"])
 

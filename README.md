@@ -70,15 +70,15 @@ AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 A
 │    / rag / cron / experiments / formula / citation / ...  │
 │  · LLM 客户端：urllib 实现的 OpenAI 兼容客户端（零新依赖） │
 │  · Agent 工程：tool_registry(审批) / context(压缩) /       │
-│    agent_runner(后台) / tools/(插件化) / cron_scheduler    │
+│    agents/runner(后台) / tools/(插件化) / cron_scheduler   │
 │  · space-key 软隔离：处理器级 get_space_id 依赖过滤数据    │
 └───────────────────────────┬──────────────────────────────┘
                              │  Python (stdlib + 少量依赖)
                              ▼
 ┌──────────────────────────────────────────────────────────┐
-│              业务逻辑层 (scripts/*.py)                       │
-│  database.py · fetch_arxiv.py · summarize_paper.py         │
-│  agent_service.py · chat_agent_stream.py · rag_service.py  │
+│        领域与应用服务层 (backend/server + scripts)          │
+│  agents/ · development/ · rag/ · services/                 │
+│  scripts/database.py · db/repos · fetch_arxiv.py           │
 │  swanlab_*.py · formula_service.py · citation_service.py   │
 │  obsidian_service.py · qa_verify_*.py（回归验证）          │
 └──────────┬───────────────────────────────┬───────────────┘
@@ -484,20 +484,21 @@ ai-research-os/
 │   └── package.json
 ├── backend/                   # 独立 FastAPI 后端
 │   ├── server/
-│   │   ├── main.py            # FastAPI app 入口（CORS / 路由装配 / 静态托管 / cron 调度启动）
-│   │   ├── config.py          # 配置单例（LLM_* / DB_PATH / CORS / DATA_DIR）
+│   │   ├── main.py            # FastAPI app 入口（CORS / 路由装配 / 静态托管）
+│   │   ├── core/              # 配置、日志、异常、安全、健康检查与生命周期
+│   │   ├── agents/            # Agent 服务、团队定义与后台 DAG 运行器
+│   │   ├── development/       # 研发工作区与后台运行器
+│   │   ├── rag/               # RAG 切片、嵌入、索引、检索与后台任务
+│   │   ├── services/          # 备份与设置应用服务
 │   │   ├── llm.py            # urllib 实现的 OpenAI 兼容 LLM 客户端（含 embeddings，零新依赖）
 │   │   ├── db.py             # 进程内引导 database.py + init_db()
 │   │   ├── deps.py           # get_space_id 空间隔离依赖
-│   │   ├── errors.py         # 统一异常 / SSE 工具
 │   │   ├── context.py        # 上下文管理（token 估算 / LLM 摘要 / compact_messages）
 │   │   ├── tool_registry.py  # 工具注册表 + 审批策略内核（safe / sensitive / dangerous）
 │   │   ├── tools/            # 插件化内置工具（@register_tool，自动发现；含 code_exec 沙箱）
-│   │   ├── agent_runner.py   # 后台非阻塞 Agent 运行器（审批等待 + 可重放日志落库）
 │   │   ├── cron_scheduler.py # 自研零依赖 Cron 调度器（原子领取 + 统一执行/历史入口）
-│   │   ├── rag_service.py    # RAG 文档检索（discover/extract/chunk/embed/retrieve/answer）
-│   │   ├── rag_runner.py     # RAG 后台索引
 │   │   └── routers/          # 各 Hub 路由（tasks/papers/.../agent/chat/rag/cron）
+│   ├── resources/agents/      # Agent 角色、角色模板与内置团队 JSON
 │   ├── skills/               # Agent Skills（零依赖 SKILL.md 约定）
 │   ├── requirements.txt       # 后端 Python 依赖（不含 openai）
 │   └── .env.example          # LLM / DB / CORS / Agent / web_search 配置示例
@@ -506,9 +507,7 @@ ai-research-os/
 │   ├── db/                    # 连接内核、显式迁移、领域 repositories
 │   ├── fetch_arxiv.py         # arXiv 抓取
 │   ├── summarize_paper.py     # AI 论文总结
-│   ├── agent_service.py       # Multi-Agent 服务（角色化管线）
 │   ├── chat_agent_stream.py   # 聊天 / 工具调用
-│   ├── rag_service.py         # RAG 检索服务（与 server 内同源）
 │   ├── swanlab_*.py           # SwanLab 集成
 │   ├── formula_service.py     # 公式 OCR
 │   ├── citation_service.py    # 引用检索
@@ -546,7 +545,8 @@ ai-research-os/
 | `CORS_ORIGINS` | `*` | 允许的前端来源（逗号分隔，生产建议收敛） |
 | `LOG_DIR` | `<项目根>/logs` | 长期日志目录 |
 | `LOG_LEVEL` | `INFO` | 应用日志最低级别 |
-| `LOG_RETENTION_DAYS` | `30` | 按日轮转日志的保留天数 |
+| `LOG_RETENTION_DAYS` | `30` | 运行日志与归档的保留天数 |
+| `LOG_MAX_FILES` | `500` | 日志文件总数上限；活跃 Worker 文件不会被删除 |
 
 ### Agent 工程（v0.3）
 
@@ -682,7 +682,7 @@ python -m scripts.qa_verify_agent_harness    # 动了 Agent / 工具 / 审批必
 |------|----------|------|
 | 前端「LLM Offline」/ `/api/llm/status` 显示 reachable=false | 未配置 LLM 端点 / 服务未启动 | 检查 `.env` 的 `LLM_BASE_URL`/`LLM_API_KEY`；启动兼容 LLM 端点；`curl /api/llm/status` 验证 |
 | `/api/*` 返回 404 | 前端 proxy 未指向后端 / 后端未启动 | 确认后端 `:8000` 已起；确认 `vite.config.ts` 的 `server.proxy['/api'].target` 指向 `VITE_API_TARGET` |
-| `/api/*` 返回 500 | Python 后端异常 | 查看 `uvicorn` 进程日志；确认 `pip install -r backend/requirements.txt` 已完成 |
+| `/api/*` 返回 500 | Python 后端异常 | 运行 `.venv\Scripts\python -m scripts.log_view --kind error --lines 100`；确认 `pip install -r backend/requirements.txt` 已完成 |
 | AI 总结失败降级为模板 | LLM 端点不可达 / 模型名错误 | `curl /api/llm/status`；检查 `LLM_MODEL` 与端点是否支持 `{BASE_URL}/chat/completions` |
 | RAG 索引失败 / 回答无引用 | LLM 不支持 `/v1/embeddings` 或索引未建 | 确认在设置页「RAG 文档检索」录入并触发索引；确认 `rag_enabled=true` 且勾选了来源；不支持 embedding 时后端会自动降级关键词检索 |
 | Agent 卡在「等待审批」 | 审批模式为 manual/strict 或工具被 `AGENT_REQUIRE_APPROVAL_TOOLS` 强制 | 在前端审批卡片 / 运行历史「工具审批」tab 处理；或调 `AGENT_APPROVAL_MODE=auto`；超时（默认 300s）自动按拒绝处理 |

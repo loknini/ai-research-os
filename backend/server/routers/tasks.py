@@ -1,7 +1,6 @@
-"""Task Hub CRUD routes -> in-process ``scripts/database.py``.
+"""任务中心 CRUD 路由，进程内调用 ``scripts/database.py``。
 
-Every handler resolves ``space_id`` via ``Depends(get_space_id)`` and passes it
-through to the DB layer for soft isolation.
+每个处理器都解析并向数据库层传递 ``space_id``，实现软隔离。
 """
 from __future__ import annotations
 
@@ -15,7 +14,7 @@ from pydantic import BaseModel
 
 from .. import db
 from ..deps import get_space_id
-from ..errors import APIError
+from ..core.errors import APIError
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 

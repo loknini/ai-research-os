@@ -1,4 +1,4 @@
-"""Validation, persistence facade, and context resolution for Agent teams."""
+"""Agent 专家团队的校验、持久化门面与上下文解析。"""
 from __future__ import annotations
 
 import copy
@@ -9,17 +9,18 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from jsonschema import SchemaError
 from jsonschema.validators import validator_for
 
-from . import db, tool_registry
+from .. import db, tool_registry
 
-BUILTIN_TEAMS_DIR = Path(__file__).resolve().parents[1] / "agent_teams"
-BUILTIN_ROLES_PATH = Path(__file__).resolve().parents[1] / "agent_role_templates.json"
+_AGENT_RESOURCES = Path(__file__).resolve().parents[2] / "resources" / "agents"
+BUILTIN_TEAMS_DIR = _AGENT_RESOURCES / "teams"
+BUILTIN_ROLES_PATH = _AGENT_RESOURCES / "agent_role_templates.json"
 CONTEXT_KINDS = {"generic", "software_idea", "software_project", "papers", "notes"}
 APPROVAL_MODES = {"auto", "manual", "strict"}
 DEVELOPMENT_STAGES = ("analysis", "implementation", "testing", "review")
 
 
 class TeamValidationError(ValueError):
-    """Raised when a team definition cannot be saved or executed."""
+    """团队定义无法保存或执行时抛出。"""
 
 
 def _load_json(path: Path) -> Any:
@@ -62,7 +63,7 @@ def _available_tool_names() -> set[str]:
 
 
 def validate_role_template(source: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate and normalize a reusable role template definition."""
+    """校验并规范化可复用的角色模板定义。"""
     if not isinstance(source, dict):
         raise TeamValidationError("role template must be an object")
     role = copy.deepcopy(source)

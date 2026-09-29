@@ -30,7 +30,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .. import config
+from ..core import config
 from ..tool_registry import POLICY_DANGEROUS, register_tool
 
 # ---- 常量：资源控制 ---- #

@@ -86,7 +86,7 @@ X-Admin-Token: <ADMIN_TOKEN>
 { "requirement": "做一个论文阅读进度追踪工具", "projectId": "可选", "roles": ["architect","planner"] }
 ```
 
-`roles` 省略时使用 `backend/agent_roles.json` 的启用顺序。
+`roles` 省略时使用 `backend/resources/agents/agent_roles.json` 的启用顺序。
 
 团队运行时 `teamId` 优先于旧 `roles`；论文和笔记正文只由后端按当前空间解析，前端只能提交实体 ID（最多 20 个）：
 
@@ -193,7 +193,7 @@ DAG 运行还会发送 `node_queued` / `node_start` / `node_complete` / `node_fa
 
 流末尾输出 `data: [DONE]`。前端解析器同时兼容早期无 `data:` 前缀的历史格式。
 
-**特性**：多轮工具循环（ReAct）、超限时自动 LLM 压缩历史（阈值 `CONTEXT_TOKEN_LIMIT=16000` / Agent 另用 `AGENT_CONTEXT_TOKEN_LIMIT=24000`，`backend/server/context.py:24` / `agent_service.py:387`）、注入该空间的持久记忆、`/skill` 命令短路直接调用技能。切 Hub 不中断靠前端 `chatGenerationManager` 单例（前端级后台），非服务端后台。
+**特性**：多轮工具循环（ReAct）、超限时自动 LLM 压缩历史（阈值 `CONTEXT_TOKEN_LIMIT=16000` / Agent 另用 `AGENT_CONTEXT_TOKEN_LIMIT=24000`，实现位于 `backend/server/context.py` 与 `backend/server/agents/service.py`）、注入该空间的持久记忆、`/skill` 命令短路直接调用技能。切 Hub 不中断靠前端 `chatGenerationManager` 单例（前端级后台），非服务端后台。
 
 ---
 

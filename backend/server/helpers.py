@@ -1,12 +1,10 @@
-"""Shared helpers for the FastAPI backend.
+"""FastAPI 后端共享辅助函数。
 
-``run_script`` is a thin, reusable wrapper around ``subprocess`` that executes
-the requested ``scripts`` package module and parses the JSON it prints to stdout.
+``run_script`` 是对 ``subprocess`` 的轻量复用封装：执行指定的 ``scripts`` 包模块，
+并解析其写到 stdout 的 JSON。
 
-Per the agreed decision, the *external* integrations (swanlab / citation /
-obsidian / formula) keep these lightweight subprocess calls instead of being
-refactored into importable functions — this minimises risk while still moving
-the API layer into a single resident FastAPI process.
+SwanLab、引用、Obsidian 和公式等外部集成继续使用轻量子进程，不强行改成可导入函数；
+这样既降低迁移风险，又能让 API 层集中在常驻 FastAPI 进程中。
 """
 from __future__ import annotations
 
@@ -18,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from . import config
+from .core import config
 
 
 def run_script(
@@ -27,19 +25,11 @@ def run_script(
     timeout: int = 60,
     env_extra: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
-    """Run ``scripts/<script_name>`` with positional ``args`` and return parsed JSON.
+    """用位置参数运行 ``scripts/<script_name>`` 并返回解析后的 JSON。
 
-    The script is expected to print a single JSON object (or an object embedded
-    in its stdout) which is parsed and returned.  On any failure a
-    ``{"success": False, "error": <reason>}`` dict is returned instead of raising,
-    so routers can forward a clean JSON error to the frontend.
-
-    Args:
-        script_name: File name under ``config.SCRIPTS_DIR``.
-        *args: Positional CLI arguments forwarded to the script.
-        timeout: Subprocess timeout in seconds.
-        env_extra: Extra environment variables (e.g. ``{"SPACE_ID": space_id}``)
-            merged into the child process environment for space isolation.
+    脚本应打印一个 JSON 对象，也允许对象嵌在 stdout 中。任何失败都返回
+    ``{"success": False, "error": <reason>}``，而不是抛出异常，使路由能向前端转发
+    干净的 JSON 错误。额外环境变量会合并进子进程环境，主要用于传递空间标识。
     """
     script_path = config.SCRIPTS_DIR / script_name
     if not script_path.exists():
@@ -80,7 +70,7 @@ def run_script(
     try:
         return json.loads(out)
     except json.JSONDecodeError:
-        # Fall back to extracting the last JSON object from the output.
+        # 完整解析失败时，回退为提取输出中的最后一个 JSON 对象。
         match = re.search(r"\{.*\}", out, re.DOTALL)
         if match:
             try:

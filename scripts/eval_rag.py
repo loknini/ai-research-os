@@ -2,7 +2,7 @@
 """RAG 10问小跑：自动合成 + agnes-2.5-flash Judge"""
 import asyncio, json, random, pathlib
 from scripts import database as db
-from backend.server import rag_service as rag
+from backend.server.rag import service as rag
 
 async def main(limit=10):
     await db.init_db()

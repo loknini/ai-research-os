@@ -16,7 +16,7 @@ import urllib.error
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from backend.server import health
+from backend.server.core import health
 from backend.server.llm import LLMClient
 
 

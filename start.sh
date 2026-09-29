@@ -115,6 +115,17 @@ else
 fi
 export DATA_DIR="$RESOLVED_DATA_DIR"
 
+# 唯一正式日志根目录；相对 LOG_DIR 始终相对项目根解析。
+LOG_ROOT="${LOG_DIR:-$PROJECT_DIR/logs}"
+case "$LOG_ROOT" in
+  /*) ;;
+  *) LOG_ROOT="$PROJECT_DIR/$LOG_ROOT" ;;
+esac
+export LOG_DIR="$LOG_ROOT"
+LAUNCHER_LOG_DIR="$LOG_ROOT/launcher"
+STATE_DIR="$LOG_ROOT/state"
+mkdir -p "$LAUNCHER_LOG_DIR" "$STATE_DIR"
+
 # ---- 虚拟环境隔离 ----
 VENV_DIR="$PROJECT_DIR/.venv"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"   # 项目内虚拟环境解释器（即 .venv/bin/python）
@@ -175,9 +186,35 @@ fi
 mkdir -p "$DATA_DIR" || { echo "无法创建数据目录: $DATA_DIR" >&2; exit 1; }
 echo "  数据目录已就绪: $DATA_DIR"
 
-# 日志文件
-BACKEND_LOG="$PROJECT_DIR/.airos-backend.log"
-FRONTEND_LOG="$PROJECT_DIR/.airos-frontend.log"
+# 启动器日志；应用日志由 Python logging 写入 logs/runtime/。
+BACKEND_LOG="$LAUNCHER_LOG_DIR/backend.log"
+BACKEND_ERR_LOG="$LAUNCHER_LOG_DIR/backend.err.log"
+FRONTEND_LOG="$LAUNCHER_LOG_DIR/frontend.log"
+FRONTEND_ERR_LOG="$LAUNCHER_LOG_DIR/frontend.err.log"
+
+# 启动器日志超过 10 MB 时轮转，最多保留 5 份。
+rotate_launcher_log() {
+  local path="$1"
+  [ -f "$path" ] || return 0
+  local size
+  size=$(wc -c < "$path" | tr -d ' ')
+  [ "$size" -gt 10485760 ] || return 0
+  rm -f "$path.5"
+  local index=4
+  while [ "$index" -ge 1 ]; do
+    [ -f "$path.$index" ] && mv -f "$path.$index" "$path.$((index + 1))"
+    index=$((index - 1))
+  done
+  mv -f "$path" "$path.1"
+}
+
+for launcher_log in "$BACKEND_LOG" "$BACKEND_ERR_LOG" "$FRONTEND_LOG" "$FRONTEND_ERR_LOG"; do
+  rotate_launcher_log "$launcher_log"
+done
+
+# 启动前归档退出进程日志，并按保留天数与文件数清理。
+"$VENV_PYTHON" -m backend.server.core.log_maintenance prepare --log-dir "$LOG_ROOT" >/dev/null || \
+  echo "  警告：日志维护失败，本次启动继续" >&2
 
 # ---- 后台子进程管理（clean shutdown）----
 PIDS=""
@@ -248,6 +285,9 @@ cleanup() {
   for pid in $PIDS; do
     kill_tree "$pid" KILL
   done
+  rm -f "$STATE_DIR/backend.pid" "$STATE_DIR/frontend.pid"
+  "$VENV_PYTHON" -m backend.server.core.log_maintenance prepare --log-dir "$LOG_ROOT" >/dev/null || \
+    echo "日志归档失败，可稍后手动运行维护命令" >&2
   echo "已退出。"
   exit 0
 }
@@ -267,6 +307,7 @@ if [ -n "$RESTART" ]; then
   fi
 
   echo "  旧进程已清理，即将以最新代码重启"
+  "$VENV_PYTHON" -m backend.server.core.log_maintenance prepare --log-dir "$LOG_ROOT" >/dev/null || true
 fi
 
 echo ""
@@ -284,15 +325,19 @@ fi
 # 启动 FastAPI 后端（使用 .venv 解释器，多 worker 常驻）
 if [ -z "$SKIP_BACKEND" ]; then
   echo "  启动 FastAPI 后端 (端口: $API_PORT, workers: $WORKERS)..."
-  ( cd "$PROJECT_DIR" && "$VENV_PYTHON" -m uvicorn backend.server.main:app --port "$API_PORT" --workers "$WORKERS" ) >> "$BACKEND_LOG" 2>&1 &
-  PIDS="$PIDS $!"
+  ( cd "$PROJECT_DIR" && "$VENV_PYTHON" -m uvicorn backend.server.main:app --port "$API_PORT" --workers "$WORKERS" ) >> "$BACKEND_LOG" 2>> "$BACKEND_ERR_LOG" &
+  BACKEND_PID=$!
+  PIDS="$PIDS $BACKEND_PID"
+  printf '%s' "$BACKEND_PID" > "$STATE_DIR/backend.pid"
 fi
 
 # 启动前端开发服务器
 if [ -z "$SKIP_FRONTEND" ]; then
   echo "  启动前端开发服务器 (端口: $FRONTEND_PORT)..."
-  ( cd "$PROJECT_DIR/frontend" && npm run dev -- --port "$FRONTEND_PORT" ) >> "$FRONTEND_LOG" 2>&1 &
-  PIDS="$PIDS $!"
+  ( cd "$PROJECT_DIR/frontend" && npm run dev -- --port "$FRONTEND_PORT" ) >> "$FRONTEND_LOG" 2>> "$FRONTEND_ERR_LOG" &
+  FRONTEND_PID=$!
+  PIDS="$PIDS $FRONTEND_PID"
+  printf '%s' "$FRONTEND_PID" > "$STATE_DIR/frontend.pid"
 fi
 
 # 健康检查（轮询 /api/healthz）
@@ -334,6 +379,7 @@ echo "提示:"
 echo "  - 配置 LLM：打开前端「设置 -> LLM API 配置」填写"
 echo "  - 数据备份与迁移：打开前端「设置 -> 数据备份与迁移」卡片"
 echo "  - 查看设计文档: $PROJECT_DIR/docs/SYSTEM-DESIGN.md"
+echo "  - 统一查看日志: $VENV_PYTHON -m scripts.log_view --kind all --follow"
 echo "  - 按 Ctrl+C 停止所有服务（会清理后端 / 前端进程）"
 echo ""
 

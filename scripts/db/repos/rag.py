@@ -846,7 +846,7 @@ async def insert_rag_chunks(chunks: List[Dict[str, Any]], space_id: str = DEFAUL
 def _vec_store_or_none():
     """懒取 vec_store（无循环导入：backend.server.__init__ 无副作用；缺包回 None）。"""
     try:
-        from backend.server import vec_store
+        from backend.server.rag import vec_store
         return vec_store if vec_store.available() else None
     except Exception:
         return None

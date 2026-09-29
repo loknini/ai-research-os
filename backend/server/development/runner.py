@@ -1,8 +1,7 @@
-"""Durable fixed-state development runner.
+"""可持久恢复的固定状态研发运行器。
 
-The runner intentionally does not expose a shell to the model. Models return
-structured file snapshots; the server validates paths, writes atomically and
-runs only detected/configured Python and Node verification commands.
+运行器有意不向模型暴露 shell。模型返回结构化文件快照；服务端校验路径、原子写入，
+并且只执行检测到或明确配置的 Python、Node 验证命令。
 """
 from __future__ import annotations
 
@@ -19,12 +18,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import agent_teams, db
-from .development_workspace import (
+from .. import db
+from ..agents import teams as agent_teams
+from .workspace import (
     WorkspaceError, commit_iteration, detect_commands, prepare_workspace,
     safe_path, workspace_diff, write_files,
 )
-from .llm import llm_client
+from ..llm import llm_client
 
 LEASE_MS = 30000
 POLL_SECONDS = 2.0
@@ -144,7 +144,7 @@ _CURRENT_TEAMS: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
 
 def _requested_context(workspace: Path, snapshot: Dict[str, Any], request: Any) -> str:
-    """Resolve a bounded model context request with the same workspace path policy."""
+    """按工作区同一套路径策略解析有大小上限的模型上下文请求。"""
     if not isinstance(request, dict):
         return ""
     sections: List[str] = []

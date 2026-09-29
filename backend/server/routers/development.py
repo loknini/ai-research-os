@@ -1,4 +1,4 @@
-"""Autonomous software-development workspace API."""
+"""自主软件研发工作区 API。"""
 from __future__ import annotations
 
 import asyncio
@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .. import agent_teams, db, development_runner
+from .. import db
+from ..agents import teams as agent_teams
+from ..development import runner as development_runner
 from ..deps import get_space_id
-from ..development_workspace import WorkspaceError, apply_workspace, validate_project, workspace_diff
-from ..errors import APIError, SSE_DONE, sse_error
+from ..development.workspace import WorkspaceError, apply_workspace, validate_project, workspace_diff
+from ..core.errors import APIError, SSE_DONE, sse_error
 
 router = APIRouter(tags=["development"])
 

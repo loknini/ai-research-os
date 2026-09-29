@@ -1,10 +1,8 @@
-"""Obsidian integration routes.
+"""Obsidian 集成路由。
 
-Lightweight subprocess calls to ``scripts/obsidian_service.py``
-(``list_vaults`` / ``add_vault`` / ``scan`` / ``list_files`` / ``get_content``).
-
-The current ``space_id`` is resolved per request and forwarded to the subprocess
-via the ``SPACE_ID`` environment variable so vault metadata stays isolated.
+通过轻量子进程调用 ``scripts/obsidian_service.py`` 的 Vault 列表、添加、扫描、文件
+列表和内容读取操作。每个请求都会解析当前 ``space_id``，再通过 ``SPACE_ID`` 环境
+变量传给子进程，使 Vault 元数据保持空间隔离。
 """
 from __future__ import annotations
 
@@ -15,7 +13,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from ..admin_access import require_admin
+from ..core.admin_access import require_admin
 from ..deps import get_space_id
 from ..helpers import run_script
 
@@ -28,7 +26,7 @@ class VaultCreate(BaseModel):
 
 
 def _directory_entry(path: Path) -> dict:
-    """Return the safe metadata needed by the server-side folder picker."""
+    """返回服务端目录选择器所需的安全元数据。"""
     try:
         is_vault = (path / ".obsidian").is_dir()
     except OSError:
@@ -58,10 +56,10 @@ def _resolve_directory(raw_path: str) -> Path:
 
 @router.get("/directories", dependencies=[Depends(require_admin)])
 async def browse_directories(path: str | None = Query(default=None)):
-    """Browse directories visible to the backend process.
+    """浏览后端进程可见的目录。
 
-    This is a deployment-level filesystem capability rather than space data,
-    so localhost is allowed and remote callers need ``X-Admin-Token``.
+    这是部署级文件系统能力，不属于空间数据；本机请求可直接使用，远程调用方必须
+    提供 ``X-Admin-Token``。
     """
     if path is None or not path.strip():
         return {
@@ -85,7 +83,7 @@ async def browse_directories(path: str | None = Query(default=None)):
             if child.is_dir():
                 directories.append(_directory_entry(child.resolve(strict=True)))
         except (OSError, RuntimeError):
-            # A single inaccessible/broken directory entry must not break its parent listing.
+            # 单个不可访问或损坏的目录项不应导致整个父目录列表失败。
             continue
 
     parent = current.parent if current.parent != current else None
