@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import time
 from collections import deque
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -67,15 +68,24 @@ def _tail(path: Path, count: int) -> list[str]:
         return []
 
 
+def _line_sort_key(path: Path, text: str) -> float:
+    """优先按标准日志时间排序；无时间戳的原始输出回退到文件修改时间。"""
+    timestamp = text[:23]
+    for timestamp_format in ("%Y-%m-%d %H:%M:%S,%f", "%Y-%m-%d %H:%M:%S.%f"):
+        try:
+            return datetime.strptime(timestamp, timestamp_format).timestamp()
+        except ValueError:
+            continue
+    return path.stat().st_mtime
+
+
 def print_tail(files: list[Path], lines: int) -> None:
     """合并显示多个 PID 文件的尾部日志，并保留来源文件名。"""
-    entries: list[tuple[str, str, str]] = []
+    entries: list[tuple[float, str, str]] = []
     for path in files:
         for line in _tail(path, lines):
             text = line.rstrip("\r\n")
-            # 标准应用日志以可排序时间戳开头；启动器日志用文件时间兜底。
-            sort_key = text[:23] if len(text) >= 23 and text[:4].isdigit() else f"{path.stat().st_mtime:020.6f}"
-            entries.append((sort_key, path.name, text))
+            entries.append((_line_sort_key(path, text), path.name, text))
     for _sort_key, name, text in sorted(entries)[-lines:]:
         print(f"[{name}] {text}")
 
@@ -85,6 +95,7 @@ def follow_logs(layout: LogLayout, kind: str, include_archive: bool) -> None:
     positions: dict[Path, int] = {}
     while True:
         files = discover_logs(layout, kind, include_archive=include_archive)
+        pending: list[tuple[float, str, str]] = []
         for path in files:
             try:
                 size = path.stat().st_size
@@ -94,10 +105,13 @@ def follow_logs(layout: LogLayout, kind: str, include_archive: bool) -> None:
                 with path.open("r", encoding="utf-8", errors="replace") as handle:
                     handle.seek(position)
                     for line in handle:
-                        print(f"[{path.name}] {line.rstrip()}", flush=True)
+                        text = line.rstrip()
+                        pending.append((_line_sort_key(path, text), path.name, text))
                     positions[path] = handle.tell()
             except (FileNotFoundError, PermissionError, OSError):
                 positions.pop(path, None)
+        for _sort_key, name, text in sorted(pending):
+            print(f"[{name}] {text}", flush=True)
         time.sleep(0.5)
 
 

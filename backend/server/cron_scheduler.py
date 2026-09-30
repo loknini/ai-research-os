@@ -60,9 +60,15 @@ def start_scheduler() -> None:
     logger.info("cron.started scan_interval_seconds=%s", SCAN_INTERVAL)
 
 
-def stop_scheduler() -> None:
-    """通知调度器停止（用于测试 / 优雅关闭）。"""
+def stop_scheduler(timeout: float = 5.0) -> None:
+    """通知调度器停止并等待线程退出，避免关闭时遗留数据库工作线程。"""
+    global _scheduler_thread
     _stop_event.set()
+    thread = _scheduler_thread
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=timeout)
+    if thread is not None and not thread.is_alive():
+        _scheduler_thread = None
 
 
 # ---------------------------------------------------------------------------

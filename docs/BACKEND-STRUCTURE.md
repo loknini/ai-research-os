@@ -42,9 +42,9 @@ RAG、Agent、研发运行器与核心设施分别从 `backend.server.rag`、
 运行：
 
 ```powershell
-python -m scripts.qa_verify_backend_architecture
+pytest tests/backend/infrastructure/test_imports.py -k backend-architecture
 ```
 
-该脚本验证公开入口、项目根目录解析、路由聚合、正式模块导入、退役模块不存在、内置
+该测试验证公开入口、项目根目录解析、路由聚合、正式模块导入、退役模块不存在、内置
 Agent 资源、工具发现、`sys.path` 约束和“领域层不得依赖路由层”的依赖方向；同时限制
 `main.py` 与薄路由的行数，防止业务逻辑重新回流。

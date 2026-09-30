@@ -158,6 +158,7 @@ const streamChatCompletion = async (
                   prompt_tokens: Number(parsed.prompt_tokens) || 0,
                   completion_tokens: Number(parsed.completion_tokens) || 0,
                   total_tokens: Number(parsed.total_tokens) || 0,
+                  api_calls: Number(parsed.api_calls) || 0,
                 })
               }
               break

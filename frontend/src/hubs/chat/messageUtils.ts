@@ -64,9 +64,12 @@ export function addTokenUsage(
   previous: TokenUsage | undefined,
   current: TokenUsage
 ): TokenUsage {
-  return {
+  const apiCalls = (previous?.api_calls || 0) + (current.api_calls || 0)
+  const usage: TokenUsage = {
     prompt_tokens: (previous?.prompt_tokens || 0) + current.prompt_tokens,
     completion_tokens: (previous?.completion_tokens || 0) + current.completion_tokens,
     total_tokens: (previous?.total_tokens || 0) + current.total_tokens,
   }
+  if (apiCalls > 0) usage.api_calls = apiCalls
+  return usage
 }

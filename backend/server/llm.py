@@ -166,6 +166,7 @@ class LLMClient:
         # 跨 SSE 增量累计函数调用片段，并按工具调用索引归并；
         # OpenAI 兼容接口会分段返回这些字段。
         tool_acc: Dict[int, Dict[str, Any]] = {}
+        latest_usage: Optional[Dict[str, int]] = None
         try:
             try:
                 response = open_stream(payload)
@@ -206,12 +207,12 @@ class LLMClient:
                         except (TypeError, ValueError):
                             prompt_tokens = completion_tokens = total_tokens = 0
                         if total_tokens > 0:
-                            yield {
-                                "usage": {
-                                    "prompt_tokens": prompt_tokens,
-                                    "completion_tokens": completion_tokens,
-                                    "total_tokens": total_tokens,
-                                }
+                            # 某些 OpenAI 兼容服务会在多个分片中重复发送累计 usage。
+                            # 这里只保留本次请求的最后一份快照，避免前端把同一请求重复相加。
+                            latest_usage = {
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "total_tokens": total_tokens,
                             }
                     choices = obj.get("choices") or []
                     delta = choices[0].get("delta", {}) if choices else {}
@@ -233,6 +234,9 @@ class LLMClient:
                             slot["arguments"] += fn["arguments"]
         except (urllib.error.URLError, urllib.error.HTTPError, OSError, ConnectionError) as exc:
             raise LLMUnavailableError(str(exc)) from exc
+
+        if latest_usage:
+            yield {"usage": latest_usage}
 
         if tool_acc:
             calls = []

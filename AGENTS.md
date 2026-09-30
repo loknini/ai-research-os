@@ -115,6 +115,7 @@ D:\project\ai-research-os/
 
 - **Node.js** >= 18（前端运行时需要）
 - **Python 后端依赖**：`pip install -r backend/requirements.txt`
+- **后端测试依赖**：`pip install -r backend/requirements-dev.txt`（包含 pytest）
 
 ---
 
@@ -129,6 +130,9 @@ npm install
 
 # 后端
 pip install -r backend/requirements.txt
+
+# 开发 / 后端测试
+pip install -r backend/requirements-dev.txt
 ```
 
 ### 2. 配置 LLM
@@ -202,7 +206,8 @@ npm run dev
 | `backend/server/agents/runner.py` | 后台非阻塞 runner（消费 `__approval_required` 审批等待 + `__replay` 落库） |
 | `scripts/database.py` | SQLite 兼容门面（初始化与既有 API re-export） |
 | `scripts/db/` | `core.py` 连接/事务；`migrations/` 显式版本；`repos/` 领域 SQL |
-| `scripts/qa_verify_agent_harness.py` | Agent 工程能力回归脚本（审批/重放/上下文/插件化，61 项） |
+| `tests/backend/` | pytest 后端回归（15 个领域测试模块，`fast/core` markers） |
+| `.github/workflows/ci.yml` | Pull Request 与 main 分支的前后端完整验证门禁 |
 | `backend/.env` | LLM API 配置（可由设置界面写入） |
 | `start.ps1` | 一键启动脚本 |
 
@@ -218,6 +223,6 @@ npm run dev
 
 ## 备注
 
-- 当前日期：2026-09-29
+- 当前日期：2026-09-30
 - 项目状态：功能基本完备，文档基于代码实况重构中
 - 版本：v0.5（隔离研发工作区 / 可配置专家团队 / 共享 LLM 助手 / 工具审批）

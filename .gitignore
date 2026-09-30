@@ -79,6 +79,10 @@ frontend/vite.config.ts.timestamp-*.mjs
 .venv/
 backend/.venv/
 __pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+/artifacts/
 
 # 本机本地配置（数据目录路径「设一次忘掉」文件，不进库；由 start.ps1 -DataDir / start.sh --data-dir 或用户手动写入）
 .airos-data-dir

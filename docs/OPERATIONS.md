@@ -58,7 +58,7 @@ PyMuPDF>=1.24           sqlite-vec==0.1.9
 ```bash
 # 终端 1 — 后端
 python -m pip install -r backend/requirements.txt
-python -m uvicorn backend.server.main:app --port 8000 --workers 4
+python -m uvicorn backend.server.main:app --port 8000 --workers 4 --log-config backend/uvicorn-log-config.json
 
 # 终端 2 — 前端
 cd frontend && npm install && npm run dev
@@ -70,7 +70,7 @@ cd frontend && npm install && npm run dev
 
 ```bash
 cd frontend && npm run build      # 产出 frontend/dist
-cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --workers 4
+cd .. && python -m uvicorn backend.server.main:app --host 0.0.0.0 --port 8000 --workers 4 --log-config backend/uvicorn-log-config.json
 ```
 
 `frontend/dist` 存在时 uvicorn 会自动挂载为 SPA（`StaticFiles(html=True)`），`/api/*` 路由优先。**无需 nginx**。
@@ -240,7 +240,7 @@ curl http://localhost:8000/api/llm/status  # LLM 配置与可达性（30s 缓存
 
 ```text
 logs/
-├── launcher/                 # 启动器 stdout/stderr，10 MB 轮转、保留 5 份
+├── launcher/                 # 启动器 stdout/stderr（Uvicorn 行含时间戳），10 MB 轮转、保留 5 份
 │   ├── backend.log
 │   ├── backend.err.log
 │   ├── frontend.log
@@ -256,11 +256,14 @@ logs/
 - `<PID>` 隔离多 Worker 写入，避免 Windows 多进程竞争同一个轮转文件。
 - `stop.ps1` 和 `start.sh` 停止服务后会把已退出 Worker 日志按日期归档。
 - 启动时先迁移旧平铺日志，再按 `LOG_RETENTION_DAYS` 和 `LOG_MAX_FILES` 双重清理；活跃日志始终受保护。
-- `python -m scripts.qa_verify_*` 自动使用系统临时日志目录，进程退出后删除，不污染正式日志。
+- pytest 共享夹具为每个复杂回归创建临时 `DATA_DIR/LOG_DIR`，子进程结束后自动删除，不污染正式日志。
+- FastAPI lifespan 在退出时会停止并等待 Cron、研发协调器、RAG dispatcher 与实例心跳，确保数据库工作线程不会在事件循环关闭后继续回调。
 - 每个 HTTP 响应携带 `X-Request-ID`，相同 ID 会进入应用日志，便于串联排障。
 - 工具日志只记录工具名、参数字段名、检索源、耗时和状态，不记录 API Key 或完整请求内容。
+- `launcher/backend*.log` 通过 `backend/uvicorn-log-config.json` 为 Uvicorn 原始输出补充时间戳；正式排障仍优先使用 `runtime/` 日志及下方统一查看命令。
+- 后台启动前端时会设置 `NO_COLOR=1`、`npm_config_color=false` 并移除 `FORCE_COLOR`，避免 Vite 的 ANSI 颜色控制码污染 `launcher/frontend*.log`；交互式 `-ShowTerminals` 模式仍保留终端颜色。
 
-统一查看命令会自动合并多个 PID 文件，无需人工寻找最新 Worker：
+统一查看命令会自动发现多个 PID 文件，并按每行时间戳合并为同一条时间轴，无需人工寻找最新 Worker：
 
 ```powershell
 # 最近 100 行应用日志
@@ -281,23 +284,22 @@ logs/
 ## 7. 验收脚本
 
 ```powershell
-# 空间隔离与管理边界（46 项）
-python -m scripts.qa_verify_space
+# 首次安装开发测试依赖
+python -m pip install -r backend/requirements-dev.txt
 
-# 后端目录、公开入口与依赖方向
-python -m scripts.qa_verify_backend_architecture
+# 日常快速回归 / 提交前核心回归 / 完整回归
+pytest -m fast
+pytest -m core
+pytest
 
-# 后台 Agent runner（19 项）
-python -m scripts.qa_verify_agent_runner
+# 查看套件，不执行；或按领域定位
+pytest --collect-only
+pytest tests/backend/chat
+pytest tests/backend/rag/test_vectors.py
 
-# 正确性修复（论文旧库迁移、Cron 并发/API、公式、版本、RAG、CLI）
-python -m scripts.qa_verify_correctness
-python -m scripts.qa_verify_agent_teams       # 专家团队与 DAG（39 项）
-
-# Python 语法与全部独立 QA（PowerShell）
-python -m compileall -q backend scripts
-Get-ChildItem scripts/qa_verify_*.py | ForEach-Object { python -m "scripts.$($_.BaseName)"; if ($LASTEXITCODE) { throw $_.Name } }
-Get-ChildItem scripts/qa_verify_*.mjs | ForEach-Object { node $_.FullName; if ($LASTEXITCODE) { throw $_.Name } }
+# Python 语法与完整后端测试
+python -m compileall -q backend scripts tests
+pytest -x
 
 # 前端护栏
 Push-Location frontend
@@ -307,4 +309,19 @@ npm run build
 Pop-Location
 ```
 
-QA 脚本使用隔离的临时 `DATA_DIR` 或 mock，不会污染现有数据。包含 Unicode 符号的脚本会主动配置 UTF-8，可直接在 Windows 默认 PowerShell 中运行。需要 `aiosqlite / fastapi / httpx / uvicorn`。
+pytest 在 `tests/backend/` 发现 15 个领域测试模块。共享夹具为复杂回归启动独立 Python 子进程，避免 `DATA_DIR`、logging handler、模块缓存和环境变量跨测试泄漏，并把退出码为 0 的后台线程/事件循环异常判为失败。读取真实业务数据的人工排障脚本位于 `tests/diagnostics/`，文件名不符合 pytest 收集规则，不会进入自动回归。`python -m tests.diagnostics.check_notes_bagel` 会读取当前 `DATA_DIR` 对应的真实数据库，仅用于人工确认 BAGEL 笔记是否存在，不能作为测试结果。
+
+前端历史上的 SSE、Markdown 表格和专家团队静态 QA 已迁入 `frontend/src/**/*.test.ts(x)`，由 Vitest 统一发现；`scripts/` 不再保留游离的 `qa_verify_*` 入口。
+
+### 7.1 CI 门禁
+
+`.github/workflows/ci.yml` 在 `main` push 和所有 Pull Request 上使用 Windows、Python 3.12 与 Node 22：
+
+1. 安装 `backend/requirements-dev.txt` 与前端锁定依赖；
+2. 执行 `npm run verify`；
+3. 执行完整 `python -m pytest`；
+4. 上传保留 14 天的 JUnit `pytest-report`。
+
+工作流失败会返回非零状态。若要在 GitHub 服务端禁止绕过红灯合并，还需在仓库
+`Settings → Rules → Rulesets` 中为 `main` 启用“Require status checks to pass”，并选择
+`Frontend and backend verification`。这是仓库权限设置，无法仅通过工作流文件强制开启。

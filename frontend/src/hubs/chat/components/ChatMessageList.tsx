@@ -2,7 +2,7 @@ import type { Dispatch, RefObject, SetStateAction } from 'react'
 import { Bot, Check, ChevronLeft, ChevronRight, Copy, Edit3, Loader2, RefreshCw, Sparkles, User } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { cn } from '@/utils'
+import { cn, stripToolCallTrace } from '@/utils'
 import type { Conversation, Message, RagSource, ReasoningStep } from '../types'
 import type { GenPhase } from '../services/chatGenerationManager'
 import { AssistantMessageBody } from './AssistantMessageBody'
@@ -263,7 +263,7 @@ export function ChatMessageList({
                               variant="ghost"
                               size="sm"
                               className="h-7 px-2"
-                              onClick={() => onCopyMessage(extractTextFromContent(message.content), message.id)}
+                              onClick={() => onCopyMessage(stripToolCallTrace(extractTextFromContent(message.content)), message.id)}
                             >
                               {copiedId === message.id ? (
                                 <Check className="w-3 h-3 mr-1" />
@@ -298,7 +298,7 @@ export function ChatMessageList({
                       <div className="bg-muted rounded-2xl px-4 py-3 max-w-full">
                         <div className="prose prose-sm dark:prose-invert max-w-none">
                           <MessageContent
-                            content={streamingContent}
+                            content={stripToolCallTrace(streamingContent)}
                             citationSources={streamingRagSources}
                           />
                         </div>

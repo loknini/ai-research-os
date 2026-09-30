@@ -15,6 +15,7 @@ import argparse
 import os
 import signal
 from collections.abc import Sequence
+from pathlib import Path
 
 import uvicorn
 from uvicorn import server as uvicorn_server
@@ -50,11 +51,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     configure_background_signals()
+    log_config = Path(__file__).resolve().parents[1] / "uvicorn-log-config.json"
     uvicorn.run(
         "backend.server.main:app",
         host=args.host,
         port=args.port,
         workers=1,
+        log_config=str(log_config),
     )
     return 0
 

@@ -131,22 +131,14 @@ export function extractArxivId(url: string): string | null {
   return match ? match[1] : null
 }
 
-// 隔离模型原始工具调用痕迹：把 <tool_call>...</tool_call> 这类内部标记从助手
-// 正文里剥离，单独返回，避免其裸奔进主回复。返回 clean（干净正文）与 trace（原始痕迹）。
-export function sanitizeToolCallTrace(content: string): { clean: string; trace: string | null } {
-  if (!content) return { clean: content, trace: null }
-  const re = /<tool_call[\s\S]*?<\/tool_call>/gi
-  const matches = content.match(re)
-  if (!matches || matches.length === 0) {
-    // 兜底：即便没有完整 <tool_call> 包裹，也清掉零散的 <function=...> 残留标签文本
-    const stray = /<\/?function=[^>]*>/gi
-    if (stray.test(content)) {
-      const clean = content.replace(stray, '').replace(/\n{3,}/g, '\n\n').trim()
-      return { clean, trace: null }
-    }
-    return { clean: content, trace: null }
-  }
-  const trace = matches.join('\n\n')
-  const clean = content.replace(re, '').replace(/\n{3,}/g, '\n\n').trim()
-  return { clean, trace }
+// 清除模型误作为普通文本输出的工具协议。该内容既不展示，也不保留调试副本；
+// 未闭合的 <tool_call> 尾部同样丢弃，避免流式生成过程中短暂裸露内部标记。
+export function stripToolCallTrace(content: string): string {
+  if (!content) return content
+  return content
+    .replace(/<tool_call\b[^>]*>[\s\S]*?(?:<\/tool_call\s*>|$)/gi, '')
+    .replace(/<function(?:\b|=)[^>]*>[\s\S]*?(?:<\/function\s*>|$)/gi, '')
+    .replace(/<\/?(?:tool_call\b|function(?:\b|=)|parameter(?:\b|=))[^>]*>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }

@@ -1,5 +1,5 @@
 import { ChevronRight, Loader2, Check, X } from 'lucide-react'
-import { cn } from '@/utils'
+import { cn, stripToolCallTrace } from '@/utils'
 import { ReasoningStep } from '../types'
 
 export function ReasoningPanel({ steps, open, onToggle }: { steps: ReasoningStep[]; open?: boolean; onToggle?: () => void }) {
@@ -18,7 +18,7 @@ export function ReasoningPanel({ steps, open, onToggle }: { steps: ReasoningStep
       <div className="px-3 pb-3 space-y-2">
         {steps.map((s, i) =>
           s.kind === 'text' ? (
-            <p key={i} className="text-xs text-muted-foreground/90 leading-relaxed whitespace-pre-wrap border-l-2 border-border pl-2">{s.content}</p>
+            <p key={i} className="text-xs text-muted-foreground/90 leading-relaxed whitespace-pre-wrap border-l-2 border-border pl-2">{stripToolCallTrace(s.content)}</p>
           ) : (
             <div key={i} className="rounded-lg bg-background/60 px-2.5 py-2 border border-border/50">
               <div className="flex items-center gap-1.5 text-xs">

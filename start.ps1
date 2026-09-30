@@ -88,6 +88,7 @@ $env:LOG_DIR = $LogDir
 # 项目内虚拟环境（不污染全局 Python）
 $VenvDir = "$ProjectDir\.venv"
 $VenvPython = "$VenvDir\Scripts\python.exe"
+$UvicornLogConfig = "$ProjectDir\backend\uvicorn-log-config.json"
 $RequirementsFile = "$ProjectDir\backend\requirements.txt"
 $RequirementsStamp = "$VenvDir\.airos-requirements.sha256"
 
@@ -224,7 +225,9 @@ function Rotate-Log {
 function Start-NoConsoleCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Command,
-        [Parameter(Mandatory = $true)][string]$WorkingDirectory
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [hashtable]$Environment = @{},
+        [string[]]$RemoveEnvironment = @()
     )
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $env:ComSpec
@@ -233,6 +236,12 @@ function Start-NoConsoleCommand {
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+    foreach ($name in $RemoveEnvironment) {
+        [void]$startInfo.Environment.Remove($name)
+    }
+    foreach ($entry in $Environment.GetEnumerator()) {
+        $startInfo.Environment[$entry.Key] = [string]$entry.Value
+    }
     return [System.Diagnostics.Process]::Start($startInfo)
 }
 
@@ -394,13 +403,13 @@ if (-not $SkipBackend) {
         if ($IsWindowsRuntime) {
             $backendCommand = '""{0}" -m backend.server.windows_daemon --port {1} 1>>"{2}" 2>>"{3}""' -f $VenvPython, $ApiPort, "$LauncherLogDir\backend.log", "$LauncherLogDir\backend.err.log"
         } else {
-            $backendCommand = '""{0}" -m uvicorn backend.server.main:app --port {1} --workers {2} 1>>"{3}" 2>>"{4}""' -f $VenvPython, $ApiPort, $Workers, "$LauncherLogDir\backend.log", "$LauncherLogDir\backend.err.log"
+            $backendCommand = '""{0}" -m uvicorn backend.server.main:app --port {1} --workers {2} --log-config "{3}" 1>>"{4}" 2>>"{5}""' -f $VenvPython, $ApiPort, $Workers, $UvicornLogConfig, "$LauncherLogDir\backend.log", "$LauncherLogDir\backend.err.log"
         }
         $beProc = Start-NoConsoleCommand -Command $backendCommand -WorkingDirectory $ProjectDir
         Set-Content -LiteralPath "$StateDir\backend.pid" -Value $beProc.Id -Encoding Ascii -NoNewline
         Write-Host "   🔇 后台运行中 (PID $($beProc.Id)，日志: $LauncherLogDir\backend.log)" -ForegroundColor Gray
     } else {
-        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ProjectDir'; & '$VenvPython' -m uvicorn backend.server.main:app --port $ApiPort --workers $Workers" -WindowStyle Normal
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$ProjectDir'; & '$VenvPython' -m uvicorn backend.server.main:app --port $ApiPort --workers $Workers --log-config '$UvicornLogConfig'" -WindowStyle Normal
     }
 
     # 等待后端就绪（除非显式跳过 LLM 校验也仍等待健康检查）
@@ -461,7 +470,10 @@ if (-not $SkipFrontend) {
         $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
         if (-not $npmCmd) { $npmCmd = "npm" }
         $frontendCommand = '""{0}" run dev -- --port {1} 1>>"{2}" 2>>"{3}""' -f $npmCmd, $FrontendPort, "$LauncherLogDir\frontend.log", "$LauncherLogDir\frontend.err.log"
-        $feProc = Start-NoConsoleCommand -Command $frontendCommand -WorkingDirectory "$ProjectDir\frontend"
+        # Vite 的彩色终端输出包含 ANSI 控制码；重定向到文件时必须显式关闭颜色。
+        # 同时移除可能由父终端设置的 FORCE_COLOR，避免它覆盖 NO_COLOR。
+        $frontendEnvironment = @{ NO_COLOR = "1"; npm_config_color = "false" }
+        $feProc = Start-NoConsoleCommand -Command $frontendCommand -WorkingDirectory "$ProjectDir\frontend" -Environment $frontendEnvironment -RemoveEnvironment @("FORCE_COLOR")
         Set-Content -LiteralPath "$StateDir\frontend.pid" -Value $feProc.Id -Encoding Ascii -NoNewline
         Write-Host "   🔇 后台运行中 (PID $($feProc.Id)，日志: $LauncherLogDir\frontend.log)" -ForegroundColor Gray
     } else {

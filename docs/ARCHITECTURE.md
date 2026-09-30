@@ -35,7 +35,7 @@
 
 **CRUD**：业务 service → `services/api.ts` 注入请求头并执行 `fetch /api/papers` → `Depends(get_space_id)`（<4 → 400）→ `get_db()` 独立 `aiosqlite` 连接（`busy_timeout=5000 → WAL → NORMAL → foreign_keys=ON`，有限重试）→ `WHERE space_id=?` → `*_to_dict` 转 `camelCase`。
 
-**Chat SSE**：`POST /api/chat/completions/stream` → 载入历史+记忆+RAG 预检索 → `context.compact_messages` 超限摘要 → `llm.stream_llm(tools)` ReAct 循环（`tool_start/tool_result/context/rag_sources`）→ `[DONE]`。前端 `chatGenerationManager` 单例保证切 Hub 不中断（前端级后台），`ChatPanel` 与 ChatHub 共享同一会话。
+**Chat SSE**：`POST /api/chat/completions/stream` → 载入历史+记忆+RAG 预检索 → `context.compact_messages` 超限摘要 → `llm.stream_llm(tools)` ReAct 循环（`tool_start/tool_result/context/rag_sources`）→ `services.chat_guard` 限制重复/过量/连续失败并跨分块剥离文本式工具协议 → `[DONE]`。前端 `chatGenerationManager` 单例保证切 Hub 不中断（前端级后台），`ChatPanel` 与 ChatHub 共享同一会话，并在渲染和落库前再次清理工具协议痕迹。
 
 **Agent 后台**：`POST /api/agent/runs` → `submit_run` 落库+`threading.Event`+守护线程（`new_event_loop`）→ 按 DAG 拓扑/`maxConcurrency` 并发节点，`__approval_required/__replay` 内部事件，帧逐条落 `agent_run_events` → 前端 DB 轮询 SSE（`after_id` 游标，0.6s）→ 双层取消（内存 Event + DB `cancelled`）。
 

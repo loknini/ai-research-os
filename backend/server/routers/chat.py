@@ -3,17 +3,20 @@
 行为与历史 ``scripts/chat_agent_stream.py`` 的系统提示和工具调用保持一致，但实际
 流式请求由 ``LLMClient.stream_llm`` 完成，因此 LLM 端点可完整配置且无需启动子进程。
 
-本文件在原有 ReAct 循环基础上叠加了三项增强（对应近期需求）：
+本文件在原有 ReAct 循环基础上叠加了四项增强（对应近期需求）：
 1. **指令型 skill 注入 system prompt**：指令型技能被调用时，把 SKILL.md 正文注入
    系统提示（仅一次），tool_result 改为精简确认，避免每段正文每轮重发浪费 token。
 2. **上下文窗口记录 + 压缩**：每轮估算 token 用量并以 ``context`` 事件上报；超阈值时
    把中间历史摘要成单条 system 消息（保持 tool_call 配对不被切断、记忆上下文保留）。
 3. **持久记忆注入**：从 ``X-Space-Key`` 解析空间，把该空间的长期记忆注入系统提示，
    实现「AI 越用越懂用户」。
+4. **工具循环保护**：限制重复调用、搜索次数与连续失败，并从流中剥离模型误输出的
+   ``<tool_call>`` 协议，保证调试痕迹不会进入用户正文。
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any, List, Optional
@@ -27,9 +30,16 @@ from ..llm import LLMUnavailableError, llm_client
 from ..memory import memory_prompt
 from ..schemas import ChatRequest
 from ..rag import service as rag_service
+from ..services.chat_guard import (
+    ToolCallGuard,
+    ToolTraceStreamFilter,
+    blocked_tool_result,
+    strip_tool_call_traces,
+)
 from scripts.chat_agent_stream import SYSTEM_PROMPT, execute_tool, is_skill_tool, TOOLS
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 # 上下文窗口（token 估算）相关配置：统一实现见 backend/server/context.py，
 # 此处保留旧名导出，Chat 路由其余代码无需改动。
@@ -41,11 +51,11 @@ from ..context import (
 
 
 def _usage_sse(item: Any) -> Optional[str]:
-    """把可选的 LLM 用量项转换为浏览器端 SSE 契约。"""
+    """把单次 LLM 请求的最终用量转换为浏览器端 SSE 契约。"""
     if not isinstance(item, dict) or not isinstance(item.get("usage"), dict):
         return None
     usage = item["usage"]
-    return f"data: {json.dumps({'type': 'usage', **usage}, ensure_ascii=False)}\n\n"
+    return f"data: {json.dumps({'type': 'usage', **usage, 'api_calls': 1}, ensure_ascii=False)}\n\n"
 
 
 # --------------------------------------------------------------------------- #
@@ -173,7 +183,7 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
             content={"success": False, "error": "INVALID_REQUEST", "message": "messages required"},
         )
 
-    MAX_TURNS = 6  # 防止模型无限循环调用工具的安全上限
+    MAX_TURNS = 6  # 模型推理轮次上限；工具数量另由 ToolCallGuard 单独约束。
 
     async def event_stream():
         # RAG 文档检索接地：先发 retrieving 首字节事件（毫秒级），再同步检索。
@@ -281,74 +291,105 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
             yield f"data: {SSE_DONE}\n\n"
             return
 
-        # 多轮 ReAct 循环：每轮都携带 TOOLS，让模型可持续调用工具并基于结果反思，
-        # 直到模型不再请求工具（产出最终自然语言回答）或达到 MAX_TURNS 上限。
+        # 多轮 ReAct 循环：模型可根据工具结果继续推理，但请求级保护器会拦截
+        # 重复调用、过量搜索与连续失败，避免模型把外部服务拖入无限重试。
         messages: List[dict] = list(formatted)
         injected_skills: set = set()  # 已注入 system prompt 的指令型技能（仅注入一次）
+        tool_guard = ToolCallGuard()
         final_answer_text: str = ""
-        for _ in range(MAX_TURNS):
+        answer_complete = False
+        force_final_reason: Optional[str] = None
+
+        for turn_index in range(MAX_TURNS):
             # 上下文压缩（超阈值时把中间历史摘要为单条 system 消息）
             messages, compressed = _compact(messages)
             yield f"data: {json.dumps({'type': 'context', 'estimated_tokens': _estimate_request_tokens(messages, TOOLS), 'limit': CONTEXT_TOKEN_LIMIT, 'compressed': compressed}, ensure_ascii=False)}\n\n"
 
-            assistant_text: str = ""
+            assistant_text = ""
             tool_calls_this_turn: List[dict] = []
+            trace_filter = ToolTraceStreamFilter()
             try:
                 for item in llm_client.stream_llm(messages, tools=TOOLS):
                     if isinstance(item, str):
-                        assistant_text += item
-                        yield f"data: {json.dumps({'type': 'text', 'content': item}, ensure_ascii=False)}\n\n"
+                        clean_chunk = trace_filter.feed(item)
+                        if clean_chunk:
+                            assistant_text += clean_chunk
+                            yield f"data: {json.dumps({'type': 'text', 'content': clean_chunk}, ensure_ascii=False)}\n\n"
                     elif isinstance(item, dict) and "tool_calls" in item:
                         tool_calls_this_turn = item["tool_calls"]
                     else:
                         usage_event = _usage_sse(item)
                         if usage_event:
                             yield usage_event
+                clean_tail = trace_filter.finish()
+                if clean_tail:
+                    assistant_text += clean_tail
+                    yield f"data: {json.dumps({'type': 'text', 'content': clean_tail}, ensure_ascii=False)}\n\n"
             except LLMUnavailableError as exc:
                 yield sse_error(f"LLM 服务不可用：{exc}")
                 yield f"data: {SSE_DONE}\n\n"
                 return
 
-            # 本轮没有请求工具 -> 已经是最终回答，结束循环
+            assistant_text = strip_tool_call_traces(assistant_text)
+            # 没有原生工具调用时，本轮应当是最终自然语言回答。若模型只输出了
+            # 文本协议，则进入强制收尾，不能把空白或调试标记作为答案保存。
             if not tool_calls_this_turn:
+                if trace_filter.removed_trace and not assistant_text:
+                    force_final_reason = "模型返回了非标准的文本工具调用协议"
+                    break
                 final_answer_text = assistant_text
+                answer_complete = True
                 break
 
-            # 执行本轮的工具调用
             results = []
+            round_stop_reason: Optional[str] = None
             for call in tool_calls_this_turn:
-                name = call.get("name")
+                name = str(call.get("name") or "")
                 params = _parse_tool_arguments(call.get("arguments", {}))
-                yield f"data: {json.dumps({'type': 'tool_start', 'tool': name, 'parameters': params}, ensure_ascii=False)}\n\n"
-                result = execute_tool(name, params, space_id=space_id)
 
-                # 指令型技能：正文注入 system prompt（仅一次），tool_result 改为精简确认
-                if is_skill_tool(name) and result.get("type") == "instruction":
-                    body = result.get("instructions", "")
-                    if body and name not in injected_skills:
-                        injected_skills.add(name)
-                        sys_msg = messages[0]
-                        if sys_msg.get("role") == "system":
-                            sys_msg["content"] = (
-                                sys_msg.get("content", "")
-                                + f"\n\n## 已加载技能「{name}」操作指引\n{body}"
-                            )
-                    result_out = {
-                        "success": True,
-                        "skill": name,
-                        "type": "instruction",
-                        "note": (
-                            f"已加载技能「{name}」的操作指引到系统提示中，请遵循其指示用既有工具执行，"
-                            f"不要再调用该技能工具。"
-                        ),
-                    }
+                if round_stop_reason:
+                    result_out = blocked_tool_result(round_stop_reason)
                 else:
-                    result_out = result
+                    decision = tool_guard.inspect(name, params)
+                    if not decision.allowed:
+                        round_stop_reason = decision.reason or "工具调用已被安全策略拦截"
+                        result_out = blocked_tool_result(round_stop_reason)
+                    else:
+                        yield f"data: {json.dumps({'type': 'tool_start', 'tool': name, 'parameters': params}, ensure_ascii=False)}\n\n"
+                        result = execute_tool(name, params, space_id=space_id)
 
-                yield f"data: {json.dumps({'type': 'tool_result', 'tool': name, 'result': result_out}, ensure_ascii=False)}\n\n"
+                        # 指令型技能：正文注入 system prompt（仅一次），tool_result 改为精简确认
+                        if is_skill_tool(name) and result.get("type") == "instruction":
+                            body = result.get("instructions", "")
+                            if body and name not in injected_skills:
+                                injected_skills.add(name)
+                                sys_msg = messages[0]
+                                if sys_msg.get("role") == "system":
+                                    sys_msg["content"] = (
+                                        sys_msg.get("content", "")
+                                        + f"\n\n## 已加载技能「{name}」操作指引\n{body}"
+                                    )
+                            result_out = {
+                                "success": True,
+                                "skill": name,
+                                "type": "instruction",
+                                "note": (
+                                    f"已加载技能「{name}」的操作指引到系统提示中，请遵循其指示用既有工具执行，"
+                                    f"不要再调用该技能工具。"
+                                ),
+                            }
+                        else:
+                            result_out = result
+
+                        yield f"data: {json.dumps({'type': 'tool_result', 'tool': name, 'result': result_out}, ensure_ascii=False)}\n\n"
+                        failure_reason = tool_guard.record_result(result_out)
+                        if failure_reason:
+                            round_stop_reason = failure_reason
+
                 results.append((call.get("id", ""), name, result_out, call.get("arguments", {})))
 
-            # 把「助手消息（含 tool_calls）」与「工具结果」回灌，进入下一轮反思
+            # 即便部分调用被拦截，也为每个原生 tool_call 回灌配对结果，避免兼容接口
+            # 因缺失 tool_call_id 对应项而拒绝下一次收尾请求。
             messages.append({
                 "role": "assistant",
                 "content": assistant_text,
@@ -364,27 +405,68 @@ async def chat_completions(req: ChatRequest, space_id: str = Depends(get_space_i
                     for (cid, cname, _res, args) in results
                 ],
             })
-            for cid, cname, res, _args in results:
+            for cid, _cname, res, _args in results:
                 messages.append({
                     "role": "tool",
                     "tool_call_id": cid,
                     "content": json.dumps(res, ensure_ascii=False),
                 })
+
+            if round_stop_reason:
+                force_final_reason = round_stop_reason
+                logger.warning(
+                    "chat.tool_guard_triggered reason=%s turn=%d executed_calls=%d",
+                    round_stop_reason,
+                    turn_index + 1,
+                    tool_guard.total_calls,
+                )
+                break
         else:
-            # 达到最大轮次仍有未处理的工具调用：强制做一次无工具的最终回答
+            force_final_reason = f"模型已达到最大推理轮次 {MAX_TURNS}"
+
+        if not answer_complete:
+            # 收尾请求不再提供 tools，并追加明确约束。即使模型仍输出文本式协议，
+            # 流过滤器也会将其丢弃；完全没有自然语言时返回稳定的可见错误说明。
+            final_instruction = (
+                f"工具调用阶段已经结束（原因：{force_final_reason or '安全限制'}）。"
+                "请立即基于已经取得的工具结果回答用户；资料不足时明确说明。"
+                "禁止继续调用任何工具，禁止输出 <tool_call>、<function>、<parameter> "
+                "或其他工具协议标记，只能输出面向用户的自然语言答案。"
+            )
+            if messages and messages[0].get("role") == "system":
+                messages[0] = {
+                    **messages[0],
+                    "content": messages[0].get("content", "") + "\n\n## 工具调用收尾\n" + final_instruction,
+                }
+            else:
+                messages.insert(0, {"role": "system", "content": final_instruction})
             assistant_text = ""
+            final_filter = ToolTraceStreamFilter()
             try:
                 for item2 in llm_client.stream_llm(messages):
                     if isinstance(item2, str):
-                        assistant_text += item2
-                        yield f"data: {json.dumps({'type': 'text', 'content': item2}, ensure_ascii=False)}\n\n"
+                        clean_chunk = final_filter.feed(item2)
+                        if clean_chunk:
+                            assistant_text += clean_chunk
+                            yield f"data: {json.dumps({'type': 'text', 'content': clean_chunk}, ensure_ascii=False)}\n\n"
                     else:
                         usage_event = _usage_sse(item2)
                         if usage_event:
                             yield usage_event
+                clean_tail = final_filter.finish()
+                if clean_tail:
+                    assistant_text += clean_tail
+                    yield f"data: {json.dumps({'type': 'text', 'content': clean_tail}, ensure_ascii=False)}\n\n"
             except LLMUnavailableError as exc:
                 yield sse_error(f"LLM 服务不可用：{exc}")
-            final_answer_text = assistant_text
+
+            final_answer_text = strip_tool_call_traces(assistant_text)
+            if not final_answer_text:
+                final_answer_text = (
+                    "工具调用已停止，但模型没有生成有效的自然语言回答。"
+                    "请稍后重试，或缩小问题范围后再次提问。"
+                )
+                yield f"data: {json.dumps({'type': 'text', 'content': final_answer_text}, ensure_ascii=False)}\n\n"
 
         # RAG 引用溯源：只在 LLM 最终答案中实际标注 [n] 的来源才回传给前端，
         # 避免把检索 top-k 全部展示造成的“乱引用”。

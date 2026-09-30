@@ -261,17 +261,17 @@ dims / normalized / query instruction；不同 profile 的向量禁止相互计�
 ## 6. 验证
 
 ```bash
-# 空间隔离验收（26 项：跨空间隔离、400 校验、20 路并发、WAL、连接不共享、表结构等）
-python -m scripts.qa_verify_space
+# 空间隔离、管理边界与架构验收
+pytest tests/backend/infrastructure/test_imports.py
 
-# 后台 Agent runner 验收（19 项）
-python -m scripts.qa_verify_agent_runner
+# 后台 Agent runner 与审批/重放验收
+pytest tests/backend/agents/test_runtime.py
 
 # LLM 可达性与状态端点（不触网）
-python -m scripts.qa_verify_llm_status
+pytest tests/backend/infrastructure/test_optional_dependencies.py -k llm-status
 
 # 显式迁移账本、幂等、校验和、未来版本拒绝与事务回滚
-python -m scripts.qa_verify_migrations
+pytest tests/backend/infrastructure/test_migrations.py -k schema-migrations
 ```
 
-两个脚本都使用隔离的临时 `DATA_DIR` + 真实 aiosqlite + `TestClient`，不会污染现有数据库。运行需要 `aiosqlite / fastapi / httpx / uvicorn`。
+共享 fixture 使用隔离的临时 `DATA_DIR` + 真实 aiosqlite + `TestClient`，不会污染现有数据库。运行前安装 `backend/requirements-dev.txt`。

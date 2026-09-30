@@ -95,16 +95,32 @@ endpoint = LLM_BASE_URL.rstrip("/") + LLM_HTTP_PATH
 用户消息
  → 载入会话历史
  → 注入该空间持久记忆（data/memory/<space_id>.md）
- → 估算 token，超过 Chat 的 CONTEXT_TOKEN_LIMIT=16000（Agent 另用 AGENT_CONTEXT_TOKEN_LIMIT=24000）时调 LLM 压缩早期历史
+ → 估算 token，超过当前模型的 contextWindow（未配置时回落 512000；Agent 另用 AGENT_CONTEXT_TOKEN_LIMIT）时调 LLM 压缩早期历史
  → stream_llm(messages, tools=TOOLS)
     ├─ 文本 delta      → SSE data: {"type":"text"}
     └─ tool_calls      → {"type":"tool_start"} → execute_tool() → {"type":"tool_result"}
                           → 结果回填 messages，再次进入 stream_llm（多轮循环）
  → {"type":"context", estimated_tokens, limit, compressed}
+ → 每次模型请求结束后发送供应商 usage（prompt/completion/total + api_calls=1）
  → [DONE]
 ```
 
+顶部圆环展示的是**下轮请求上下文估算**，由本地轻量算法计算消息、聊天模板开销和
+工具 schema；它既不是供应商账单，也不是整轮累计用量。本轮用量会把 ReAct 各轮与
+最终收尾等多次模型请求的供应商 usage 相加，并记录请求次数。`LLMClient` 对同一次
+流中可能重复出现的累计 usage 只采用最后一份，避免兼容供应商造成重复计数。
+
 `/skill <name> <args>` 开头的消息会短路整个 LLM 循环，直接调用技能。
+
+工具循环由 `services/chat_guard.py` 做请求级保护：最多 6 轮模型推理、最多 8 次
+实际工具执行，`web_search` 最多 4 次；完全相同的工具与参数不会重复执行，连续失败
+3 次会立即进入无工具收尾。所有被拦截的原生 `tool_call` 仍会补齐配对结果，保证
+OpenAI 兼容端点不会因缺少 `tool_call_id` 而拒绝收尾请求。
+
+模型误输出到普通文本中的 `<tool_call>/<function>/<parameter>` 协议由后端跨 SSE
+分块过滤，前端在实时渲染和落库前再做一次防御性清理。生产界面不展示或保存
+“原始工具调用痕迹”调试面板；达到安全上限后若模型仍不能生成自然语言，会返回
+明确的可见错误，而不是空白回复。
 
 ---
 
@@ -210,7 +226,7 @@ submit_run(space_id, requirement, project_id, roles)
 |---|---|---|
 | 后台 run（唯一） | `POST /api/agent/runs` + 轮询 / SSE / cancel | 非阻塞、可取消、可离开页面、有历史记录 |
 
-旧 `POST /api/agent/run` / `/collaborate` 已于 2026-07-31 删除（见 `TECH-DEBT.md:T3`），前端已切后台 run；`hubs/agent-runs/` 提供运行历史与事件时间线。Chat 的切 Hub 不中断是前端 `chatGenerationManager` 单例实现，与此后台 runner 无关。
+旧 `POST /api/agent/run` / `/collaborate` 已于 2026-07-31 删除（见根目录 `CHANGELOG.md` 的 T3 核销记录），前端已切后台 run；`hubs/agent-runs/` 提供运行历史与事件时间线。Chat 的切 Hub 不中断是前端 `chatGenerationManager` 单例实现，与此后台 runner 无关。
 
 ---
 

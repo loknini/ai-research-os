@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import pathlib
@@ -195,26 +196,52 @@ def _summarize(done: dict) -> dict:
             "modes": modes, "details": results}
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="构建、运行或门禁 RAG 黄金集评测")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    build_parser = subparsers.add_parser("build", help="从当前空间生成黄金集")
+    build_parser.add_argument("space", nargs="?", default="__default__")
+    build_parser.add_argument("--count", type=int, default=TARGET_N)
+
+    for command, help_text in (
+        ("run", "运行评测并写入报告"),
+        ("gate", "运行评测并检查固定阈值"),
+    ):
+        command_parser = subparsers.add_parser(command, help=help_text)
+        command_parser.add_argument("space", nargs="?", default="__default__")
+        command_parser.add_argument("max_items", nargs="?", type=int, default=0)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    if args.command == "build":
+        if args.count < 1:
+            _build_parser().error("--count 必须大于 0")
+        asyncio.run(build(args.space, args.count))
+        return 0
+
+    report = asyncio.run(run(args.space, args.max_items))
+    if args.command != "gate":
+        return 0
+
+    failures = []
+    if report.get("done") != report.get("n"):
+        failures.append(f"incomplete {report.get('done')}/{report.get('n')}")
+    if float(report.get("hit@1") or 0) < GATE_HIT1:
+        failures.append(f"hit@1 < {GATE_HIT1}")
+    if float(report.get("hit@5") or 0) < GATE_HIT5:
+        failures.append(f"hit@5 < {GATE_HIT5}")
+    faith = report.get("faithfulness")
+    if faith is not None and float(faith) < GATE_FAITH:
+        failures.append(f"faithfulness < {GATE_FAITH}")
+    if failures:
+        print("RAG_GOLDEN_GATE_FAILED: " + "; ".join(failures))
+        return 1
+    print("RAG_GOLDEN_GATE_PASS")
+    return 0
+
+
 if __name__ == "__main__":
-    cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
-    sp = sys.argv[2] if len(sys.argv) > 2 else "__default__"
-    if cmd == "build":
-        asyncio.run(build(sp))
-    else:
-        mx = int(sys.argv[3]) if len(sys.argv) > 3 else 0
-        report = asyncio.run(run(sp, mx))
-        if cmd == "gate":
-            failures = []
-            if report.get("done") != report.get("n"):
-                failures.append(f"incomplete {report.get('done')}/{report.get('n')}")
-            if float(report.get("hit@1") or 0) < GATE_HIT1:
-                failures.append(f"hit@1 < {GATE_HIT1}")
-            if float(report.get("hit@5") or 0) < GATE_HIT5:
-                failures.append(f"hit@5 < {GATE_HIT5}")
-            faith = report.get("faithfulness")
-            if faith is not None and float(faith) < GATE_FAITH:
-                failures.append(f"faithfulness < {GATE_FAITH}")
-            if failures:
-                print("RAG_GOLDEN_GATE_FAILED: " + "; ".join(failures))
-                raise SystemExit(1)
-            print("RAG_GOLDEN_GATE_PASS")
+    raise SystemExit(main())

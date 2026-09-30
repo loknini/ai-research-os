@@ -69,6 +69,8 @@ interface TokenUsage {
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
+  /** 已纳入这组用量的模型 API 请求次数；旧会话可能没有该字段。 */
+  api_calls?: number
 }
 
 interface ChatContextInfo {

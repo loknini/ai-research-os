@@ -1,0 +1,4 @@
+﻿# 后端开发与测试依赖；生产运行时无需安装。
+-r requirements.txt
+pytest>=8.3,<9
+httpx2>=2.13,<3

@@ -60,8 +60,8 @@ describe('completed generation handoff', () => {
 describe('token usage accounting', () => {
   it('accumulates exact provider usage across turns', () => {
     expect(addTokenUsage(
-      { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
-      { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230 }
-    )).toEqual({ prompt_tokens: 300, completion_tokens: 50, total_tokens: 350 })
+      { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, api_calls: 1 },
+      { prompt_tokens: 200, completion_tokens: 30, total_tokens: 230, api_calls: 2 }
+    )).toEqual({ prompt_tokens: 300, completion_tokens: 50, total_tokens: 350, api_calls: 3 })
   })
 })

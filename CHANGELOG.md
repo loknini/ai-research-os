@@ -6,7 +6,12 @@
 
 ## [Unreleased] - 2026-09-17 · RAG 2.1 正确性与可恢复性
 
+- 后端回归迁入 pytest：按 Chat、Agent、RAG、论文与基础设施整理为 15 个测试模块，提供 `fast/core` markers 和共享子进程隔离夹具；原有复杂回归实现移出 `scripts/`，BAGEL 真实数据检查移入不自动收集的 `tests/diagnostics/`。
+- 新增 GitHub Actions 前后端完整门禁与 JUnit 报告；pytest 增加 `isolated_runtime`、`app_client` 原生 fixture，Chat 工具循环和 LLM 状态不再依赖旧 case 子进程。3 个游离的前端 QA 脚本也已迁入 Vitest，SSE、Markdown 表格与专家团队架构契约会随 `npm run verify` 自动执行。RAG 黄金集 CLI 改用 argparse，非法命令不再误触发评测。
+- Chat ReAct 新增请求级工具熔断：阻止相同参数重复调用，限制工具总量与 `web_search` 次数，连续失败后强制无工具收尾；后端跨 SSE 分块过滤文本式工具协议，前端删除原始工具调用调试面板并在渲染、复制、落库前二次清理。
+- FastAPI 关闭时显式停止并等待 Cron、研发协调器、RAG dispatcher 与实例心跳，消除后台数据库线程在事件循环关闭后回调产生的 `Event loop is closed`。
 - 日志统一收口到项目根 `logs/`：启动器、运行期、归档与 PID 状态分层存放；多 Worker 继续按 PID 安全写入，服务停止后按日期归档，启动时按保留天数和最大文件数双重清理。QA 自动使用临时日志目录，并新增跨 PID 统一查看命令。
+- 后端启动器日志增加毫秒级时间戳，前端后台日志关闭 ANSI 颜色控制码，统一查看器按行时间合并多 PID 输出；Chat Token 面板区分下轮上下文估算与本轮多次模型调用累计，展示 API 请求次数，并对供应商重复发送的流式 usage 快照去重。
 - 数据库层从 5,168 行单文件拆为连接内核、版本化迁移与 13 个领域仓储模块；`scripts/database.py` 保留兼容门面。新增 `schema_migrations` 账本、迁移校验和、跨进程启动锁、未来版本拒绝、事务回滚和专项 QA。
 - 系统级设置、备份、SwanLab 与 Skills 增加管理访问边界：本机免登录，远程必须使用 `ADMIN_TOKEN` / `X-Admin-Token`；Vite 转发保留真实客户端地址，启动时明确报告保护状态。
 - 备份导入改为完整暂存、SQLite 预检、原子文件替换和失败自动回滚；导入/导出增加跨 Worker 互斥锁，并用持久导入日志在 Worker 崩溃后的下次启动自动恢复一致性快照。
@@ -20,7 +25,35 @@
 - `sqlite-vec==0.1.9` 进入默认后端依赖；启动预检会实际加载扩展并查询版本，避免安装成功但扩展不可加载时延迟到检索阶段才失败，运行时仍保留 FTS5/流式余弦降级。
 - 备份导出改用 SQLite Online Backup API 生成 WAL 一致性快照，排除实例心跳、WAL/SHM 与备份输出；导入前的回滚快照采用同一规则，修复 Windows 文件占用导致的导出失败。
 - 公式历史更新/删除收回共享异步数据库层，不再通过子进程争用 SQLite 写锁；只读 CLI 子进程跳过后端已完成的重复迁移，修复请求偶发卡满 60 秒并误报 500，独立 CLI 仍自动初始化数据库。
-- 新增 `qa_verify_rag_v21.py`，覆盖旧库迁移、空间隔离、原子换代、单写者、3000+ 全库召回与 SSRF。
+- RAG 2.1 回归覆盖旧库迁移、空间隔离、原子换代、单写者、3000+ 全库召回与 SSRF；现由 `tests/backend/rag/` 统一发现和执行。
+
+### 技术债审计核销记录（T1–T16，2026-09-30 汇总）
+
+本节承接原 `docs/TECH-DEBT.md` 的历史说明。当前技术债文件只保留未完成事项；历史治理提交可参考
+`5c03c5a`、`26ecf0e`，RAG 2.1 与本轮审计基线为 `dd6a4dd`。
+
+- **T1–T8**：确认 `mask_key` 重复实现、PDF worker CDN、旧 Agent 端点、暗色开关、前端死代码、
+  流式协议伪债、路由懒加载/404 与 `version` 遮蔽均已解决。Chat 路由空间依赖、LLM 客户端去重、
+  RAG 全量扫描治理、关键复合索引和 ChatHub 首轮拆分也完成核验。
+- **审计纠正**：原 T9“无 `sys.path` 注入”与“`apiFetch` 已统一”的结论不符合当时代码实况，
+  分别重新列为 T15 和 T12；原“backup 全租户泄露已修复”只明确了全局能力语义，访问控制问题重新列为 T13。
+- **T10 测试门禁**：建立 `pytest -m fast/core` 与完整回归入口，新增 `isolated_runtime`、`app_client`
+  和统一子进程 fixture；Chat 工具循环与 LLM 状态原生化，3 个游离前端 QA 迁入 Vitest。
+  GitHub Actions 在 Windows 上执行前端 `npm run verify`、后端完整 pytest 并上传 JUnit 报告。
+  GitHub required check 属于仓库设置，启用步骤仍记录在 `docs/TECH-DEBT.md`。
+- **T11 数据库分层与迁移**：拆分 `db/core.py`、版本化 `db/migrations/` 与领域 `db/repos/`，
+  `database.py` 缩为兼容门面；`schema_migrations` 记录版本、名称、校验和、时间与耗时，迁移由跨进程锁串行执行，
+  并覆盖幂等、历史篡改、未来版本拒绝和事务回滚。
+- **T12 前端传输与巨石拆分**：建立唯一 HTTP transport，统一空间键、管理员令牌、连接状态、错误、超时、
+  JSON/FormData/Blob/SSE；删除全局 `fetch` monkey patch，拆分 Chat 和 Settings 入口，ESLint 与
+  `check:architecture` 阻止业务代码重新直连 `fetch` 或入口文件重新膨胀。
+- **T13 管理访问边界**：通过“本机免登录、远程 `ADMIN_TOKEN`”解决，并由远程拒绝与令牌放行测试覆盖。
+- **T14 备份事务化**：通过同盘完整暂存、SQLite 预检、原子替换、跨 Worker 互斥、持久导入日志及
+  失败/崩溃自动恢复解决。
+- **T15 包导入规范化**：移除业务、测试、评测与回填脚本中的 `sys.path` 注入；后端子进程统一从项目根目录
+  使用 `python -m <package.module>`，不再设置 `PYTHONPATH`，公开 CLI 的错误启动方式会给出明确提示。
+- **T16 Obsidian 与临时产物治理**：接通 Obsidian 文件详情和 Markdown/元数据预览；明确 `requests`
+  是 Formula Hub 的 SimpleTex OCR 运行时依赖；清理 Vite 时间戳与 `dist-verify` 残留并同步相关文档。
 
 ---
 
@@ -132,7 +165,7 @@
 - **T6 前端流式协议核查 → 伪债关闭**：全仓流式解析点仅 2 处且分属不同功能（Chat=NDJSON `chatApi.ts`、Agent=SSE `agent-workflow.tsx`），无重复实现；`aiAgent.ts` 仅做本地工具分发，从不实现第二套聊天流。关闭。
 - **T9 导入陷阱彻底解决**：`agent_service` 从 `backend/scripts/` 移入后端正规包（当前正式路径为 `backend/server/agents/service.py`），删除 `backend/scripts/` 目录；`backend/server/__init__.py` 去除全部 `sys.path` 注入；后端改用正规包导入，QA 脚本同步。两套隔离 QA 全绿（space 26/26、agent-runner 19/0），DB 路径隔离仍有效。
 
-待办（仅剩）：**T10 初始化 git + 固化 QA 脚本为回归**（需用户决策是否引入版本控制）。
+> 当时待办为 T10“初始化 git + 固化 QA 脚本为回归”；该项已在 2026-09-30 的汇总审计中核销。
 
 ---
 

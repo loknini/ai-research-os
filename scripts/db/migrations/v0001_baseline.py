@@ -894,7 +894,7 @@ async def _init_db_once(ctx: BaselineContext) -> None:
 
         # Composite space-aware indexes (space_id first) for hot filtered queries.
         # 必须在 space_id 补列迁移之后建：新库建表 DDL 尚无 space_id 列，
-        # 提前建会报 no such column（见 qa_verify_agent_harness 新库回归）。
+        # 提前建会报 no such column（见 Agent harness 新库回归）。
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_space_project ON tasks(space_id, project_id)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_tasks_space_status ON tasks(space_id, status)')
         await conn.execute('CREATE INDEX IF NOT EXISTS idx_notes_space_updated ON notes(space_id, updated_at DESC)')

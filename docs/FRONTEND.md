@@ -209,6 +209,15 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 
 两者都用 `response.body.getReader()` + `TextDecoder` 手写行缓冲（`buffer.split('\n')`，`lines.pop()` 保留半行）。**全站不使用原生 `EventSource`**——因为需要 POST 和自定义请求头。
 
+Chat 正文只展示自然语言与结构化的“思考过程”工具状态；模型误输出的
+`<tool_call>/<function>/<parameter>` 原始协议会在实时渲染、复制和消息落库前清除，
+生产界面不提供原始协议调试面板。历史会话中已经保存的协议痕迹也会在读取渲染时隐藏。
+
+Chat 顶部的上下文圆环明确区分两类指标：“下轮请求上下文（估算）”表示下一次请求
+相对配置窗口的近似占用；“本轮模型调用累计”来自供应商 usage，会累计一次用户提问中
+全部 ReAct/收尾请求并显示请求次数。“会话累计（已计量）”只统计启用 usage 记录后、
+且供应商确实返回用量的轮次，旧会话数据不会伪造补算。
+
 **轮询兜底**：`generation-watcher.tsx` 每 2s 轮询 `GET /api/agent/runs/:id`，终态且 `sourcePath !== location.pathname` 且未通知过 → 弹 toast（带「查看」按钮跳转），随后 `unregister`。
 
 ### 5.4 错误处理三层
@@ -232,7 +241,7 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 值得注意的几个：
 
 - **`toast.tsx` 有两套 API 并存**：模块级发布订阅（全局 `toast({title, description, variant, action})` + `GlobalToastContainer`，3s 自动消失）与旧的局部 `useToast()`（返回 `{showToast, ToastContainer}`）。ChatHub / PaperHub / Formula / Citation 用后者，其余用前者。
-- **`pdf-viewer.tsx`**：翻页 / 缩放（0.2 步进，上限 3.0）/ 下载；worker 已本地打包（`pdfjs-dist/build/pdf.worker.min.mjs?url`，见 `TECH-DEBT.md:T2`），不再依赖 CDN。
+- **`pdf-viewer.tsx`**：翻页 / 缩放（0.2 步进，上限 3.0）/ 下载；worker 已本地打包（`pdfjs-dist/build/pdf.worker.min.mjs?url`，见根目录 `CHANGELOG.md` 的 T2 核销记录），不再依赖 CDN。
 - **`version-history.tsx`**：对接 `/api/versions/*`，支持 note / task / project，**目前仅 TaskHub 接入**。
 - **`tag-system.tsx`**：212 行完整实现，**当前零引用**（各 Hub 用自己的裸 input 标签逻辑）。
 
@@ -291,7 +300,7 @@ interface WatchedGen { id, type, sourcePath, label, status, target? }
 
 ### 暗色模式
 
-`.dark` token 已完备，通过 `stores/themeStore.ts` + `App.tsx:ThemeSync` + `components/layout/theme-toggle.tsx` 实现 `light/dark/system` 切换并持久化，`main.tsx` 首屏 `applyTheme` 防闪烁。详见 `TECH-DEBT.md:T4` 已解决记录。
+`.dark` token 已完备，通过 `stores/themeStore.ts` + `App.tsx:ThemeSync` + `components/layout/theme-toggle.tsx` 实现 `light/dark/system` 切换并持久化，`main.tsx` 首屏 `applyTheme` 防闪烁。详见根目录 `CHANGELOG.md` 的 T4 核销记录。
 
 ---
 

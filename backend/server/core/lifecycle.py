@@ -8,8 +8,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from .. import db
-from ..cron_scheduler import start_scheduler
-from ..development.runner import start_development_runner
+from ..cron_scheduler import start_scheduler, stop_scheduler
+from ..development.runner import start_development_runner, stop_development_runner
 from ..rag import runner as rag_runner
 from ..services.backup import recover_interrupted_import
 from .admin_access import startup_security_message
@@ -35,6 +35,7 @@ async def lifespan(_app: FastAPI):
 
     # 不同端口的重复后端可能共享同一 SQLite；心跳只告警，不擅自结束其它进程。
     heartbeat_stop: asyncio.Event | None = None
+    heartbeat_task: asyncio.Task | None = None
     try:
         beat()
         siblings = list_siblings()
@@ -49,7 +50,7 @@ async def lifespan(_app: FastAPI):
         else:
             logger.info("backend.instance_started instance_id=%s siblings=0", _INSTANCE_ID)
         heartbeat_stop = asyncio.Event()
-        asyncio.create_task(heartbeat_loop(heartbeat_stop))
+        heartbeat_task = asyncio.create_task(heartbeat_loop(heartbeat_stop))
     except Exception as exc:  # noqa: BLE001 - 心跳失败不能阻断应用启动
         logger.exception("backend.instance_heartbeat_disabled error=%s", exc)
 
@@ -57,13 +58,26 @@ async def lifespan(_app: FastAPI):
     start_scheduler()
     start_development_runner()
     rag_stop = asyncio.Event()
-    asyncio.create_task(rag_runner.dispatcher(rag_stop))
+    rag_task = asyncio.create_task(rag_runner.dispatcher(rag_stop))
     try:
         yield
     finally:
         if heartbeat_stop is not None:
             heartbeat_stop.set()
         rag_stop.set()
+        stop_development_runner()
+        stop_scheduler()
+
+        # 事件循环关闭前等待异步常驻任务真正退出；只设置 Event 而不等待会让
+        # aiosqlite 工作线程在已关闭的 loop 上回调，产生 Event loop is closed。
+        tasks = [task for task in (heartbeat_task, rag_task) if task is not None]
+        if tasks:
+            try:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=6.0)
+            except asyncio.TimeoutError:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
 
 __all__ = ["lifespan"]

@@ -409,7 +409,7 @@ def invoke_skill(
             for attempt in result.get("attempts") or []:
                 if isinstance(attempt, dict):
                     logger.info(
-                        "skill.attempt name=%s provider=%s success=%s duration_seconds=%s error=%s",
+                        "skill.attempt name=%s provider=%s request_ok=%s duration_seconds=%s error=%s",
                         name,
                         attempt.get("provider") or "-",
                         bool(attempt.get("ok")),

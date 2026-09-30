@@ -80,7 +80,7 @@ AI-Research-OS 把论文管理、任务追踪、知识沉淀、实验管理与 A
 │  agents/ · development/ · rag/ · services/                 │
 │  scripts/database.py · db/repos · fetch_arxiv.py           │
 │  swanlab_*.py · formula_service.py · citation_service.py   │
-│  obsidian_service.py · qa_verify_*.py（回归验证）          │
+│  obsidian_service.py · citation_service.py（业务脚本）     │
 └──────────┬───────────────────────────────┬───────────────┘
            │ SQLite (WAL)                   │ 可选外部 LLM / 服务
            ▼                                ▼
@@ -502,7 +502,7 @@ ai-research-os/
 │   ├── skills/               # Agent Skills（零依赖 SKILL.md 约定）
 │   ├── requirements.txt       # 后端 Python 依赖（不含 openai）
 │   └── .env.example          # LLM / DB / CORS / Agent / web_search 配置示例
-├── scripts/                   # Python 后端脚本（业务逻辑 + QA 回归）
+├── scripts/                   # Python 后端业务与运维脚本
 │   ├── database.py            # SQLite 兼容门面（保留既有导入路径）
 │   ├── db/                    # 连接内核、显式迁移、领域 repositories
 │   ├── fetch_arxiv.py         # arXiv 抓取
@@ -511,8 +511,11 @@ ai-research-os/
 │   ├── swanlab_*.py           # SwanLab 集成
 │   ├── formula_service.py     # 公式 OCR
 │   ├── citation_service.py    # 引用检索
-│   ├── obsidian_service.py    # Obsidian 集成
-│   └── qa_verify_*.py         # 回归验证脚本（space/agent/rag/chat 等，见「贡献指南」）
+│   └── obsidian_service.py    # Obsidian 集成
+├── tests/                     # pytest 后端回归（按 chat/agents/rag/papers/infrastructure 分域）
+│   ├── conftest.py            # 临时 DATA_DIR/LOG_DIR、子进程隔离与假绿检测
+│   ├── backend/               # 15 个可发现测试模块 + 隔离回归实现
+│   └── diagnostics/           # 手工排障，不进入自动回归
 ├── data/                      # 数据目录（SQLite / PDF / 导出，已 gitignore）
 ├── docs/                      # 架构与设计文档（见 docs/README.md 索引）
 ├── AGENTS.md                  # 项目与开发规范（给 AI 协作者）
@@ -588,22 +591,17 @@ npm run lint      # ESLint 检查（--max-warnings 0，零警告通过）
 
 # 后端
 python -m uvicorn backend.server.main:app --port 8000 --workers 4   # 启动后端（多 worker）
-python -m compileall -q backend scripts                             # Python 全量语法检查
+python -m compileall -q backend scripts tests                       # Python 全量语法检查
 
-# 回归验证（QA 脚本，改动后跑对应项；均在 managed/venv 环境运行）
-python -m scripts.qa_verify_space                # 空间隔离 26 项
-python -m scripts.qa_verify_agent_harness        # Agent 工程能力 61 项（审批/重放/上下文/插件化）
-python -m scripts.qa_verify_agent_runner         # 后台 runner 19 项
-python -m scripts.qa_verify_llm_status           # LLM 可达性与状态端点（不触网）
-python -m scripts.qa_verify_rag                  # RAG 基础/并发/降级回归
-python -m scripts.qa_verify_rag_v21              # RAG 2.1 代次/隔离/全库召回/安全回归
-python -m scripts.eval_rag_golden gate            # Golden 门禁：Hit@1/5 + 可选 faithfulness
-python -m scripts.qa_verify_chat_rag             # Chat 接地式 RAG 2 项
-python -m scripts.qa_verify_chat_regenerate_edit # 聊天重生成/编辑
-python -m scripts.qa_verify_chat_branching       # 会话分支
-python -m scripts.qa_verify_conversation_id      # 会话 ID 一致性
-python -m scripts.qa_verify_init_race            # 初始化竞态
-python -m scripts.qa_verify_correctness           # 已确认正确性问题 32 项（迁移/Cron/API/CLI）
+# 后端 pytest（先安装 backend/requirements-dev.txt）
+pytest -m fast                                 # 日常快速回归
+pytest -m core                                 # 提交前核心回归（包含 fast）
+pytest                                         # 完整回归
+pytest tests/backend/chat/test_tool_loop.py    # 按领域或文件定位
+pytest --collect-only                          # 只查看收集结果
+
+# RAG 黄金集门禁仍是独立评测命令
+python -m scripts.eval_rag_golden gate
 ```
 
 Python 脚本无需构建，直接 `python -m scripts.xxx` 运行。
@@ -638,14 +636,13 @@ Python 脚本无需构建，直接 `python -m scripts.xxx` 运行。
 cd frontend
 npm run verify
 
-# 后端：语法检查 + 相关 QA 回归（按改动面选择）
-python -m compileall -q backend scripts
-python -m scripts.qa_verify_space            # 动了数据层 / 路由必跑
-python -m scripts.qa_verify_agent_harness    # 动了 Agent / 工具 / 审批必跑
-# 其余 qa_verify_*.py 按改动面补跑（见「开发命令」）
+# 后端：语法检查 + 核心 pytest 回归
+python -m compileall -q backend scripts tests
+pytest -m core
 ```
 
-> 前端已引入 Vitest；后端尚未统一迁入 pytest，当前 `qa_verify_*.py` / `.mjs` 脚本仍是后端事实上的回归测试，新增功能请同步补充对应 QA。
+> 前端使用 Vitest；后端使用 pytest。复杂的 SQLite、多进程与模块级环境回归仍由共享夹具放入隔离子进程执行，普通新增测试应直接写成 pytest 测试与 fixture。
+> GitHub Actions 会在 Pull Request 与 `main` push 上执行前端 `npm run verify` 和后端完整 pytest；仓库管理员应将 `Frontend and backend verification` 配置为 `main` 的 required check。
 
 ### 代码规范
 

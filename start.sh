@@ -129,6 +129,7 @@ mkdir -p "$LAUNCHER_LOG_DIR" "$STATE_DIR"
 # ---- 虚拟环境隔离 ----
 VENV_DIR="$PROJECT_DIR/.venv"
 VENV_PYTHON="$PROJECT_DIR/.venv/bin/python"   # 项目内虚拟环境解释器（即 .venv/bin/python）
+UVICORN_LOG_CONFIG="$PROJECT_DIR/backend/uvicorn-log-config.json"
 REQUIREMENTS_FILE="$PROJECT_DIR/backend/requirements.txt"
 REQUIREMENTS_STAMP="$VENV_DIR/.airos-requirements.sha256"
 
@@ -325,7 +326,7 @@ fi
 # 启动 FastAPI 后端（使用 .venv 解释器，多 worker 常驻）
 if [ -z "$SKIP_BACKEND" ]; then
   echo "  启动 FastAPI 后端 (端口: $API_PORT, workers: $WORKERS)..."
-  ( cd "$PROJECT_DIR" && "$VENV_PYTHON" -m uvicorn backend.server.main:app --port "$API_PORT" --workers "$WORKERS" ) >> "$BACKEND_LOG" 2>> "$BACKEND_ERR_LOG" &
+  ( cd "$PROJECT_DIR" && "$VENV_PYTHON" -m uvicorn backend.server.main:app --port "$API_PORT" --workers "$WORKERS" --log-config "$UVICORN_LOG_CONFIG" ) >> "$BACKEND_LOG" 2>> "$BACKEND_ERR_LOG" &
   BACKEND_PID=$!
   PIDS="$PIDS $BACKEND_PID"
   printf '%s' "$BACKEND_PID" > "$STATE_DIR/backend.pid"
@@ -334,7 +335,14 @@ fi
 # 启动前端开发服务器
 if [ -z "$SKIP_FRONTEND" ]; then
   echo "  启动前端开发服务器 (端口: $FRONTEND_PORT)..."
-  ( cd "$PROJECT_DIR/frontend" && npm run dev -- --port "$FRONTEND_PORT" ) >> "$FRONTEND_LOG" 2>> "$FRONTEND_ERR_LOG" &
+  # 后台日志是纯文本：关闭 npm/Vite 颜色并移除父终端可能注入的 FORCE_COLOR。
+  (
+    cd "$PROJECT_DIR/frontend" || exit 1
+    unset FORCE_COLOR
+    export NO_COLOR=1
+    export npm_config_color=false
+    npm run dev -- --port "$FRONTEND_PORT"
+  ) >> "$FRONTEND_LOG" 2>> "$FRONTEND_ERR_LOG" &
   FRONTEND_PID=$!
   PIDS="$PIDS $FRONTEND_PID"
   printf '%s' "$FRONTEND_PID" > "$STATE_DIR/frontend.pid"

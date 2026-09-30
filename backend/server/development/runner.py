@@ -475,4 +475,21 @@ def start_development_runner() -> None:
     _COORDINATOR.start()
 
 
-__all__ = ["cancel", "spawn", "start_development_runner", "submit"]
+def stop_development_runner(timeout: float = 5.0) -> None:
+    """停止研发协调线程并等待退出；已启动的独立运行按自身取消语义收尾。"""
+    global _COORDINATOR
+    _STOP.set()
+    thread = _COORDINATOR
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=timeout)
+    if thread is not None and not thread.is_alive():
+        _COORDINATOR = None
+
+
+__all__ = [
+    "cancel",
+    "spawn",
+    "start_development_runner",
+    "stop_development_runner",
+    "submit",
+]

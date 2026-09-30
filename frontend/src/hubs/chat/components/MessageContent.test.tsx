@@ -22,4 +22,19 @@ describe('MessageContent nested lists', () => {
     expect(html).toContain('<strong>主要工作</strong>：')
     expect(html).toContain('<strong>技能要求</strong>：')
   })
+
+  it('把 GFM 表格渲染为 table，而不是原始竖线文本', () => {
+    const content = [
+      '| 论文 | 主题 | 相关性 |',
+      '| --- | --- | --- |',
+      '| BAGEL | 动物知识基准测试 | 高 |',
+    ].join('\n')
+
+    const html = renderToStaticMarkup(<MessageContent content={content} />)
+
+    expect(html).toContain('<table')
+    expect(html).toContain('>论文</th>')
+    expect(html).toContain('>BAGEL</td>')
+    expect(html).not.toContain('| 论文 |')
+  })
 })

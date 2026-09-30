@@ -1,6 +1,6 @@
 import { streamChatCompletion, addMessageAPI } from './chatApi'
 import { useGenerationStore } from '@/stores/generationStore'
-import { generateId } from '@/utils'
+import { generateId, stripToolCallTrace } from '@/utils'
 import type {
   ChatContextInfo,
   Message,
@@ -293,10 +293,14 @@ class ChatGenerationManager {
           messagesForLLM.length
         )
       }
+      const cleanAssistantContent = stripToolCallTrace(
+        stripAssistantLeadingBreaks(state.streamingContent)
+      )
+      state.streamingContent = cleanAssistantContent
       const assistantMessage: Message = {
         id: generateId(),
         role: 'assistant',
-        content: stripAssistantLeadingBreaks(state.streamingContent),
+        content: cleanAssistantContent,
         timestamp: Date.now(),
         parentId,
         metadata: {

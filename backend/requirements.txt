@@ -1,4 +1,4 @@
-# AI-Research-OS FastAPI backend dependencies
+﻿# AI-Research-OS FastAPI backend dependencies
 #
 # Install: pip install -r backend/requirements.txt
 #
