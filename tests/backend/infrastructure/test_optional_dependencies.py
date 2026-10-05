@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import urllib.error
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -98,3 +99,17 @@ def test_llm_status_and_usage_are_offline_safe() -> None:
 
 def test_optional_dependency_fallbacks(run_isolated_case) -> None:
     run_isolated_case("tests.backend._cases.infrastructure.case_optional_deps")
+
+
+@pytest.mark.fast
+@pytest.mark.core
+def test_process_liveness_probe_never_signals_on_windows() -> None:
+    from scripts import process_utils
+
+    if os.name != "nt":
+        pytest.skip("Windows-specific regression")
+
+    with patch("scripts.process_utils.os.kill") as kill:
+        assert process_utils.pid_is_running(os.getpid()) is True
+        assert process_utils.pid_is_running(999_999_999) is False
+        kill.assert_not_called()

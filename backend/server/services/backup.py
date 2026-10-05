@@ -26,6 +26,8 @@ from typing import List
 from fastapi import HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
+from scripts.process_utils import pid_is_running
+
 from ..core import config
 
 logger = logging.getLogger(__name__)
@@ -287,13 +289,7 @@ def _claim_backup_operation(data_dir: Path) -> Path:
                 )
                 owner_pid = int(match.split("=", 1)[1]) if match else 0
                 if owner_pid > 0:
-                    try:
-                        os.kill(owner_pid, 0)
-                        owner_alive = True
-                    except PermissionError:
-                        owner_alive = True
-                    except OSError:
-                        owner_alive = False
+                    owner_alive = pid_is_running(owner_pid)
             except (OSError, ValueError):
                 owner_alive = False
             try:

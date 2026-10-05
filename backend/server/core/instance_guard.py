@@ -24,6 +24,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
+from scripts.process_utils import pid_is_running
+
 _HEARTBEAT_FILE = ".backend_supervisors.json"
 _LOCK_FILE = ".backend_supervisors.lock"
 _BEAT_INTERVAL_SEC = 30
@@ -162,30 +164,7 @@ def _prune(entries: Dict[str, Any], now_ms: int) -> Dict[str, Any]:
     return fresh
 
 
-def _pid_alive(pid: int) -> bool:
-    """pid 对应进程是否存在。Windows 用 OpenProcess 句柄判定，
-    POSIX 用 kill(pid, 0)：ESRCH=不存在，其它（含 EPERM 无权限）按存活处理，
-    宁可误报不漏报（120s 超期是第二道兜底）。"""
-    if pid <= 0:
-        return False
-    try:
-        if os.name == "nt":
-            import ctypes as _ctypes
-            _SYNCHRONIZE = 0x00100000
-            _handle = _ctypes.windll.kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
-            if not _handle:
-                return False
-            _ctypes.windll.kernel32.CloseHandle(_handle)
-            return True
-        os.kill(pid, 0)
-        return True
-    except OSError as e:
-        import errno as _errno
-        if getattr(e, "errno", None) == _errno.ESRCH:
-            return False
-        return True
-    except Exception:
-        return True
+_pid_alive = pid_is_running
 
 
 def beat() -> Dict[str, Any]:

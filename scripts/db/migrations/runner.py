@@ -19,6 +19,8 @@ from typing import Awaitable, Callable, Sequence
 
 import aiosqlite
 
+from scripts.process_utils import pid_is_running
+
 ConnectionFactory = Callable[..., object]
 Upgrade = Callable[[aiosqlite.Connection | None], Awaitable[None]]
 Validate = Callable[[aiosqlite.Connection], Awaitable[None]]
@@ -69,16 +71,7 @@ class _LockLease:
     token: str
 
 
-def _pid_is_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except PermissionError:
-        return True
-    except OSError:
-        return False
+_pid_is_alive = pid_is_running
 
 
 def _read_lock_owner(lock_path: Path) -> tuple[int, float, str]:

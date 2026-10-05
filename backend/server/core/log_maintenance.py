@@ -17,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Optional
 
+from scripts.process_utils import pid_is_running
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LOG_KINDS = ("app", "access", "error")
@@ -61,41 +63,7 @@ def prepare_layout(log_dir: Optional[Path | str] = None) -> LogLayout:
     return layout
 
 
-def _pid_is_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if pid == os.getpid():
-        return True
-    if os.name == "nt":
-        # GetExitCodeProcess 只依赖标准库 ctypes，避免为了日志维护引入 psutil。
-        process_query_limited_information = 0x1000
-        still_active = 259
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
-        kernel32.GetExitCodeProcess.restype = ctypes.c_int
-        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-        kernel32.CloseHandle.restype = ctypes.c_int
-        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
-        if not handle:
-            return False
-        try:
-            exit_code = ctypes.c_ulong()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return False
-            return exit_code.value == still_active
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
+_pid_is_running = pid_is_running
 
 
 def _windows_process_started_at(pid: int) -> Optional[float]:

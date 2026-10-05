@@ -26,10 +26,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -38,7 +38,7 @@ jobs:
             backend/requirements-dev.txt
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -59,11 +59,11 @@ jobs:
         run: New-Item -ItemType Directory -Path artifacts -Force | Out-Null
 
       - name: Verify backend
-        run: python -m pytest --junitxml=artifacts/pytest.xml
+        run: python -m pytest --junitxml=artifacts/pytest.xml --durations=10
 
       - name: Upload pytest report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pytest-report
           path: artifacts/pytest.xml
